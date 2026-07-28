@@ -1,0 +1,52 @@
+---
+description: dbt and Redshift/DuckDB SQL conventions
+globs: "transformation/dbt_project/**"
+alwaysApply: false
+---
+
+# dbt Conventions
+
+Path: `transformation/dbt_project/`.
+
+## Layers
+
+- `staging/`: `source()` cleanup only (cast/rename); no business logic.
+- `intermediate/`: business logic; no raw `source()`.
+- `marts/`: finance/marketing grains; no direct staging refs.
+
+## Portable Macros (Redshift + DuckDB)
+
+Use adapter macros — do not call Redshift-only SQL in shared models:
+
+- `datediff_unit` / `dateadd_unit`
+- `json_path_text`
+- `date_key_from_date` / `date_from_date_key`
+- `record_hash_sha256`
+- `generate_customer_key` / `generate_surrogate_key`
+
+## Requirements
+
+- YAML descriptions + column tests; `ref()`/`source()` only.
+- Incrementals: `unique_key`, strategy (`delete+insert` for overwrite grains), `on_schema_change`.
+- Document grain in SQL header + YAML.
+
+## Fixed Grains
+
+- `fact_sales`: `(transaction_id, line_item_number)`
+- `fact_inventory_snapshot`: `(snapshot_date_key, snapshot_hour, product_key, store_key)`
+- `fact_customer_session`: `session_id`
+
+## Identity → C360 (marketing)
+
+`int_identity_edges` → `int_identity_public_devices` → `int_identity_components`
+→ `int_identity_resolution` → sessions/RFM/consent → `dim_customer` /
+`fact_customer_session` / `identity_graph` → `customer_360_view` (consent-gated).
+
+## DAG Ownership
+
+- Daily warehouse: `marts.finance` only (+ staging/intermediate as selected).
+- Hourly marketing: `marts.marketing` + identity/session/RFM chain.
+- Bihourly catalog: `dim_product` SCD2.
+
+Local: `-DbtSource iceberg` loads Parquet into DuckDB; `-DbtSource seeds` uses CSV fixtures.
+Keep `transformation/redshift/` DDL aligned with marts.

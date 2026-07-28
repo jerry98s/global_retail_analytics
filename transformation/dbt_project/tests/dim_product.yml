@@ -1,0 +1,83 @@
+version: 2
+
+# Source definitions live in models/staging/_sources.yml.
+
+models:
+  - name: stg_pos_transactions
+    description: "Staging model for POS transactions with canonical snake_case columns."
+    columns:
+      - name: transaction_id
+        description: "Transaction identifier."
+        tests: [not_null]
+      - name: line_item_number
+        description: "Line item sequence within transaction."
+        tests: [not_null]
+
+  - name: stg_clickstream_events
+    description: "Staging model for clickstream events."
+    columns:
+      - name: event_id
+        description: "Unique event identifier."
+        tests: [not_null_unique]
+      - name: event_time
+        description: "Client event timestamp."
+        tests: [not_null]
+
+  - name: stg_inventory_events
+    description: "Staging model for inventory delta events."
+    columns:
+      - name: event_id
+        description: "Inventory event identifier."
+        tests: [not_null]
+      - name: product_id
+        description: "Natural product id."
+        tests: [not_null]
+
+  # Identity / session / consent / RFM tests live in tests/intermediate.yml.
+
+  - name: dim_product
+    description: "SCD Type 2 product dimension. One row per (product_id, effective_from); current version has is_current=true and effective_to=NULL."
+    columns:
+      - name: product_key
+        description: "Surrogate product key (deterministic from product_id + effective_from)."
+        tests: [not_null_unique]
+      - name: product_id
+        description: "Natural product id (POS or inventory-only SKU)."
+        tests: [not_null]
+      - name: sku
+        description: "Stock-keeping unit; equals product_id for simulator-generated products."
+      - name: product_name
+        description: "Product name; equals product_id for simulator-generated products."
+      - name: brand
+        description: "Brand classification: PRIVATE_LABEL (inventory-only) or RETAIL (POS-known)."
+      - name: category_l1
+        description: "Top-level category; currently always GENERAL."
+      - name: category_l2
+        description: "Second-level category; currently always MERCHANDISE."
+      - name: unit_cost
+        description: "POS-weighted average unit cost (net_revenue / quantity_sold). Zero for inventory-only SKUs."
+      - name: supplier_id
+        description: "Supplier identifier; currently always UNKNOWN."
+      - name: effective_from
+        description: "SCD2 validity start (date). Equals earliest POS transaction date or earliest inventory event date."
+        tests: [not_null]
+      - name: effective_to
+        description: "SCD2 validity end (date). NULL for the current version; non-NULL for closed (historical) versions."
+      - name: is_current
+        description: "Current record marker for SCD2. Exactly one true per product_id."
+        tests: [not_null]
+      - name: record_hash
+        description: "SHA-256 of (product_id || brand || unit_cost). Change detection signal for SCD2."
+        tests: [not_null]
+    tests:
+      - no_scd2_overlaps:
+          natural_key: product_id
+          effective_from: effective_from
+          effective_to: effective_to
+      - no_scd2_gaps:
+          natural_key: product_id
+          effective_from: effective_from
+          effective_to: effective_to
+      - one_current_per_natural_key:
+          natural_key: product_id
+          is_current_col: is_current

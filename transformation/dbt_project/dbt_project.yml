@@ -1,0 +1,80 @@
+name: global_retail_analytics
+version: 1.0.0
+config-version: 2
+
+profile: global_retail_analytics
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+seeds:
+  global_retail_analytics:
+    +quote_columns: false
+    # Seeds are **fixture-mode** inputs for CI identity scenarios
+    # (`-DbtSource seeds`). Default local fidelity (`-DbtSource iceberg`)
+    # loads Flink/POS Parquet into DuckDB instead and only seeds
+    # finance.dim_date + finance.dim_store (reference dims the pipeline
+    # cannot generate). Bronze clickstream/pos CSVs encode specific
+    # identity-graph scenarios (loyalty match, session link, multi-hop,
+    # public device, singleton) that the random pipeline producers cannot
+    # deterministically reproduce, so they stay as CI fixtures.
+    bronze:
+      +schema: bronze
+      clickstream_events:
+        +column_types:
+          event_time: timestamp
+          properties: varchar
+          customer_id: varchar
+          client_id: varchar
+          session_id: varchar
+          schema_version: varchar
+          event_date: date
+          app_version: varchar
+      pos_transactions:
+        +column_types:
+          transaction_date: date
+          loyalty_id: varchar
+          store_id: varchar
+          product_id: varchar
+    finance:
+      +schema: finance
+      dim_date:
+        +column_types:
+          date_key: integer
+          full_date: date
+          day_of_week: integer
+          month_number: integer
+          quarter: integer
+          is_weekend: boolean
+          is_public_holiday: boolean
+      dim_store:
+        +column_types:
+          store_key: integer
+          store_id: varchar
+          is_active: boolean
+
+models:
+  global_retail_analytics:
+    +materialized: view
+    staging:
+      +schema: staging
+      +materialized: view
+    intermediate:
+      +schema: intermediate
+      +materialized: incremental
+    marts:
+      +materialized: table
+      finance:
+        +schema: finance
+      marketing:
+        +schema: marketing
+      summary:
+        +schema: summary
+        +materialized: incremental
+      serving:
+        +schema: serving
+        +materialized: view

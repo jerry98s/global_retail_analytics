@@ -1,0 +1,26 @@
+{
+  "expectation_suite_name": "fact_sales",
+  "meta": {
+    "description": "Fact sales integrity checks."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_compound_columns_to_be_unique",
+      "kwargs": {
+        "column_list": ["transaction_id", "line_item_number"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "date_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "product_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "store_key" }
+    }
+  ]
+}

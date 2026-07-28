@@ -1,0 +1,109 @@
+// DBML — paste into dbdiagram.io to render ERD
+// Global Retail Analytics Platform
+
+Table dim_date {
+  date_key int [pk]
+  full_date date [not null]
+  day_of_week tinyint
+  month_number tinyint
+  quarter tinyint
+  fiscal_year smallint
+  is_weekend boolean
+  is_public_holiday boolean
+}
+
+Table dim_store {
+  store_key int [pk]
+  store_id varchar [unique, not null]
+  store_name varchar
+  store_type varchar
+  city varchar
+  country_code char(2)
+  region varchar
+  is_active boolean
+}
+
+Table dim_product {
+  product_key int [pk]
+  product_id varchar [not null]
+  sku varchar
+  product_name varchar
+  brand varchar
+  category_l1 varchar
+  category_l2 varchar
+  unit_cost decimal
+  supplier_id varchar
+  effective_from date [not null]
+  effective_to date
+  is_current boolean [not null]
+  record_hash char(64)
+}
+
+Table dim_customer {
+  customer_key int [pk]
+  loyalty_id varchar
+  email_hashed char(64)
+  loyalty_tier varchar
+  rfm_segment varchar
+  churn_risk_score decimal
+  total_lifetime_value decimal
+  marketing_consent boolean
+  analytics_consent boolean
+  last_updated_at timestamp
+}
+
+Table identity_graph {
+  identifier_type varchar [not null]
+  identifier_value varchar [not null]
+  customer_key int [not null, ref: > dim_customer.customer_key]
+  confidence_score decimal
+  resolution_method varchar
+  indexes {
+    (identifier_type, identifier_value) [pk]
+  }
+}
+
+Table fact_sales {
+  date_key int [not null, ref: > dim_date.date_key]
+  product_key int [not null, ref: > dim_product.product_key]
+  store_key int [not null, ref: > dim_store.store_key]
+  customer_key int [ref: > dim_customer.customer_key]
+  transaction_id varchar [not null]
+  line_item_number tinyint [not null]
+  quantity_sold int
+  gross_revenue decimal
+  net_revenue decimal
+  gross_margin decimal
+  is_voided boolean
+  indexes {
+    (transaction_id, line_item_number) [pk]
+  }
+}
+
+Table fact_inventory_snapshot {
+  snapshot_date_key int [not null, ref: > dim_date.date_key]
+  snapshot_hour tinyint [not null]
+  product_key int [not null, ref: > dim_product.product_key]
+  store_key int [not null, ref: > dim_store.store_key]
+  quantity_on_hand int
+  quantity_available int
+  is_estimated boolean
+  indexes {
+    (snapshot_date_key, snapshot_hour, product_key, store_key) [pk]
+  }
+}
+
+Table fact_customer_session {
+  session_id varchar [pk]
+  session_date_key int [not null, ref: > dim_date.date_key]
+  customer_key int [ref: > dim_customer.customer_key]
+  client_id varchar [not null]
+  session_duration_seconds int
+  page_view_count int
+  product_view_count int
+  add_to_cart_count int
+  converted boolean
+  order_id varchar
+  funnel_depth tinyint
+  platform varchar
+}

@@ -1,0 +1,174 @@
+version: 2
+
+# Source database AND schema are env-parameterized so the same dbt project runs
+# against dev and prod Redshift without edits:
+#   dev:   BRONZE_DB=dev   BRONZE_SCHEMA=bronze   (Spectrum external schema)
+#          SILVER_DB=dev   SILVER_SCHEMA=silver   (Spectrum external schema)
+#          GOLD_DB=dev     GOLD_SCHEMA=finance
+#   prod:  BRONZE_DB=prod  SILVER_DB=prod  GOLD_DB=prod  (same schema names)
+# Bronze is a Redshift Spectrum external schema over S3 (transformation/redshift/spectrum/bronze_external_tables.sql).
+# Silver is a Redshift Spectrum external schema over S3 (transformation/redshift/spectrum/silver_external_tables.sql).
+# See docs/ENVIRONMENTS.md / docs/REDSHIFT.md.
+#
+# Local DuckDB target: database is omitted (single .duckdb file = single catalog).
+# Override BRONZE_DB/SILVER_DB/GOLD_DB to empty when running --target local, or rely
+# on the adapter-aware Jinja below to drop the database prefix.
+#
+# Local DuckDB seeds (transformation/dbt_project/seeds/):
+#   Fixture mode (-DbtSource seeds): bronze/clickstream_events.csv +
+#   bronze/pos_transactions.csv + finance dims. (bronze/inventory_events
+#   and silver/inventory_hourly were removed — Flink generates those and no
+#   CI test reads them.)
+#   Iceberg mode (default): load Flink/POS Parquet via
+#   scripts/local/load_iceberg_to_duckdb.py; only seed finance/dim_*.csv.
+# Cloud Redshift ignores these seeds — bronze/silver are Spectrum external schemas
+# and dim_date/dim_store are loaded by scripts/cloud/bootstrap_redshift.ps1.
+#
+# IMPORTANT: do NOT set `config.enabled: false` at the source-table level for
+# dim_date / dim_store — that disables the source entirely and breaks model
+# refs (fact_sales.sql, fact_inventory_snapshot.sql, int_session_reconstruction.sql
+# all `source('gold_finance', 'dim_store'|'dim_date')`). Instead, each individual
+# test carries `config.enabled: "{{ target.type != 'duckdb' }}"` so Redshift-only
+# tests skip on DuckDB while the source stays resolvable.
+sources:
+  - name: bronze
+    database: "{% if target.type != 'duckdb' %}{{ env_var('BRONZE_DB', 'dev') }}{% endif %}"
+    schema: "{{ env_var('BRONZE_SCHEMA', 'bronze') }}"
+    tables:
+      - name: pos_transactions
+      - name: clickstream_events
+      - name: inventory_events
+  - name: silver
+    database: "{% if target.type != 'duckdb' %}{{ env_var('SILVER_DB', 'dev') }}{% endif %}"
+    schema: "{{ env_var('SILVER_SCHEMA', 'silver') }}"
+    tables:
+      # Flink inventory_silver_job writes silver.inventory_hourly (kappa path).
+      # Gold fact_inventory_snapshot reads from here — see ADR-002 and the
+      # kappa conversion in fact_inventory_snapshot.sql.
+      - name: inventory_hourly
+  - name: gold_finance
+    database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
+    schema: "{{ env_var('GOLD_SCHEMA', 'finance') }}"
+    tables:
+      - name: dim_date
+        # dim_date is loaded by scripts/cloud/bootstrap_redshift.ps1 from
+        # transformation/redshift/seeds/dim_date.sql (calendar 2020-01-01
+        # through 2030-12-31). Tests here are Redshift-only — the local
+        # DuckDB sim does not seed dim_date, so each test carries
+        # `config.enabled: "{{ target.type != 'duckdb' }}"`. The source
+        # itself stays enabled so models (int_session_reconstruction,
+        # fact_sales, fact_inventory_snapshot) can reference it.
+        columns:
+          - name: date_key
+            description: "Surrogate YYYYMMDD integer key (primary key)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+              - unique:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: full_date
+            description: "Calendar date."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: day_of_week
+            description: "Day of week (0=Sunday .. 6=Saturday)."
+            tests:
+              - accepted_values:
+                  values: [0, 1, 2, 3, 4, 5, 6]
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: month_number
+            description: "Month number (1-12)."
+            tests:
+              - accepted_values:
+                  values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: quarter
+            description: "Calendar quarter (1-4)."
+            tests:
+              - accepted_values:
+                  values: [1, 2, 3, 4]
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: is_weekend
+            description: "True if day_of_week is 0 (Sunday) or 6 (Saturday)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: is_public_holiday
+            description: "True if a public holiday. Currently always false (placeholder)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+      - name: dim_store
+        # dim_store is loaded by scripts/cloud/bootstrap_redshift.ps1 from
+        # transformation/redshift/seeds/dim_store.sql (STORE-001..020,
+        # Malaysia). Tests here are Redshift-only — see dim_date note above.
+        columns:
+          - name: store_key
+            description: "Surrogate store key (IDENTITY(1,1) primary key)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+              - unique:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: store_id
+            description: "Natural store identifier (STORE-001..020)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+              - unique:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: store_name
+            description: "Human-readable store name."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: store_type
+            description: "Store type classification. Currently always RETAIL."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+              - accepted_values:
+                  values: ['RETAIL']
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: country_code
+            description: "ISO-3166 alpha-2 country code. Currently always MY (Malaysia)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+              - accepted_values:
+                  values: ['MY']
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: region
+            description: "Sales region (Central, North, South, East)."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+              - accepted_values:
+                  values: ['Central', 'North', 'South', 'East']
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"
+          - name: is_active
+            description: "Store activity flag. Currently always true."
+            tests:
+              - not_null:
+                  config:
+                    enabled: "{{ target.type != 'duckdb' }}"

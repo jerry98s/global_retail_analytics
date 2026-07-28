@@ -1,0 +1,161 @@
+version: 2
+
+models:
+  - name: dim_customer
+    description: "Type 1 customer dimension enriched with consent and RFM attributes."
+    columns:
+      - name: customer_key
+        description: "Surrogate customer key (resolved by int_identity_resolution)."
+        tests: [not_null_unique]
+      - name: loyalty_id
+        description: "Loyalty identifier when known (NULL for client-only / device-only customers)."
+      - name: email_hashed
+        description: "Hashed email; NULL today (placeholder for future PII ingestion behind the marketing_consent gate)."
+      - name: loyalty_tier
+        description: "Loyalty tier derived from monetary_value: platinum (>=5000), gold (>=1000), standard (<1000)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['platinum', 'gold', 'standard']
+      - name: rfm_segment
+        description: "RFM segment label from int_rfm_scoring (e.g., champion, loyal, at_risk, general)."
+        tests: [not_null]
+      - name: churn_risk_score
+        description: "Churn risk score in [0, 1]. Higher = more likely to churn. Derived from recency_days."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: total_lifetime_value
+        description: "Total lifetime value (monetary_value from int_rfm_scoring); 0 when RFM is unavailable."
+        tests: [not_null]
+      - name: marketing_consent
+        description: "Marketing consent flag. True if loyalty_id is known OR explicit_marketing_consent is recorded."
+        tests: [not_null]
+      - name: analytics_consent
+        description: "Analytics consent flag. True if explicit_analytics_consent is recorded OR loyalty_id is known."
+        tests: [not_null]
+      - name: last_updated_at
+        description: "Timestamp of last dbt refresh (current_timestamp at run time)."
+        tests: [not_null]
+
+  - name: fact_customer_session
+    description: "Session-grain customer behavior fact. One row per session_id from int_session_reconstruction."
+    columns:
+      - name: session_id
+        description: "Session identifier (producer session_id or reconstructed from 30-min inactivity boundary)."
+        tests: [not_null_unique]
+      - name: session_date_key
+        description: "Session start date key (YYYYMMDD); joins to dim_date.date_key."
+        tests:
+          - not_null
+          - relationships:
+              to: source('gold_finance', 'dim_date')
+              field: date_key
+      - name: customer_key
+        description: "Resolved customer key. NULL for anonymous sessions (no loyalty_id and no client_id match in int_identity_resolution)."
+      - name: client_id
+        description: "Client device identifier from clickstream."
+        tests: [not_null]
+      - name: session_duration_seconds
+        description: "Wall-clock session duration (max event_time - min event_time) in seconds."
+      - name: page_view_count
+        description: "Count of page_view events in the session."
+      - name: product_view_count
+        description: "Count of product_view events in the session."
+      - name: add_to_cart_count
+        description: "Count of add_to_cart events in the session."
+      - name: converted
+        description: "True if at least one checkout event occurred in the session."
+        tests: [not_null]
+      - name: order_id
+        description: "Order id from checkout event properties; NULL if no checkout."
+      - name: funnel_depth
+        description: "Maximum funnel depth reached (1=page_view, 2=product_view, 3=add_to_cart, 4=checkout_start, 5=checkout)."
+      - name: platform
+        description: "Client platform (web, ios, android) from clickstream."
+
+  - name: customer_360_view
+    description: "Consent-gated Customer 360 serving view at (customer_key, session_id) grain. dim_customer LEFT JOIN fact_customer_session: one row per consented customer x session; customers with no sessions appear once with NULL session columns. Filtered to marketing_consent = true. serving.customer_360_serving selects from this view."
+    columns:
+      - name: customer_key
+        description: "Customer surrogate key (from dim_customer)."
+        tests: [not_null]
+      - name: loyalty_id
+        description: "Loyalty identifier (from dim_customer)."
+      - name: loyalty_tier
+        description: "Loyalty tier (from dim_customer)."
+      - name: rfm_segment
+        description: "RFM segment (from dim_customer)."
+      - name: churn_risk_score
+        description: "Churn risk score (from dim_customer)."
+      - name: total_lifetime_value
+        description: "Total lifetime value (from dim_customer)."
+      - name: session_id
+        description: "Session identifier (from fact_customer_session); NULL for customers with no recorded sessions."
+      - name: session_date_key
+        description: "Session start date key (from fact_customer_session)."
+      - name: session_duration_seconds
+        description: "Session duration in seconds (from fact_customer_session)."
+      - name: page_view_count
+        description: "Page view count (from fact_customer_session)."
+      - name: product_view_count
+        description: "Product view count (from fact_customer_session)."
+      - name: add_to_cart_count
+        description: "Add-to-cart count (from fact_customer_session)."
+      - name: converted
+        description: "Conversion flag (from fact_customer_session)."
+      - name: order_id
+        description: "Order id (from fact_customer_session)."
+      - name: platform
+        description: "Client platform (from fact_customer_session)."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - customer_key
+            - session_id
+
+  - name: identity_graph
+    description: "Physical identity graph (identifier -> customer_key). Public devices excluded; see int_identity_resolution for the audit/full version."
+    columns:
+      - name: identifier_type
+        description: "Identifier namespace."
+        tests:
+          - not_null
+          - identifier_type_accepted_values
+      - name: identifier_value
+        description: "Identifier value (loyalty id, customer id, or client id)."
+        tests: [not_null]
+      - name: customer_key
+        description: "Resolved customer surrogate key."
+        tests: [not_null]
+      - name: confidence_score
+        description: "Resolution confidence in [0, 1] per ADR-003. 1.0 for loyalty anchors, 0.85 for session-linked clients, 0.5 for device-only, 0.3 for public devices."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+      - name: resolution_method
+        description: "Audit label describing how the identifier was resolved. Note: public_device_excluded is intentionally absent from accepted_values — those rows are filtered out upstream in int_identity_resolution, and this test guards against filter regressions."
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'component_anchor'
+                - 'loyalty_member'
+                - 'loyalty_match'
+                - 'customer_id_standalone'
+                - 'session_linked'
+                - 'device_only'
+                - 'unknown'
+      - name: is_public_device
+        description: "True for client_ids that hit the public-device threshold (excluded from identity merge but kept for audit). Always false in identity_graph (filtered out upstream in int_identity_resolution)."
+        tests: [not_null]
+      - name: is_active
+        description: "Row activity flag for future soft-delete support. Currently always true."
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [identifier_type, identifier_value]

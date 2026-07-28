@@ -1,0 +1,27 @@
+# Cursor (legacy root)
+
+This file is a **short compatibility pointer** only. Do not put full rules here.
+
+## Active guidance
+
+1. **`.cursor/rules/*.mdc`** — scoped Cursor agent rules (source of truth for agent behavior).
+2. **`AGENTS.md`** — cross-agent operating guide (branches, commands, do-nots).
+3. **`ARCHITECTURE.md`** + **`docs/`** — design and runbooks.
+
+## Branches
+
+- **`main`**: fully cloud-deployed platform.
+- **`local-testing-version`**: local Docker / Flink / DuckDB testing.
+
+## Rule index
+
+| Rule | Scope |
+|---|---|
+| `project-context.mdc` | Always |
+| `python.mdc` | `**/*.py` |
+| `dbt.mdc` | `transformation/dbt_project/**` |
+| `flink.mdc` | `streaming/**` |
+| `airflow.mdc` | `orchestration/**` |
+| `terraform.mdc` | `infra/terraform/**` |
+
+See `.cursor/README.md` for layout details.

@@ -1,0 +1,43 @@
+# Copy to dev.tfvars (git-ignored) and fill in the real IDs/secrets.
+# Apply with: .\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action apply
+#
+# Same stack code as prod — only sizing, CIDRs, and secrets differ.
+
+environment  = "dev"
+aws_region   = "ap-southeast-1"
+project_name = "retail-platform"
+team_name    = "data-platform"
+
+# Networking — bring your own VPC (or a shared network stack).
+vpc_id                 = "vpc-REPLACE_ME"
+private_subnet_ids     = ["subnet-REPLACE_ME_AZ_A", "subnet-REPLACE_ME_AZ_B"]
+msk_security_group_ids = ["sg-REPLACE_ME_MSK"]
+
+emr_service_role_arn         = "arn:aws:iam::ACCOUNT_ID:role/EMR_DefaultRole"
+emr_ec2_instance_profile_arn = "arn:aws:iam::ACCOUNT_ID:instance-profile/EMR_EC2_DefaultRole"
+
+# Redshift Serverless (dev sizing — smaller than prod).
+redshift_subnet_ids = ["subnet-REPLACE_ME_AZ_A", "subnet-REPLACE_ME_AZ_B", "subnet-REPLACE_ME_AZ_C"]
+# WARNING: dev is publicly_accessible so a laptop can reach it over the internet.
+# Allow ONLY your own address — never 0.0.0.0/0, which exposes port 5439 to everyone.
+# Find yours with: curl -s https://checkip.amazonaws.com
+redshift_allowed_cidrs = ["REPLACE_ME_YOUR_IP/32"]
+redshift_admin_username = "rs_admin"
+redshift_admin_password = "REPLACE_ME_STRONG_SECRET"
+redshift_database_name  = "dev"
+redshift_base_capacity_rpu      = 8
+redshift_publicly_accessible    = true
+redshift_monthly_rpu_hour_limit = 100
+
+# Dashboard (optional — same two-step ECR-then-service rollout as prod).
+enable_dashboard         = false
+dashboard_create_service = false
+dashboard_image_tag      = "latest"
+dashboard_vpc_connector_subnet_ids = []
+
+# Airflow MWAA (optional — ~$300/mo for mw1.small). Sync DAGs after apply:
+#   .\scripts\cloud\deploy_platform.ps1 -Env dev -Action mwaa-sync
+enable_mwaa                = false
+mwaa_environment_class     = "mw1.small"
+mwaa_max_workers           = 2
+mwaa_webserver_access_mode = "PUBLIC_ONLY"

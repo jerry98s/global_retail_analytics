@@ -1,0 +1,142 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: terraform fmt + validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [bootstrap, .]
+    defaults:
+      run:
+        working-directory: infra/terraform/${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.6"
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+
+      # validate without contacting the backend or provider APIs
+      - name: terraform init -backend=false
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate
+
+  python:
+    name: python lint + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install ruff
+        run: pip install ruff==0.6.9
+
+      - name: ruff check
+        run: ruff check ingestion streaming scripts quality orchestration
+
+      - name: compile-all (syntax errors fail fast)
+        run: |
+          python -m compileall -q ingestion streaming scripts quality orchestration
+
+  unit-tests:
+    name: pytest unit (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: pytest unit suite
+        run: pip install pytest==8.4.1 && pytest tests/unit/ -v --tb=short -m unit
+
+  dbt-duckdb:
+    name: dbt identity chain on DuckDB (no cloud creds)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: transformation/dbt_project
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install dbt-duckdb + duckdb
+        run: pip install "dbt-core==1.11.*" "dbt-duckdb>=1.10,<2.0" "duckdb>=1.5,<2.0"
+
+      - name: create local dbt profile
+        run: cp profiles.yml.example profiles.yml
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir . --target local
+
+      - name: dbt seed
+        run: dbt seed --profiles-dir . --target local
+
+      - name: dbt run identity graph chain
+        run: dbt run --profiles-dir . --target local --select +identity_graph --full-refresh
+
+      - name: dbt test identity graph chain
+        run: dbt test --profiles-dir . --target local --select int_identity_edges int_identity_public_devices int_identity_components int_identity_resolution identity_graph
+
+      - name: verify identity scenarios (loyalty match, session link, multi-hop, public device, singleton)
+        working-directory: ${{ github.workspace }}
+        run: python tests/integration/verify_local_identity.py
+
+      - name: dbt incremental idempotency (P2.1)
+        working-directory: ${{ github.workspace }}
+        run: |
+          pip install pytest==8.4.1
+          pytest tests/integration/test_dbt_idempotency.py -v -m integration_duckdb
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: ./scripts
+          severity: warning
+        env:
+          SHELLCHECK_OPTS: -e SC2086 -e SC2046
+
+  yaml:
+    name: yaml + compose sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: docker compose config validates
+        run: docker compose -f infra/docker/compose/docker-compose.yml config --quiet
+
+      - name: airflow DAGs compile
+        run: python -m compileall -q orchestration/airflow/dags

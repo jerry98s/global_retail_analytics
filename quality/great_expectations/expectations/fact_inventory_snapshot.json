@@ -1,0 +1,78 @@
+{
+  "expectation_suite_name": "fact_inventory_snapshot",
+  "meta": {
+    "description": "Hourly inventory snapshot fact checks (kappa path — reads from silver.inventory_hourly). Closes P2.8 from docs/runbooks/dw-checklist-audit.md. Composite PK (snapshot_date_key, snapshot_hour, product_key, store_key). quantity_on_hand is a cumulative running balance per (product, store); quantity_available is greatest(quantity_on_hand, 0)."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "snapshot_date_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "snapshot_hour" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "product_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "store_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "quantity_on_hand" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "quantity_available" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "is_estimated" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "snapshot_hour",
+        "value_set": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "is_estimated",
+        "value_set": [false]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "snapshot_date_key",
+        "min_value": 20200101,
+        "max_value": 20301231
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "quantity_available",
+        "min_value": 0
+      }
+    },
+    {
+      "expectation_type": "expect_compound_columns_to_be_unique",
+      "kwargs": {
+        "column_list": ["snapshot_date_key", "snapshot_hour", "product_key", "store_key"]
+      }
+    },
+    {
+      "expectation_type": "expect_table_row_count_to_be_between",
+      "kwargs": {
+        "min_value": 1,
+        "max_value": 5000000
+      }
+    }
+  ]
+}

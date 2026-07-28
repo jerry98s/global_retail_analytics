@@ -1,0 +1,32 @@
+---
+description: Python standards for ingestion, streaming, quality, orchestration
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# Python Standards
+
+- Prefer repo **`.venv`** (`uv sync --group dev`); do not `pip install` dbt into system Python.
+- Type hints on signatures/returns; `structlog` for app logs (avoid `print()` in prod paths).
+- Dataclasses/Pydantic for validated event/schema models.
+- Handle I/O explicitly (files, S3, Kafka, Redshift, Airflow APIs).
+- Pytest fixtures over large inline setup; keep tests deterministic (seeds, stable UUIDs, temp dirs).
+- No magic strings for topics/tables/layers/env keys — shared constants or config.
+
+## Kafka Producers
+
+- Build configs via `ingestion/kafka/msk_config.py`.
+- Reliability defaults: `acks=all`, idempotence, retries, delivery timeout, batching, `lz4`.
+- Align payloads with `ingestion/schemas/` and `ingestion/kafka/topics.py`.
+- Entity IDs from `ingestion/kafka/sim_entities.py` (`STORE-*`, `PROD-*`, `LOYAL-*`).
+
+## Local Helpers
+
+- Iceberg → DuckDB: `scripts/local/load_iceberg_to_duckdb.py`.
+- POS local Parquet: `python -m ingestion.batch.generate_pos_parquet --output-dir ...`.
+- Unit tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/ -q`.
+
+## Tests
+
+- Prefer static contracts for Airflow/Flink when importing runtimes needs heavy deps.
+- Integration DuckDB identity checks: `tests/integration/verify_local_identity.py` (seeds mode).

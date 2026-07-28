@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://retail-platform/schemas/clickstream-envelope/v1.2.0",
+  "title": "Clickstream Event Envelope",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "event_time",
+    "session_id",
+    "client_id",
+    "platform",
+    "app_version",
+    "properties",
+    "schema_version"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "page_view",
+        "product_view",
+        "search",
+        "add_to_cart",
+        "remove_from_cart",
+        "checkout_start",
+        "checkout",
+        "login",
+        "logout",
+        "error"
+      ]
+    },
+    "event_time": { "type": "string", "format": "date-time" },
+    "session_id": { "type": "string" },
+    "client_id": { "type": "string" },
+    "customer_id": { "type": ["string", "null"] },
+    "platform": { "type": "string", "enum": ["web", "ios", "android"] },
+    "app_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "properties": { "type": "object" },
+    "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" }
+  }
+}

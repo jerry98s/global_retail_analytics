@@ -1,0 +1,4 @@
+store_key,store_id,store_name,store_type,city,country_code,region,is_active
+1,STORE-001,Kuala Lumpur Central,RETAIL,Kuala Lumpur,MY,Central,true
+2,STORE-002,Petaling Jaya Main,RETAIL,Petaling Jaya,MY,Central,true
+3,STORE-003,Shah Alam Plaza,RETAIL,Shah Alam,MY,Central,true

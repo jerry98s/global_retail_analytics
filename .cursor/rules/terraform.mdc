@@ -1,0 +1,37 @@
+---
+description: Terraform and AWS IaC standards
+globs: "infra/terraform/**"
+alwaysApply: false
+---
+
+# Terraform Standards
+
+Use `scripts/cloud/run_terraform.ps1`; never run raw Terraform inside a stack dir.
+
+## Stacks
+
+- `infra/terraform/bootstrap/`: state bucket, locks, budget; local state by design.
+- `infra/terraform/`: platform for **dev/prod** (cloud only — not local Docker).
+  Backend: `envs/<env>.backend.hcl`; vars: `envs/<env>.tfvars`.
+
+## Platform Modules
+
+`s3`, `kafka` (MSK + topics + lag alarms), `emr`, `redshift` (Serverless + Spectrum),
+`mwaa` (optional), `streamlit` (optional App Runner).
+
+## Rules
+
+- Tags: `Project`, `Environment`, `Team` (+ `Layer` where useful).
+- Variables for non-defaults; outputs for scripts/DAGs/runbooks.
+- One platform stack for dev and prod — do not revive lean/redshift-dev stacks.
+- Do not commit `.terraform/`, `*.tfstate*`, or real `*.tfvars`.
+
+## Commands
+
+```powershell
+.\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action validate
+.\scripts\cloud\run_terraform.ps1 -Stack platform -Env prod -Action plan
+.\scripts\cloud\deploy_platform.ps1 -Env dev
+```
+
+Local laptop infra is Docker Compose on `local-testing-version`, not Terraform.

@@ -1,0 +1,87 @@
+{
+  "expectation_suite_name": "dim_customer",
+  "meta": {
+    "description": "Customer dimension (Type 1 + RFM + consent enrichment). Closes P2.8 from docs/runbooks/dw-checklist-audit.md. Grain: one row per customer_key (resolved by int_identity_resolution). loyalty_tier and rfm_segment values must match the dim_customer.yml dbt accepted_values tests. churn_risk_score is in [0, 1]. marketing_consent / analytics_consent gate downstream PII access."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "customer_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_unique",
+      "kwargs": { "column": "customer_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "loyalty_tier" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "rfm_segment" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "churn_risk_score" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "total_lifetime_value" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "marketing_consent" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "analytics_consent" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "last_updated_at" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "loyalty_tier",
+        "value_set": ["platinum", "gold", "standard"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "rfm_segment",
+        "value_set": ["champions", "loyal", "at_risk", "general"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "marketing_consent",
+        "value_set": [true, false]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "analytics_consent",
+        "value_set": [true, false]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "churn_risk_score",
+        "min_value": 0.0,
+        "max_value": 1.0
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "total_lifetime_value",
+        "min_value": 0
+      }
+    }
+  ]
+}

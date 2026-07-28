@@ -1,0 +1,96 @@
+version: 2
+
+models:
+  - name: int_identity_edges
+    columns:
+      - name: src
+        tests:
+          - not_null
+      - name: dst
+        tests:
+          - not_null
+      - name: edge_type
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['session_link', 'loyalty_value_match']
+
+  - name: int_identity_public_devices
+    columns:
+      - name: client_id
+        tests:
+          - not_null_unique
+      - name: distinct_customer_count
+        tests:
+          - not_null
+
+  - name: int_identity_components
+    columns:
+      - name: node
+        tests:
+          - not_null_unique
+      - name: identifier_type
+        tests:
+          - not_null
+          - identifier_type_accepted_values
+      - name: identifier_value
+        tests:
+          - not_null
+      - name: customer_key
+        tests:
+          - not_null
+
+  - name: int_identity_resolution
+    columns:
+      - name: identity_key
+        tests:
+          - not_null_unique
+      - name: customer_key
+        tests:
+          - not_null
+      - name: identifier_type
+        tests:
+          - not_null
+          - identifier_type_accepted_values
+      - name: identifier_value
+        tests:
+          - not_null
+      - name: resolution_method
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - component_anchor
+                - loyalty_member
+                - loyalty_match
+                - customer_id_standalone
+                - session_linked
+                - device_only
+                - public_device_excluded
+                - unknown
+
+  - name: int_session_reconstruction
+    columns:
+      - name: session_id
+        tests:
+          - not_null_unique
+      - name: session_date_key
+        tests:
+          - not_null
+
+  - name: int_customer_consent
+    columns:
+      - name: customer_key
+        tests:
+          - not_null_unique
+
+  - name: int_rfm_scoring
+    description: >
+      Omnichannel RFM by customer_key: POS via loyalty_id plus converted
+      clickstream sessions (conversion_value / order_id).
+    columns:
+      - name: customer_key
+        description: "Resolved customer key."
+        tests: [not_null_unique]
+      - name: rfm_segment
+        description: "Derived RFM segment."

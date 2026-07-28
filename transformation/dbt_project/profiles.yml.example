@@ -1,0 +1,27 @@
+global_retail_analytics:
+  target: dev
+  outputs:
+    # Dev/prod: Redshift Serverless from the platform stack (infra/terraform/modules/redshift).
+    # Bronze is a Spectrum external schema (transformation/redshift/spectrum/bronze_external_tables.sql).
+    dev:
+      type: redshift
+      host: "{{ env_var('RS_HOST') }}"            # workgroup endpoint address
+      port: "{{ env_var('RS_PORT', '5439') | int }}"
+      user: "{{ env_var('RS_USER', 'rs_admin') }}"
+      password: "{{ env_var('RS_PASSWORD') }}"
+      dbname: "{{ env_var('RS_DATABASE', 'dev') }}"
+      schema: "{{ env_var('RS_SCHEMA', 'staging') }}"
+      sslmode: require
+      threads: 4
+
+    # Prod: same platform stack, prod tfvars.
+    prod:
+      type: redshift
+      host: "{{ env_var('RS_HOST') }}"
+      port: "{{ env_var('RS_PORT', '5439') | int }}"
+      user: "{{ env_var('RS_USER') }}"
+      password: "{{ env_var('RS_PASSWORD') }}"
+      dbname: "{{ env_var('RS_DATABASE', 'prod') }}"
+      schema: "{{ env_var('RS_SCHEMA', 'staging') }}"
+      sslmode: require
+      threads: 8

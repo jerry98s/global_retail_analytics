@@ -1,0 +1,32 @@
+---
+description: Airflow DAG conventions for batch, streaming, quality, maintenance
+globs: "orchestration/**"
+alwaysApply: false
+---
+
+# Airflow
+
+DAGs: `orchestration/airflow/dags/`. Plugins: `orchestration/airflow/plugins/`.
+
+## Current DAGs
+
+| DAG | Owns |
+|---|---|
+| `warehouse_daily_batch_pipeline` | POS Parquet, staging/intermediate, **`marts.finance`**, ANALYZE, GE |
+| `marketing_hourly_customer_360_pipeline` | staging/intermediate + **`marts.marketing`** (identity, sessions, RFM, C360) |
+| `streaming_manual_flink_jobs` | EMR Flink submit + duplicate-run guard |
+| `catalog_bihourly_product_scd2_refresh` | `dim_product` SCD2 |
+| `quality_hourly_ge_checkpoint` | Hourly GE `gold_layer_daily` |
+| `lakehouse_daily_iceberg_maintenance` | Iceberg compaction / snapshot expiry |
+
+Do not dual-build `marts.marketing` on the daily warehouse DAG.
+
+## Conventions
+
+- Filename/DAG ID: `{domain}_{frequency}_{description}`.
+- `doc_md`, `catchup=False`, retries, `email_on_failure=True`.
+- Infra endpoints via Airflow Variables — no hardcoded ARNs/passwords/endpoints.
+- Prefer task factories (`_dbt_step`, `_flink_step`).
+- Idempotency: no duplicate Flink submits; partition-safe POS; dbt `delete+insert` uniqueness.
+
+Reference: `docs/runbooks/dag-review-checklist.md`.

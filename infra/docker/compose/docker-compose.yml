@@ -1,0 +1,123 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Two listeners: one for clients on the host (localhost:9092) and one
+      # for clients inside the docker network (kafka:29092). Flink containers
+      # use the in-network listener.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      # Use 127.0.0.1 (not "localhost") so Windows + Docker clients stay on
+      # IPv4; "localhost" often resolves to ::1 first and the advertised
+      # host metadata then fails ApiVersion with librdkafka.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://127.0.0.1:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092" ]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    # Host 18081 avoids clashing with other tools (IDE, other stacks) that bind 8081.
+    ports:
+      - "18081:8081"
+
+  flink-jobmanager:
+    build: ../flink
+    image: retail-analytics/flink:1.17.1
+    # Local named volumes are root-owned on first mount; root avoids checkpoint
+    # and Iceberg warehouse permission failures during laptop smoke tests.
+    user: "0:0"
+    command:
+      - bash
+      - -lc
+      - |
+        mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chmod -R 777 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        exec /docker-entrypoint.sh jobmanager
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8082:8081"   # Flink Web UI; schema registry UI: localhost:18081
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: 0.0.0.0
+        rest.bind-address: 0.0.0.0
+        state.backend: rocksdb
+        execution.checkpointing.interval: 10000
+        execution.checkpointing.mode: EXACTLY_ONCE
+        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink-checkpoints}
+        state.savepoints.dir: ${FLINK_SAVEPOINT_DIR:-file:///tmp/flink-savepoints}
+        flink.hadoop.fs.s3a.endpoint: ${S3A_ENDPOINT:-s3.ap-southeast-1.amazonaws.com}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      ICEBERG_BRONZE_WAREHOUSE: ${ICEBERG_BRONZE_WAREHOUSE:-file:///tmp/iceberg}
+      ICEBERG_SILVER_WAREHOUSE: ${ICEBERG_SILVER_WAREHOUSE:-file:///tmp/iceberg}
+    volumes:
+      - ../../../streaming:/opt/streaming
+      - flink-iceberg:/tmp/iceberg
+      - flink-checkpoints:/tmp/flink-checkpoints
+
+  flink-taskmanager:
+    build: ../flink
+    image: retail-analytics/flink:1.17.1
+    # Match JobManager user so both processes can write checkpoint/savepoint
+    # and Iceberg files into the shared local Docker volumes.
+    user: "0:0"
+    command:
+      - bash
+      - -lc
+      - |
+        mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chmod -R 777 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        exec /docker-entrypoint.sh taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        state.backend: rocksdb
+        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink-checkpoints}
+        state.savepoints.dir: ${FLINK_SAVEPOINT_DIR:-file:///tmp/flink-savepoints}
+        flink.hadoop.fs.s3a.endpoint: ${S3A_ENDPOINT:-s3.ap-southeast-1.amazonaws.com}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      ICEBERG_BRONZE_WAREHOUSE: ${ICEBERG_BRONZE_WAREHOUSE:-file:///tmp/iceberg}
+      ICEBERG_SILVER_WAREHOUSE: ${ICEBERG_SILVER_WAREHOUSE:-file:///tmp/iceberg}
+    volumes:
+      - ../../../streaming:/opt/streaming
+      - flink-iceberg:/tmp/iceberg
+      - flink-checkpoints:/tmp/flink-checkpoints
+
+volumes:
+  flink-iceberg:
+  flink-checkpoints:

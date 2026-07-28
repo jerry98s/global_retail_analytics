@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# dbt
+transformation/dbt_project/target/
+transformation/dbt_project/logs/
+transformation/dbt_project/dbt_packages/
+transformation/dbt_project/profiles.yml
+transformation/dbt_project/.user.yml
+transformation/dbt_project/*.duckdb
+transformation/dbt_project/*.duckdb.wal
+
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+# Platform stack tfvars contain account IDs / Redshift secrets — keep blocked.
+# (Only the *.example templates are committed.)
+# Backend configs embed the state bucket name, which is account-specific.
+*.backend.hcl
+!*.backend.hcl.example
+crash.log
+crash.*.log
+
+# Credentials
+.env
+*.env
+!infra/docker/flink/versions.env
+secrets/
+*_credentials.json
+
+# Local deploy helper scratch files
+scripts/.ssm_*
+target/
+# Local Iceberg warehouse + scratch (keep directory placeholder)
+.local/**
+!.local/iceberg/
+!.local/iceberg/.gitkeep
+
+# Great Expectations
+quality/great_expectations/uncommitted/
+quality/great_expectations/**/.ge_store_backend_id
+quality/gx/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Notebooks checkpoints
+notebooks/.ipynb_checkpoints/

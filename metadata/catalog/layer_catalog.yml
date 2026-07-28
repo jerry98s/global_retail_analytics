@@ -1,0 +1,153 @@
+# Governed object registry for metadata.meta.layer_catalog.
+# Collector upserts by object_fqn (idempotent).
+
+objects:
+  - object_fqn: bronze.clickstream_events
+    object_type: external
+    platform_layer: bronze
+    domain: digital
+    owner: data-platform
+    grain: one row per clickstream event
+    timestamp_column: event_time
+    freshness_sla_minutes: 60
+    is_active: true
+
+  - object_fqn: bronze.inventory_events
+    object_type: external
+    platform_layer: bronze
+    domain: supply
+    owner: data-platform
+    grain: one row per inventory event
+    timestamp_column: event_time
+    freshness_sla_minutes: 60
+    is_active: true
+
+  - object_fqn: bronze.pos_transactions
+    object_type: external
+    platform_layer: bronze
+    domain: finance
+    owner: data-platform
+    grain: one row per POS line item
+    timestamp_column: transaction_date
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: silver.inventory_hourly
+    object_type: external
+    platform_layer: silver
+    domain: supply
+    owner: data-platform
+    grain: (store_id, product_id, hour_ts)
+    timestamp_column: hour_ts
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: finance.fact_sales
+    object_type: table
+    platform_layer: gold
+    domain: finance
+    owner: analytics-engineering
+    grain: (transaction_id, line_item_number)
+    timestamp_column: date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: finance.fact_inventory_snapshot
+    object_type: table
+    platform_layer: gold
+    domain: supply
+    owner: analytics-engineering
+    grain: (snapshot_date_key, product_key, store_key)
+    timestamp_column: snapshot_date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: marketing.fact_customer_session
+    object_type: table
+    platform_layer: gold
+    domain: marketing
+    owner: analytics-engineering
+    grain: one row per session
+    timestamp_column: session_date_key
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: marketing.dim_product
+    object_type: table
+    platform_layer: gold
+    domain: marketing
+    owner: analytics-engineering
+    grain: SCD2 product version
+    timestamp_column: effective_from
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: finance.dim_store
+    object_type: table
+    platform_layer: gold
+    domain: finance
+    owner: analytics-engineering
+    grain: one row per store
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: finance.dim_date
+    object_type: table
+    platform_layer: gold
+    domain: finance
+    owner: analytics-engineering
+    grain: one row per calendar day
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: marketing.dim_customer
+    object_type: table
+    platform_layer: gold
+    domain: marketing
+    owner: analytics-engineering
+    grain: one row per customer
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: summary.sales_daily_store
+    object_type: table
+    platform_layer: summary
+    domain: finance
+    owner: analytics-engineering
+    grain: (date_key, store_key)
+    timestamp_column: date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: summary.inventory_daily_product_store
+    object_type: table
+    platform_layer: summary
+    domain: supply
+    owner: analytics-engineering
+    grain: (snapshot_date_key, product_key, store_key)
+    timestamp_column: snapshot_date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: summary.sessions_daily_platform
+    object_type: table
+    platform_layer: summary
+    domain: marketing
+    owner: analytics-engineering
+    grain: (session_date_key, platform)
+    timestamp_column: session_date_key
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: serving.customer_360_serving
+    object_type: view
+    platform_layer: serving
+    domain: marketing
+    owner: analytics-engineering
+    grain: one row per customer
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true

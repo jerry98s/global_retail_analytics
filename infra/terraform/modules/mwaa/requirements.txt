@@ -1,0 +1,8 @@
+# MWAA extra Python deps (Airflow core is managed by AWS).
+apache-airflow-providers-amazon==8.24.0
+dbt-redshift==1.8.1
+great-expectations==0.18.21
+redshift-connector==2.1.4
+boto3>=1.34.0
+structlog>=24.1.0
+pyarrow>=18.1.0

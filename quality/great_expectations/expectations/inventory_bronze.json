@@ -1,0 +1,65 @@
+{
+  "expectation_suite_name": "inventory_bronze",
+  "meta": {
+    "description": "Bronze inventory events baseline quality checks. Closes P2.8 from docs/runbooks/dw-checklist-audit.md. Bronze is the raw stream layer written by Flink inventory_bronze_job (Kafka -> schema validate -> dedup -> Iceberg). event_type enum matches streaming/flink_jobs/event_types.py INVENTORY_EVENT_TYPES and the JSON Schema enum in ingestion/schemas/inventory_event.json. Note: post-kappa (ADR-007), no Gold mart reads from bronze.inventory_events — it is audit-only. These expectations still hold because the Flink bronze job validates before insert."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_time" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "store_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "product_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "qty_delta" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_type" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "scanner_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "is_late" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "schema_version" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_match_regex",
+      "kwargs": {
+        "column": "schema_version",
+        "regex": "^\\d+\\.\\d+\\.\\d+$"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "event_type",
+        "value_set": ["sale_deduction", "receipt", "adjustment", "transfer"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "is_late",
+        "value_set": [true, false]
+      }
+    }
+  ]
+}

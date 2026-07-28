@@ -1,0 +1,64 @@
+{
+  "expectation_suite_name": "clickstream_bronze",
+  "meta": {
+    "description": "Bronze clickstream baseline quality checks. Bronze is written by Flink clickstream_bronze_job (Kafka -> schema validate -> business validate -> dedup -> Iceberg). event_type enum matches streaming/flink_jobs/event_types.py CLICKSTREAM_EVENT_TYPES and ingestion/schemas/clickstream_envelope.json."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_time" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "session_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "client_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "platform" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "schema_version" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_match_regex",
+      "kwargs": {
+        "column": "schema_version",
+        "regex": "^\\d+\\.\\d+\\.\\d+$"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "event_type",
+        "value_set": [
+          "page_view",
+          "product_view",
+          "search",
+          "add_to_cart",
+          "remove_from_cart",
+          "checkout_start",
+          "checkout",
+          "login",
+          "logout",
+          "error"
+        ]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "platform",
+        "value_set": ["web", "ios", "android"]
+      }
+    }
+  ]
+}

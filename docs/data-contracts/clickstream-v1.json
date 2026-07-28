@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://retail-platform/schemas/clickstream/v1.2.0",
+  "title": "Clickstream Event Envelope",
+  "version": "1.2.0",
+  "description": "All clickstream events must conform to this envelope. event_type-specific payloads are validated against sub-schemas in properties.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_type",
+    "event_time",
+    "session_id",
+    "client_id",
+    "platform",
+    "app_version",
+    "properties",
+    "schema_version"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Globally unique. Used for deduplication. UUIDv4."
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "page_view",
+        "product_view",
+        "search",
+        "add_to_cart",
+        "remove_from_cart",
+        "checkout_start",
+        "checkout",
+        "login",
+        "logout",
+        "error"
+      ],
+      "description": "Closed enum. Unknown values are rejected to DLQ."
+    },
+    "event_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Client-side timestamp. ISO 8601, UTC required."
+    },
+    "ingest_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "OPTIONAL / not currently enforced. Reserved for server-side Kafka ingest timestamp from a future SDK. Producer sim and Flink bronze do not set or require this field."
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 64,
+      "description": "Resets on 30-min inactivity or app restart."
+    },
+    "client_id": {
+      "type": "string",
+      "description": "Persistent device identifier. Treated as sensitive."
+    },
+    "customer_id": {
+      "type": ["string", "null"],
+      "description": "Authenticated customer ID. NULL for anonymous sessions."
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["web", "ios", "android"]
+    },
+    "app_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "geo": {
+      "type": "object",
+      "description": "OPTIONAL / not currently enforced. Reserved for client geo enrichment. Producer sim and Flink bronze do not set or require this field.",
+      "properties": {
+        "country_code": { "type": "string", "pattern": "^[A-Z]{2}$" },
+        "region": { "type": "string" },
+        "city": { "type": "string" }
+      }
+    },
+    "properties": {
+      "type": "object",
+      "description": "Event-type-specific payload. Validated by sub-schema."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    }
+  },
+  "sla": {
+    "event_time_to_kafka_p99_seconds": 2,
+    "kafka_to_bronze_p99_seconds": 30,
+    "daily_volume_min": 20000000,
+    "daily_volume_max": 200000000,
+    "duplicate_rate_max_pct": 0.1,
+    "schema_conformance_min_pct": 99.5,
+    "checkout_completeness_min_pct": 99.9
+  },
+  "dlq": {
+    "schema_violations_topic": "dlq.clickstream.schema_violations",
+    "business_violations_topic": "dlq.clickstream.business_violations",
+    "retention_days": {
+      "schema_violations": 14,
+      "business_violations": 30
+    }
+  }
+}

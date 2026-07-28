@@ -1,0 +1,39 @@
+---
+description: Flink streaming jobs and local/prod parity
+globs: "streaming/**"
+alwaysApply: false
+---
+
+# Flink Streaming
+
+## Jobs
+
+- `inventory_bronze_job.py`: Kafka → validate/dedup → Iceberg `bronze.inventory_events` + DLQ.
+- `clickstream_bronze_job.py`: Kafka → validate/dedup → Iceberg `bronze.clickstream_events` + DLQs.
+- `inventory_silver_job.py`: Kafka → dedup → watermark → tumble aggregate → `silver.inventory_hourly`.
+- `iceberg_maintenance.py`: batch compaction/snapshot expiry (Airflow-owned).
+
+## Config
+
+- Load YAML via `streaming/flink_jobs/_config.py` (`${VAR:-default}` expansion).
+- `flink_conf.yaml`: topics, groups, parallelism, warehouses.
+- `checkpoints.yaml`: EXACTLY_ONCE, timeouts, externalized checkpoints.
+- `state.yaml`: RocksDB, incremental CP, 7d TTL, source idle timeout.
+- Flat imports; submit with `-pyfs` listing helpers under `streaming/flink_jobs`.
+
+## Production Rules
+
+- Call `apply_state_config(env, t_env, state_cfg)` after creating `t_env`.
+- Kafka source: `enable.auto.commit=false`, `isolation.level=read_committed`,
+  `auto.offset.reset=earliest`, `partition.discovery.interval.ms=300000`.
+- Cloud: `scan.startup.mode=latest-offset`; match parallelism to partitions via env.
+- Silver default window: `INTERVAL '1' HOUR`. Local compose may set
+  `INVENTORY_SILVER_WINDOW=INTERVAL '1' MINUTE` for short sims.
+
+## Local
+
+- Warehouse bind-mount: repo `.local/iceberg` → `/tmp/iceberg` (not a named volume alone).
+- Start Flink **before** simulate (`run_local_stack.ps1 -Task all` order).
+- Flink UI: `http://localhost:8082`.
+
+Reference: `docs/runbooks/flink-operations.md`.

@@ -1,0 +1,27 @@
+{
+  "expectation_suite_name": "dim_product_scd2",
+  "meta": {
+    "description": "Column-level checks for dim_product SCD2 table."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "product_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "product_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "effective_from" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "is_current",
+        "value_set": [true, false]
+      }
+    }
+  ]
+}

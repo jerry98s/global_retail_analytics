@@ -1,0 +1,48 @@
+---
+description: Global Retail Analytics project context and non-negotiables
+alwaysApply: true
+---
+
+# Project Context
+
+Retail analytics platform: POS batch + inventory/clickstream streams → Iceberg
+Bronze/Silver → Redshift Gold via dbt; Airflow/MWAA; local Docker/DuckDB on a
+dedicated branch.
+
+## Branches (do not mix)
+
+| Branch | Role |
+|---|---|
+| `main` | Fully cloud-deployed path (MSK, EMR, Redshift, MWAA). |
+| `local-testing-version` | Local Docker/Flink/DuckDB testing only. |
+
+Do not merge local-only compose/bind-mount/venv wiring into `main`. Cherry-pick
+shared cloud logic (dbt, Flink jobs, DAGs, contracts) only when asked.
+
+## Source of Truth
+
+`ARCHITECTURE.md`, `README.md`, `docs/ENVIRONMENTS.md`, `docs/decisions/ADR-*.md`,
+`docs/data-model/`, `docs/runbooks/`.
+
+## Stack (pinned in repo)
+
+- Python ≥3.10 (local `.venv` via `uv sync --group dev`); Flink image Python 3.10.
+- Flink **1.17.1** (EMR 6.15.0 parity); Iceberg Bronze/Silver; dbt Core **1.11.***; Terraform **1.6+**.
+- Kafka topics: `inventory.events.v1`, `clickstream.events.v1`, `pos.transactions.v1` + DLQs.
+- Flink jobs: `inventory_bronze_job`, `clickstream_bronze_job`, `inventory_silver_job`, `iceberg_maintenance`.
+- Terraform: `bootstrap` + `platform`; dev/prod share code, differ by `envs/*`.
+
+## Architecture Constraints
+
+- Iceberg Bronze/Silver on S3; Redshift Gold + serving views.
+- Kimball facts/dims; surrogate int keys; SCD2 **only** on `dim_product`.
+- No fact-to-fact joins (drill-across); gate PII with `marketing_consent`.
+- Contract changes bump `schema_version`; POS lands Parquet to Bronze (no CSV staging).
+
+## Operating Rules
+
+- Cloud: `scripts/cloud/run_terraform.ps1`, `deploy_platform.ps1` — never raw `terraform` in a stack dir.
+- Local: `scripts/local/run_local_stack.ps1` (uses `.venv`). Compose under `infra/docker/compose/`.
+- Default local dbt `-DbtSource iceberg`: Flink Parquet in `.local/iceberg` + POS `--output-dir`; seed only `dim_date`/`dim_store`. Use `-DbtSource seeds` for CSV identity fixtures.
+- Kafka host: `127.0.0.1:9092`; Flink UI: `http://localhost:8082`. Start **Flink before simulate** (`latest-offset`).
+- Prefer runbooks; complete files only; no secrets/placeholders/TODOs in commits.

@@ -1,0 +1,11 @@
+checkpoint_interval_ms: 10000
+# F-STATE from the Flink production checklist (2026-07-05): bumped from
+# 5000 to 30000 to give the previous checkpoint time to complete before
+# the next one triggers. Without this, slow checkpoints pile up and
+# cause backpressure — see docs/runbooks/flink-operations.md § 2.4.
+min_pause_between_checkpoints_ms: 30000
+checkpoint_timeout_ms: 600000
+max_concurrent_checkpoints: 1
+tolerable_checkpoint_failures: 3
+externalized_checkpoint_cleanup: RETAIN_ON_CANCELLATION
+checkpointing_mode: EXACTLY_ONCE

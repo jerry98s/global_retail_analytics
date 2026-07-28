@@ -1,0 +1,4 @@
+date_key,full_date,day_of_week,month_number,quarter,is_weekend,is_public_holiday
+20260701,2026-07-01,3,7,3,false,false
+20260702,2026-07-02,4,7,3,false,false
+20260703,2026-07-03,5,7,3,false,false

@@ -1,0 +1,133 @@
+version: 2
+
+models:
+  - name: sales_daily_store
+    description: >
+      Daily store sales summary from fact_sales only.
+      Grain: (date_key, store_key). Voided lines excluded from measures.
+    columns:
+      - name: date_key
+        description: Calendar date key (YYYYMMDD).
+        tests:
+          - not_null
+          - relationships:
+              to: source('gold_finance', 'dim_date')
+              field: date_key
+      - name: store_key
+        description: Store surrogate key.
+        tests:
+          - not_null
+          - relationships:
+              to: source('gold_finance', 'dim_store')
+              field: store_key
+      - name: transaction_count
+        tests:
+          - not_null
+          - non_negative
+      - name: units_sold
+        tests:
+          - not_null
+          - non_negative
+      - name: gross_revenue
+        tests: [not_null]
+      - name: net_revenue
+        tests: [not_null]
+      - name: gross_margin
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - date_key
+            - store_key
+
+  - name: inventory_daily_product_store
+    description: >
+      Daily product/store inventory summary from fact_inventory_snapshot only.
+      Grain: (snapshot_date_key, product_key, store_key).
+    columns:
+      - name: snapshot_date_key
+        tests:
+          - not_null
+          - relationships:
+              to: source('gold_finance', 'dim_date')
+              field: date_key
+      - name: product_key
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_product')
+              field: product_key
+      - name: store_key
+        tests:
+          - not_null
+          - relationships:
+              to: source('gold_finance', 'dim_store')
+              field: store_key
+      - name: ending_on_hand_qty
+        tests: [not_null]
+      - name: ending_available_qty
+        tests:
+          - not_null
+          - non_negative
+      - name: minimum_available_qty
+        tests:
+          - not_null
+          - non_negative
+      - name: stockout_hour_count
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 24
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - snapshot_date_key
+            - product_key
+            - store_key
+
+  - name: sessions_daily_platform
+    description: >
+      Daily platform session summary from fact_customer_session only.
+      Grain: (session_date_key, platform).
+    columns:
+      - name: session_date_key
+        tests:
+          - not_null
+          - relationships:
+              to: source('gold_finance', 'dim_date')
+              field: date_key
+      - name: platform
+        tests: [not_null]
+      - name: session_count
+        tests:
+          - not_null
+          - non_negative
+      - name: identified_customer_count
+        tests:
+          - not_null
+          - non_negative
+      - name: converted_sessions
+        tests:
+          - not_null
+          - non_negative
+      - name: conversion_rate
+        description: converted_sessions / session_count (NULL when no sessions).
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 1
+              inclusive: true
+      - name: product_view_count
+        tests:
+          - not_null
+          - non_negative
+      - name: add_to_cart_count
+        tests:
+          - not_null
+          - non_negative
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - session_date_key
+            - platform
