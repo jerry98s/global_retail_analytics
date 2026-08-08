@@ -29,7 +29,6 @@ from decimal import Decimal
 from typing import Optional
 from urllib.parse import urlparse
 
-import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import structlog
@@ -165,6 +164,8 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def upload_parquet(output_s3: str, txn_date: str, table: pa.Table) -> str:
+    import boto3  # lazy: only the S3 path needs the AWS SDK; local Parquet writes don't
+
     bucket, prefix = parse_s3_uri(output_s3)
     key = f"{prefix}data/dt={txn_date}/part-00000.parquet"
     buffer = io.BytesIO()

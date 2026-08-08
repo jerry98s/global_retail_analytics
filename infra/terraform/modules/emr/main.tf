@@ -48,6 +48,30 @@ variable "checkpoints_bucket" {
   type        = string
 }
 
+variable "master_instance_type" {
+  description = "EMR master node instance type."
+  type        = string
+  default     = "m5.xlarge"
+}
+
+variable "core_instance_type" {
+  description = "EMR core node instance type."
+  type        = string
+  default     = "m5.2xlarge"
+}
+
+variable "core_instance_count" {
+  description = "Number of EMR core nodes."
+  type        = number
+  default     = 2
+}
+
+variable "core_bid_price" {
+  description = "Spot bid price for EMR core nodes."
+  type        = string
+  default     = "0.28"
+}
+
 locals {
   cluster_name = "${var.project}-${var.environment}-flink-emr"
   tags = {
@@ -87,16 +111,16 @@ resource "aws_emr_cluster" "this" {
   }
 
   master_instance_group {
-    instance_type  = "m5.xlarge"
+    instance_type  = var.master_instance_type
     instance_count = 1
     name           = "master-nodes"
   }
 
   core_instance_group {
     name           = "core-nodes-spot"
-    instance_type  = "m5.2xlarge"
-    instance_count = 2
-    bid_price      = "0.28"
+    instance_type  = var.core_instance_type
+    instance_count = var.core_instance_count
+    bid_price      = var.core_bid_price
   }
 
   configurations_json = jsonencode([
