@@ -383,9 +383,10 @@ try {
             }
         }
         "simulate" {
-            Invoke-Step "Running POS producer (Kafka only; POS bronze uses pos-parquet for dbt)" {
-                Invoke-ProjectPython -m ingestion.kafka.producer_sim.pos_producer
-            }
+            # POS is batch, not streamed: the dbt task's Invoke-PosParquetLocal
+            # writes Parquet to .local/iceberg/bronze/pos_transactions (the same
+            # mechanism as cloud --output-s3). No Flink job consumes a POS Kafka
+            # topic, so a POS stream producer here would emit into a void.
             Invoke-Step "Running inventory producer" {
                 # 90s spans >1 local silver window; with 5s local watermark delay
                 # at least one tumble can close before the post-simulate wait.
