@@ -156,8 +156,9 @@ DuckDB — no Redshift credentials required.
 | `streaming/` | Flink jobs + YAML config |
 | `transformation/` | dbt project + Redshift DDL / Spectrum / serving views |
 | `orchestration/` | Airflow DAGs + plugins |
-| `quality/` | Great Expectations suites |
+| `quality/` | Great Expectations suites + pytest DQ integration tests |
 | `tests/` | Offline unit + DuckDB integration tests |
+| `metadata/` | Governed object + metric catalog (YAML) for `metadata.meta.*` |
 | `infra/` | Docker Compose, Flink image, Terraform, EMR bootstrap |
 | `scripts/local/` | Local stack runner + Iceberg→DuckDB loader |
 | `scripts/cloud/` | Terraform wrapper, deploy, Redshift bootstrap, MSK producers |
@@ -247,7 +248,7 @@ credentials, account IDs, or VPC IDs.
 
 | Topic | Where |
 |---|---|
-| Iceberg Parquet queries | [local-data-queries.md](./docs/runbooks/local-data-queries.md), notebook `01_data_walkthrough` |
+| Iceberg Parquet queries | [local-data-queries.md](./docs/runbooks/local-data-queries.md), notebook `01_data_walkthrough` (on `local-testing-version`) |
 | Identity scenarios (seeds) | `.\scripts\local\run_local_stack.ps1 -Task dbt -DbtSource seeds` then `python tests/integration/verify_local_identity.py` |
 | Flink ops | [flink-operations.md](./docs/runbooks/flink-operations.md) |
 | Evidence / benchmarks | [docs/evidence/README.md](./docs/evidence/README.md) |

@@ -28,9 +28,9 @@ shared cloud logic (dbt, Flink jobs, DAGs, contracts) only when asked.
 
 - Python ≥3.10 (local `.venv` via `uv sync --group dev`); Flink image Python 3.10.
 - Flink **1.17.1** (EMR 6.15.0 parity); Iceberg Bronze/Silver; dbt Core **1.11.***; Terraform **1.6+**.
-- Kafka topics: `inventory.events.v1`, `clickstream.events.v1`, `pos.transactions.v1` + DLQs.
-- Flink jobs: `inventory_bronze_job`, `clickstream_bronze_job`, `inventory_silver_job`, `iceberg_maintenance`.
-- Terraform: `bootstrap` + `platform`; dev/prod share code, differ by `envs/*`.
+- Kafka topics: `inventory.events.v1`, `clickstream.events.v1` + DLQs. POS is **batch Parquet** → S3 Bronze (no POS Kafka topic).
+- Flink jobs: `inventory_bronze_job`, `clickstream_bronze_job`, `inventory_silver_job`, `iceberg_maintenance` (Airflow-owned batch maintenance).
+- Terraform: `bootstrap` + `platform`; dev/prod share code, differ by `envs/*`. EMR sizing is parameterized (`emr_*` vars) for low-cost dev.
 
 ## Architecture Constraints
 
@@ -41,7 +41,8 @@ shared cloud logic (dbt, Flink jobs, DAGs, contracts) only when asked.
 
 ## Operating Rules
 
-- Cloud: `scripts/cloud/run_terraform.ps1`, `deploy_platform.ps1` — never raw `terraform` in a stack dir.
+- Cloud: `scripts/cloud/run_cloud_stack.ps1` (wrapper) → `run_terraform.ps1`, `deploy_platform.ps1` — never raw `terraform` in a stack dir.
+- Cloud E2E at minimal cost: `docs/runbooks/dev-cloud-test-run.md` (MWAA/dashboard off, laptop-driven dbt/GE, destroy checklist).
 - Local: `scripts/local/run_local_stack.ps1` (uses `.venv`). Compose under `infra/docker/compose/`.
 - Default local dbt `-DbtSource iceberg`: Flink Parquet in `.local/iceberg` + POS `--output-dir`; seed only `dim_date`/`dim_store`. Use `-DbtSource seeds` for CSV identity fixtures.
 - Kafka host: `127.0.0.1:9092`; Flink UI: `http://localhost:8082`. Start **Flink before simulate** (`latest-offset`).

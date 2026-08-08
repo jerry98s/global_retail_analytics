@@ -19,11 +19,13 @@ alwaysApply: false
 - Reliability defaults: `acks=all`, idempotence, retries, delivery timeout, batching, `lz4`.
 - Align payloads with `ingestion/schemas/` and `ingestion/kafka/topics.py`.
 - Entity IDs from `ingestion/kafka/sim_entities.py` (`STORE-*`, `PROD-*`, `LOYAL-*`).
+- Only `clickstream_producer.py` and `inventory_producer.py` are active; POS is batch (`ingestion/batch/generate_pos_parquet.py`).
 
-## Local Helpers
+## Local Helpers (`local-testing-version` branch)
 
-- Iceberg → DuckDB: `scripts/local/load_iceberg_to_duckdb.py`.
+- Iceberg → DuckDB: `scripts/local/load_iceberg_to_duckdb.py` (local branch only).
 - POS local Parquet: `python -m ingestion.batch.generate_pos_parquet --output-dir ...`.
+- POS cloud upload: `generate_pos_parquet.py --output-s3 s3://<bronze>/iceberg/bronze/pos_transactions/` (boto3 lazy-imported).
 - Unit tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/ -q`.
 
 ## Tests
