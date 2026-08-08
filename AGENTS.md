@@ -82,6 +82,12 @@ uv sync --group dev
 
 Never run raw Terraform from a stack directory.
 
+For a guided lowest-cost cloud end-to-end run (MWAA/dashboard off, laptop-driven
+dbt/GE, evidence capture, destroy checklist), follow
+`docs/runbooks/dev-cloud-test-run.md`. EMR sizing is parameterized via
+`emr_master_instance_type` / `emr_core_instance_type` / `emr_core_instance_count`
+/ `emr_core_bid_price` in tfvars (dev.tfvars.example shows the minimal shape).
+
 ## Current Airflow DAGs
 
 - `warehouse_daily_batch_pipeline` — POS + **`marts.finance`**
@@ -119,8 +125,9 @@ Never run raw Terraform from a stack directory.
 - Design: `ARCHITECTURE.md`, `docs/decisions/ADR-*.md`, `docs/data-model/`
 - Environments: `docs/ENVIRONMENTS.md`, `docs/REDSHIFT.md`
 - Local Iceberg queries: `docs/runbooks/local-data-queries.md`
+- Cloud test run (lowest cost): `docs/runbooks/dev-cloud-test-run.md`
 - Data contracts: `ingestion/schemas/`
 - Operations: `docs/runbooks/`
 - Cloud: `scripts/cloud/run_cloud_stack.ps1` (wrapper), `scripts/cloud/run_terraform.ps1`, `scripts/cloud/deploy_platform.ps1`, `scripts/cloud/bootstrap_redshift.ps1`, `scripts/cloud/run_msk_producers.ps1`
-- Local: `scripts/local/run_local_stack.ps1` (wrapper), `scripts/local/load_iceberg_to_duckdb.py`, `scripts/local/run_ge_local.py`, `scripts/common/metadata_observer.py`
+- Local (`local-testing-version` only): `scripts/local/run_local_stack.ps1` (wrapper), `scripts/local/load_iceberg_to_duckdb.py`, `scripts/local/run_ge_local.py`; shared: `scripts/common/metadata_observer.py`
 - Cursor: `.cursor/README.md`, `.cursor/rules/*.mdc`
