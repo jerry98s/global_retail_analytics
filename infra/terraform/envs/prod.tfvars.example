@@ -38,6 +38,16 @@ dashboard_image_tag      = "latest"
 # CIDRs must be inside redshift_allowed_cidrs so the connector can reach 5439.
 dashboard_vpc_connector_subnet_ids = []
 
+# Dashboard login (Cognito + ALB in front of a private App Runner). Without
+# this the dashboard URL is public to anyone who finds it. Needs a domain you
+# control and an ACM cert for it in this region. See dashboard/README.md.
+# dashboard_enable_auth         = true
+# dashboard_auth_domain_name    = "dashboard.example.com"
+# dashboard_acm_certificate_arn = "arn:aws:acm:ap-southeast-1:ACCOUNT_ID:certificate/REPLACE_ME"
+# dashboard_alb_subnet_ids      = ["subnet-REPLACE_ME_PUBLIC_A", "subnet-REPLACE_ME_PUBLIC_B"] # public, IGW route, >= 2 AZs
+# dashboard_vpce_subnet_ids     = ["subnet-REPLACE_ME_PRIVATE_A", "subnet-REPLACE_ME_PRIVATE_B"]
+# dashboard_auth_allowed_cidrs  = ["0.0.0.0/0"] # tighten to office/VPN ranges if internal-only
+
 # Airflow MWAA (optional). After apply: .\scripts\cloud\deploy_platform.ps1 -Env prod -Action mwaa-sync
 enable_mwaa                = false
 mwaa_environment_class     = "mw1.medium"

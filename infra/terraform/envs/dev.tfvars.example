@@ -16,6 +16,12 @@ msk_security_group_ids = ["sg-REPLACE_ME_MSK"]
 emr_service_role_arn         = "arn:aws:iam::ACCOUNT_ID:role/EMR_DefaultRole"
 emr_ec2_instance_profile_arn = "arn:aws:iam::ACCOUNT_ID:instance-profile/EMR_EC2_DefaultRole"
 
+# Smallest EMR shape for a cost-focused dev run (defaults in variables.tf match prod).
+emr_master_instance_type = "m5.large"
+emr_core_instance_type   = "m5.large"
+emr_core_instance_count  = 1
+emr_core_bid_price       = "0.05"
+
 # Redshift Serverless (dev sizing — smaller than prod).
 redshift_subnet_ids = ["subnet-REPLACE_ME_AZ_A", "subnet-REPLACE_ME_AZ_B", "subnet-REPLACE_ME_AZ_C"]
 # WARNING: dev is publicly_accessible so a laptop can reach it over the internet.
@@ -34,6 +40,9 @@ enable_dashboard         = false
 dashboard_create_service = false
 dashboard_image_tag      = "latest"
 dashboard_vpc_connector_subnet_ids = []
+# Without dashboard_enable_auth the dashboard URL is public to anyone who finds
+# it. For a demo left running, turn on the Cognito + ALB front door — see the
+# commented dashboard_auth_* block in prod.tfvars.example and dashboard/README.md.
 
 # Airflow MWAA (optional — ~$300/mo for mw1.small). Sync DAGs after apply:
 #   .\scripts\cloud\deploy_platform.ps1 -Env dev -Action mwaa-sync
