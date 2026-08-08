@@ -1,6 +1,14 @@
 global_retail_analytics:
   target: dev
   outputs:
+    # Local laptop simulation: DuckDB file. No Redshift/S3 required.
+    # Run: dbt run --target local --profiles-dir transformation/dbt_project
+    # Seeds under seeds/bronze/ seed the bronze sources directly.
+    local:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', 'local_retail.duckdb') }}"
+      threads: 4
+
     # Dev/prod: Redshift Serverless from the platform stack (infra/terraform/modules/redshift).
     # Bronze is a Spectrum external schema (transformation/redshift/spectrum/bronze_external_tables.sql).
     dev:

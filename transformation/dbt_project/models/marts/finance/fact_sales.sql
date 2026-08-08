@@ -30,13 +30,16 @@ with base as (
     from {{ source('bronze', 'pos_transactions') }}
     {% if is_incremental() %}
       where cast(transaction_date as date) >= (
-          select coalesce(max(to_date(cast(date_key as varchar), 'YYYYMMDD')), cast('1970-01-01' as date))
+          select coalesce(
+              max({{ date_from_date_key('date_key') }}),
+              cast('1970-01-01' as date)
+          )
           from {{ this }}
       )
     {% endif %}
 )
 select
-    cast(to_char(cast(b.transaction_date as date), 'YYYYMMDD') as integer) as date_key,
+    {{ date_key_from_date('b.transaction_date') }} as date_key,
     p.product_key,
     s.store_key,
     i.customer_key,

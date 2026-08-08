@@ -3,7 +3,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, local-testing-version]
   workflow_dispatch:
 
 permissions:
@@ -69,7 +69,12 @@ jobs:
           python-version: "3.11"
 
       - name: pytest unit suite
-        run: pip install pytest==8.4.1 && pytest tests/unit/ -v --tb=short -m unit
+        # pyyaml: test_metadata_observer imports yaml to parse metadata/catalog.
+        # duckdb: the metadata-writer tests exercise real DuckDB writes (embedded,
+        # no creds). Everything else third-party is stubbed by tests/unit/conftest.py.
+        # pyarrow: local-testing-version bridge tests import generate_pos_parquet
+        # (module-level pyarrow import) during collection, even when deselected.
+        run: pip install pytest==8.4.1 pyyaml==6.0.2 "duckdb>=1.5,<2.0" "pyarrow>=15,<23" && pytest tests/unit/ -v --tb=short -m unit
 
   dbt-duckdb:
     name: dbt identity chain on DuckDB (no cloud creds)

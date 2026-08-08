@@ -11,21 +11,29 @@ Environment: Windows, Python 3.11, local project virtual environment.
 |---|---|---|
 | 2026-07-08 | `python -m pytest tests/unit -q -p no:cacheprovider` | 211 passed, 2 skipped in 1.36s |
 | 2026-07-08 | `python -m ruff check ingestion streaming scripts quality orchestration tests` | Passed |
+| 2026-08-01 | `python -m pytest tests/unit -q` | 264 passed in 3.15s |
+| 2026-08-01 | Full local E2E (`run_local_stack.ps1 -Task all`, fresh volumes) | 90,000 clickstream events emitted → 90,000 rows / 90,000 unique `event_id` in Iceberg Bronze; 9,000 inventory events → 9,012 rows (injected retry-duplicates only); all 3 DLQs empty; 1,480 POS lines → 1,480 `fact_sales` |
+| 2026-08-01 | `dbt run --target local` | 22/22 PASS |
+| 2026-08-01 | `dbt test --target local` | 134/134 PASS |
+| 2026-08-01 | Great Expectations `gold_layer_local` | 11/11 suites successful |
+| 2026-08-01 | Metadata audit (`local_metadata.duckdb`) | `pipeline_run` SUCCESS for dbt + quality; all DQ checks `pass` |
 
 Re-run these commands after any material change and update the table only from
 captured output.
 
 ## End-to-end acceptance checklist
 
-Before labelling the local platform “verified end to end,” capture evidence for:
+Status from the 2026-08-01 run:
 
-- Kafka topics created and producers completing without delivery errors.
-- All submitted Flink jobs in `RUNNING` state.
-- At least two successful Flink checkpoints per streaming job.
-- Iceberg Bronze and Silver tables containing rows.
-- dbt local run and tests completing successfully.
-- Dashboard loading clickstream and inventory data.
-- One deliberately invalid event appearing in the correct DLQ.
+- [x] Kafka topics created and producers completing without delivery errors.
+- [x] All submitted Flink jobs in `RUNNING` state.
+- [x] At least two successful Flink checkpoints per streaming job.
+- [x] Iceberg Bronze and Silver tables containing rows.
+- [x] dbt local run and tests completing successfully.
+- [x] Dashboard loading clickstream and inventory data.
+- [ ] One deliberately invalid event appearing in the correct DLQ — the
+      2026-08-01 run produced no poison events, so DLQs were legitimately
+      empty; DLQ routing is covered offline by unit tests instead.
 
 ## Throughput benchmark protocol
 
@@ -53,13 +61,17 @@ Suggested protocol:
 
 ## Visual-proof slots
 
-Store final captures under `docs/evidence/screenshots/` using these names:
+Captured 2026-08-01 from the local E2E run above, under
+`docs/evidence/screenshots/`:
 
-- `01-dashboard-overview.png` — populated Streamlit sales/inventory/customer view.
-- `02-flink-checkpoints.png` — running jobs with successful checkpoints.
-- `03-iceberg-query.png` — Bronze/Silver query output and row counts.
-- `04-dbt-lineage.png` — dbt DAG for the identity or finance chain.
-- `05-ci-green.png` — successful CI jobs for the reviewed commit.
+- `01-dashboard-overview.png` — Streamlit local mode: 90,000 clickstream
+  events loaded from Iceberg Bronze Parquet.
+- `02-flink-checkpoints.png` — `clickstream_bronze_job` RUNNING with completed
+  checkpoint history.
+- `03-iceberg-query.png` — DuckDB queries over Bronze/Silver Parquet: landed
+  vs unique counts, event-type breakdown, silver aggregates.
+- `04-dbt-lineage.png` — dbt docs DAG with `identity_graph` highlighted.
+- `05-ci-green.png` — GitHub Actions runs green on both branches.
 
 Do not publish empty UI captures or screenshots containing credentials,
 account IDs, private endpoints, customer data, or other secrets.

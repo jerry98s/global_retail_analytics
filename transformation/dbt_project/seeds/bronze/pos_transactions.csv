@@ -1,0 +1,4 @@
+transaction_id,line_item_number,transaction_date,store_id,product_id,loyalty_id,quantity_sold,gross_revenue,net_revenue,gross_margin,is_voided
+t-001,1,2026-07-01,ST-001,P-1001,L1001,2,100.00,95.00,20.00,false
+t-002,1,2026-07-01,ST-001,P-1002,L2002,1,50.00,48.00,10.00,false
+t-003,1,2026-07-02,ST-002,P-1003,L1001,3,150.00,140.00,35.00,false

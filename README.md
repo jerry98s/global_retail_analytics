@@ -3,6 +3,7 @@
 ![Apache Flink](https://img.shields.io/badge/Apache_Flink-1.17-E6526F?logo=apacheflink&logoColor=white)
 ![Apache Iceberg](https://img.shields.io/badge/Apache_Iceberg-lakehouse-1F4E79)
 ![Terraform](https://img.shields.io/badge/Terraform-1.6%2B-7B42BC?logo=terraform&logoColor=white)
+[![ci](https://github.com/jerry98s/global_retail_analytics/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jerry98s/global_retail_analytics/actions/workflows/ci.yml)
 
 # Global Retail Analytics Platform
 
@@ -12,6 +13,24 @@ Docker/DuckDB path that does not require an AWS account.
 
 **Stack:** Kafka · Flink · Iceberg · Redshift · dbt · Airflow · Great
 Expectations · Terraform · Streamlit
+
+## Verified end-to-end
+
+From the latest full local run (2026-08-01, fresh volumes — raw evidence in
+[docs/evidence](./docs/evidence/README.md)):
+
+| Stage | Result |
+|---|---|
+| Streaming ingestion | 90,000 clickstream events emitted → **90,000/90,000 landed in Iceberg Bronze** (0 lost, 0 duplicates, 0 DLQ) · 9,000 inventory events landed (injected retry-duplicates aside) |
+| Batch | 1,480 POS line items → 1,480 `finance.fact_sales` rows (exact 1:1) |
+| Transformation | **22/22 dbt models built · 134/134 dbt tests pass** |
+| Data quality | **11/11 Great Expectations suites pass · 264/264 unit tests pass** |
+| Identity / C360 | 123k identity edges resolved (loyalty match, session link, component anchor) → consent-gated Customer 360 serving view |
+
+| | |
+|:---:|:---:|
+| ![Flink job RUNNING with completed checkpoint history](docs/evidence/screenshots/02-flink-checkpoints.png) | ![Streamlit dashboard over 90,000 streamed clickstream events](docs/evidence/screenshots/01-dashboard-overview.png) |
+| ![DuckDB queries over Iceberg Bronze/Silver Parquet](docs/evidence/screenshots/03-iceberg-query.png) | ![dbt lineage graph with identity_graph highlighted](docs/evidence/screenshots/04-dbt-lineage.png) |
 
 ## Branches
 
@@ -100,7 +119,10 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task all
 ```
 
-Or step by step:
+- Kafka from the host: **`127.0.0.1:9092`** (not `localhost` on Docker Desktop).
+- Flink UI: <http://localhost:8082> · Streamlit (optional): <http://localhost:8501>
+
+<details><summary>Step by step, dbt source modes, and the optional local dashboard</summary>
 
 ```powershell
 .\scripts\local\run_local_stack.ps1 -Task up
@@ -116,13 +138,12 @@ Or step by step:
 | Fidelity (default) | `-DbtSource iceberg` | Flink Parquet under `.local/iceberg` + local POS Parquet; seeds only `dim_date` / `dim_store` |
 | Fixture (CI identity) | `-DbtSource seeds` | Curated CSV under `seeds/bronze` (clickstream + pos identity scenarios) + `seeds/finance` reference dims |
 
-- Kafka from the host: **`127.0.0.1:9092`** (not `localhost` on Docker Desktop).
-- Flink UI: <http://localhost:8082> · Streamlit (optional): <http://localhost:8501>
-
 ```powershell
 docker compose -f infra/docker/compose/docker-compose.yml `
   -f infra/docker/compose/docker-compose.dashboard.yml up -d --build dashboard
 ```
+
+</details>
 
 The runner copies `profiles.yml.example` → ignored `profiles.yml` and uses
 DuckDB — no Redshift credentials required.
@@ -165,6 +186,12 @@ Cost figures are planning scenarios, not observed cloud bills.
 | Local | `local-testing-version` | `scripts/local/run_local_stack.ps1` |
 | Cloud dev/prod | `main` | `scripts/cloud/run_cloud_stack.ps1` (wraps `run_terraform.ps1` + `deploy_platform.ps1` + `bootstrap_redshift.ps1` + `run_msk_producers.ps1`) |
 
+Local is the reproducible path: one command, no AWS account, no bill. Cloud is
+fully coded in Terraform behind a single wrapper script, and is designed to be
+stood up for a run and destroyed afterwards rather than left idle. Deploys are
+manual by design — CI validates every push, but no workflow applies Terraform
+or touches an AWS account.
+
 On a fresh clone, fill in your own account-specific config first (all four are
 gitignored — only the `*.example` templates ship in the repo):
 
@@ -180,15 +207,36 @@ cd ..\..\..
 ```powershell
 # Cloud (AWS account required) - one wrapper, -Task all = full fresh deploy (dev)
 .\scripts\cloud\run_cloud_stack.ps1 -Task all
-.\scripts\cloud\run_cloud_stack.ps1 -Task apply -Env prod -AutoApprove
 .\scripts\cloud\run_cloud_stack.ps1 -Task deploy          # after code changes
 .\scripts\cloud\run_cloud_stack.ps1 -Task verify          # post-deploy smoke checks
+```
 
-# Or run the siblings directly when you need per-script flags:
+<details><summary>Prod apply and per-script flags (siblings of the wrapper)</summary>
+
+```powershell
+.\scripts\cloud\run_cloud_stack.ps1 -Task apply -Env prod -AutoApprove
 .\scripts\cloud\run_terraform.ps1 -Stack bootstrap -Action apply
 .\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action apply
 .\scripts\cloud\deploy_platform.ps1 -Env dev
 ```
+
+</details>
+
+### Cost and teardown
+
+`-Task all` creates billable AWS infrastructure — MSK, EMR, Redshift Serverless,
+MWAA, and App Runner. Destroy the platform stack when a session is finished:
+
+```powershell
+.\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action destroy
+```
+
+The bootstrap stack (state bucket, lock table, budget alarm) is negligible and
+can stay in place between sessions.
+
+For a guided lowest-cost end-to-end run (no MWAA/dashboard, laptop-driven dbt
+and GE, evidence capture, destroy checklist), follow
+[docs/runbooks/dev-cloud-test-run.md](./docs/runbooks/dev-cloud-test-run.md).
 
 Details: [ENVIRONMENTS.md](./docs/ENVIRONMENTS.md), [REDSHIFT.md](./docs/REDSHIFT.md),
 [scripts/README.md](./scripts/README.md). Use `*.tfvars.example` /
