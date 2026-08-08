@@ -25,6 +25,12 @@ The contract enforced here mirrors the 7 checklist items:
      disables alerts — this is the most common production gap).
   7. Templates reused — not statically enforceable; left to code review.
 
+Plus one security invariant that is not from the checklist: no secret may be
+templated into a command string. Jinja renders `{{ var.value.* }}` before the
+task runs, so a password there is persisted by Airflow and shown in the
+Rendered Template tab, task logs, and `ps` output. Tasks receive
+`redshift_secret_arn` and resolve the password inside the task shell instead.
+
 If a new DAG is added, this test will fail unless it satisfies the
 contract. If a checklist item doesn't apply (e.g. a manual-trigger DAG
 has no frequency), document the exception in the DAG's doc_md and add
@@ -42,6 +48,16 @@ pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DAGS_DIR = _REPO_ROOT / "orchestration" / "airflow" / "dags"
+_PLUGINS_DIR = _REPO_ROOT / "orchestration" / "airflow" / "plugins"
+
+# Ways a secret can leak into a rendered command: a password templated by
+# Jinja, or a password handed to a subprocess on argv.
+_SECRET_IN_TEMPLATE_RE = re.compile(
+    r"var\.value\.redshift_password"
+    r"|var\.value\.\w*password"
+    r"|--rs-password"
+    r"|--password\s+['\"]?\{\{"
+)
 
 # dag_id must match this template: {domain}_{frequency}_{description}.
 # domain and description are lowercase letters / digits / underscores;
@@ -71,6 +87,14 @@ def _dag_files() -> list[Path]:
 
 def _load_dag_source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _strip_comment_lines(source: str) -> str:
+    """Drop whole-line `#` comments so prose about a pattern (e.g. a comment
+    explaining why a password flag was removed) doesn't trip the secret scan."""
+    return "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
 
 
 def _extract_dag_id(source: str) -> str | None:
@@ -315,6 +339,35 @@ def test_dag_no_bare_insert_into(dag_path: Path) -> None:
         f"{dag_path.name}: found `INSERT INTO` without OVERWRITE in "
         f"the DAG source. Use `INSERT OVERWRITE`, `MERGE`, or dbt "
         f"`delete+insert` for idempotent writes (checklist item 4)."
+    )
+
+
+@pytest.mark.parametrize("dag_path", _DAG_FILES, ids=[_dag_id_param(p) for p in _DAG_FILES])
+def test_dag_does_not_template_secrets(dag_path: Path) -> None:
+    """No DAG may interpolate a password into a command string."""
+    src = _strip_comment_lines(_load_dag_source(dag_path))
+    hits = _SECRET_IN_TEMPLATE_RE.findall(src)
+    assert not hits, (
+        f"{dag_path.name}: renders a secret into a command string ({hits}). "
+        f"Jinja substitutes it before the task runs, so it lands in the "
+        f"Airflow metadata DB, the Rendered Template tab, and task logs. "
+        f"Export `redshift_secret_arn` instead and let the task shell fetch "
+        f"the password (see metadata_airflow.redshift_env_prelude)."
+    )
+
+
+def test_plugins_do_not_template_secrets() -> None:
+    """Same invariant for the plugin helpers that build bash for the DAGs."""
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(_PLUGINS_DIR.glob("*.py")):
+        source = _strip_comment_lines(path.read_text(encoding="utf-8"))
+        hits = _SECRET_IN_TEMPLATE_RE.findall(source)
+        if hits:
+            offenders[path.name] = hits
+    assert not offenders, (
+        f"Plugin helpers render secrets into command strings: {offenders}. "
+        f"Bash built here is stored and logged by Airflow — pass the secret "
+        f"ARN and resolve the password at runtime instead."
     )
 
 

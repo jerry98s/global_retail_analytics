@@ -256,7 +256,10 @@ function Show-AirflowVariables {
     Write-Host ""
     Write-Host "Manual (from tfvars, not in outputs):" -ForegroundColor Yellow
     Write-Host "  redshift_user                = rs_admin (or your admin user)"
-    Write-Host "  redshift_password            = <from dev.tfvars / prod.tfvars>"
+    Write-Host ""
+    Write-Host "Do NOT set a redshift_password Variable. Tasks read the password" -ForegroundColor Yellow
+    Write-Host "from Secrets Manager via redshift_secret_arn (listed above), so it"
+    Write-Host "stays out of the Airflow metadata DB, rendered templates, and logs."
     Write-Host ""
     Write-Host "Optional (row-count reconciliation, P2.5 - defaults work if absent):" -ForegroundColor Yellow
     Write-Host "  gold_row_counts_baseline     = {}  (auto-seeds on first clean run)"

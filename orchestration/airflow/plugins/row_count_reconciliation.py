@@ -241,12 +241,14 @@ def _airflow_entrypoint(**context: Any) -> dict[str, Any]:
     import redshift_connector
     from airflow.models import Variable
 
+    from metadata_airflow import redshift_password
+
     conn = redshift_connector.connect(
         host=Variable.get("redshift_host"),
         port=int(Variable.get("redshift_port", default_var="5439")),
         database=Variable.get("redshift_database", default_var="prod"),
         user=Variable.get("redshift_user"),
-        password=Variable.get("redshift_password"),
+        password=redshift_password(),
     )
     try:
         result = reconcile_gold_row_counts(

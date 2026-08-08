@@ -68,6 +68,11 @@ output "redshift_metadata_database_name" {
   value       = var.redshift_metadata_database_name
 }
 
+output "redshift_secret_arn" {
+  description = "Secrets Manager ARN holding the Redshift admin password (Airflow redshift_secret_arn). Tasks fetch the value at runtime; the password itself is never an Airflow Variable."
+  value       = aws_secretsmanager_secret.redshift_admin.arn
+}
+
 output "redshift_iam_role_arn" {
   description = "IAM role Redshift assumes for S3 + Glue (use in CREATE EXTERNAL SCHEMA)."
   value       = module.redshift.redshift_iam_role_arn
@@ -84,8 +89,18 @@ output "dashboard_ecr_repository_url" {
 }
 
 output "dashboard_url" {
-  description = "Public HTTPS URL of the dashboard (null until dashboard_create_service = true)."
-  value       = var.enable_dashboard ? module.dashboard[0].service_url : null
+  description = "Dashboard URL. The Cognito-gated auth domain when dashboard_enable_auth = true, else the public App Runner URL (null until dashboard_create_service = true)."
+  value       = var.enable_dashboard ? module.dashboard[0].dashboard_url : null
+}
+
+output "dashboard_alb_dns_name" {
+  description = "Point dashboard_auth_domain_name's DNS here (CNAME or Route53 alias). Null unless dashboard_enable_auth = true."
+  value       = var.enable_dashboard && var.dashboard_enable_auth ? module.dashboard[0].alb_dns_name : null
+}
+
+output "dashboard_cognito_user_pool_id" {
+  description = "Cognito pool for dashboard logins: aws cognito-idp admin-create-user --user-pool-id <this> --username <email>. Null unless dashboard_enable_auth = true."
+  value       = var.enable_dashboard && var.dashboard_enable_auth ? module.dashboard[0].cognito_user_pool_id : null
 }
 
 output "mwaa_webserver_url" {
@@ -126,7 +141,8 @@ output "kafka_consumer_lag_alarm_names" {
 output "airflow_variables" {
   description = <<-EOT
     Airflow Variable name → value map (set in MWAA UI after apply).
-    Add redshift_user and redshift_password manually from tfvars.
+    Add redshift_user manually from tfvars. Do NOT create a redshift_password
+    Variable — tasks resolve the password from redshift_secret_arn at runtime.
   EOT
   value = {
     emr_cluster_id             = module.emr.cluster_id
@@ -139,6 +155,7 @@ output "airflow_variables" {
     redshift_host              = module.redshift.endpoint
     redshift_database          = module.redshift.database_name
     redshift_metadata_database = var.redshift_metadata_database_name
+    redshift_secret_arn        = aws_secretsmanager_secret.redshift_admin.arn
     pos_bronze_s3_path         = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_transactions/"
   }
 }

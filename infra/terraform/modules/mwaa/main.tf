@@ -117,6 +117,17 @@ data "aws_iam_policy_document" "dag_tasks" {
     ]
     resources = ["*"]
   }
+
+  # Tasks fetch the Redshift password themselves at runtime, so the plaintext
+  # never passes through a rendered Airflow template, task log, or argv.
+  statement {
+    sid    = "RedshiftPasswordSecret"
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+    ]
+    resources = [var.redshift_secret_arn]
+  }
 }
 
 resource "aws_iam_role_policy" "dag_tasks" {

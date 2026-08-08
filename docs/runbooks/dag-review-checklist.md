@@ -60,6 +60,15 @@ DAG file name MUST equal the `dag_id` (without `.py`). Enforced by
 - Use Airflow Variables for infra endpoints: `{{ var.value.X }}`.
   Never hardcode S3 bucket names, Redshift endpoints, EMR cluster IDs,
   or Kafka brokers in DAG code.
+- Variables carry endpoints, never secrets. Jinja renders `{{ var.value.X }}`
+  into the command Airflow stores, shows in the Rendered Template tab, and
+  writes to task logs — so a password there is exposed to anyone with UI or
+  log access, and appears in the worker's `ps` output. Pass the Secrets
+  Manager ARN (`redshift_secret_arn`) and resolve the value inside the task:
+  `dbt_bash_with_metadata` / `ge_bash_with_metadata` for bash,
+  `metadata_airflow.redshift_password()` for PythonOperator.
+- Enforced by `test_dag_does_not_template_secrets` and
+  `test_plugins_do_not_template_secrets`.
 - The only allowed `datetime(...)` call is `start_date=datetime(...)`.
   Any other `datetime(...)` is a parameterization smell — replace with
   a Jinja macro.

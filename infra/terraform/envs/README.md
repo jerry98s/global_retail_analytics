@@ -65,9 +65,12 @@ Then run `transformation/redshift/spectrum/bronze_external_tables.sql` in Redshi
 |---|---|---|
 | `enable_mwaa` | `false` | Managed Airflow environment |
 | `enable_dashboard` | `false` | App Runner Streamlit dashboard |
+| `dashboard_enable_auth` | `false` | Cognito + ALB login in front of a private dashboard (needs the `dashboard_auth_*` variables; see [dashboard/README.md](../../../dashboard/README.md)) |
 
 When `enable_mwaa = true`, set Airflow Variables from `terraform output airflow_variables`
-plus `redshift_user` / `redshift_password` from tfvars.
+plus `redshift_user` from tfvars. The password is not a Variable: Terraform stores it
+in Secrets Manager and exposes only `redshift_secret_arn`, which tasks resolve at
+runtime (see [REDSHIFT.md](../../../docs/REDSHIFT.md#the-password-is-not-an-airflow-variable)).
 
 ## State key migration (existing prod deploys)
 

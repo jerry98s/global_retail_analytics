@@ -63,7 +63,9 @@ dbt deps && dbt run && dbt test
 
 # 7. MWAA (when enable_mwaa = true)
 .\scripts\cloud\deploy_platform.ps1 -Env dev -Action airflow-vars
-# Set redshift_password in MWAA UI; confirm redshift_metadata_database=metadata
+# Set redshift_user in MWAA UI; confirm redshift_metadata_database=metadata and
+# redshift_secret_arn. Do NOT create a redshift_password Variable - tasks read
+# the password from Secrets Manager at runtime.
 # Then trigger warehouse_daily_batch_pipeline
 ```
 
@@ -121,6 +123,29 @@ After apply, run `.\scripts\cloud\deploy_platform.ps1 -Env dev -Action airflow-v
 the MWAA UI. Required for `warehouse_daily_batch_pipeline`:
 
 - From Terraform: `emr_cluster_id`, `artifacts_bucket`, `redshift_*`, `pos_bronze_s3_path`, …
-- Manual secrets: `redshift_user`, `redshift_password`
+- Manual: `redshift_user`
 
 Full list: `terraform output airflow_variables` or `.cursor/rules/airflow.mdc`.
+
+### The password is not an Airflow Variable
+
+Terraform puts the Redshift admin password in Secrets Manager
+(`<project>-<env>-redshift-admin`) and publishes only its ARN as the
+`redshift_secret_arn` Variable. Tasks resolve the value themselves:
+
+- Bash tasks get `RS_SECRET_ARN` exported by
+  `metadata_airflow.redshift_env_prelude()`, which calls
+  `aws secretsmanager get-secret-value` inside the task shell and exports
+  `RS_PASSWORD` for dbt / Great Expectations. The command text that Airflow
+  stores, renders in the UI, and writes to logs therefore contains the ARN, not
+  the password.
+- PythonOperator tasks call `metadata_airflow.redshift_password()`, which reads
+  the same secret in-process.
+- `scripts/common/metadata_observer.py` accepts `RS_PASSWORD` or
+  `RS_SECRET_ARN` from the environment and has no password CLI flag, so a
+  password can't appear in `ps` output.
+
+A password stored as an Airflow Variable would instead sit in plaintext in the
+Airflow metadata DB and be rendered into every task command. `tests/unit/test_dag_contract.py`
+fails the build if a DAG or plugin reintroduces that pattern. The MWAA execution
+role is granted `secretsmanager:GetSecretValue` on that one ARN only.

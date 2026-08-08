@@ -62,3 +62,8 @@ variable "webserver_access_mode" {
   type        = string
   default     = "PUBLIC_ONLY"
 }
+
+variable "redshift_secret_arn" {
+  description = "Secrets Manager ARN holding the Redshift admin password. DAG tasks receive this ARN (not the password) and fetch the value at runtime."
+  type        = string
+}

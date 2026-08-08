@@ -26,6 +26,11 @@ Do not dual-build `marts.marketing` on the daily warehouse DAG.
 - Filename/DAG ID: `{domain}_{frequency}_{description}`.
 - `doc_md`, `catchup=False`, retries, `email_on_failure=True`.
 - Infra endpoints via Airflow Variables — no hardcoded ARNs/passwords/endpoints.
+- Never template a secret into a command: Jinja renders `{{ var.value.* }}` into
+  the stored command, the Rendered Template tab, and task logs. Bash tasks wrap
+  with `dbt_bash_with_metadata` / `ge_bash_with_metadata`, which export
+  `RS_SECRET_ARN` and fetch the password in the task shell; Python tasks call
+  `metadata_airflow.redshift_password()`. Enforced by `tests/unit/test_dag_contract.py`.
 - Prefer task factories (`_dbt_step`, `_flink_step`).
 - Idempotency: no duplicate Flink submits; partition-safe POS; dbt `delete+insert` uniqueness.
 
