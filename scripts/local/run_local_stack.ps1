@@ -96,9 +96,9 @@ try {
             }
         }
         "simulate" {
-            Invoke-Step "Running POS producer" {
-                Invoke-CheckedCommand "python -m ingestion.kafka.producer_sim.pos_producer"
-            }
+            # POS is batch, not streamed: generate_pos_parquet.py writes Parquet
+            # to bronze (--output-s3 in cloud). No Flink job consumes a POS Kafka
+            # topic, so a POS stream producer here would emit into a void.
             Invoke-Step "Running inventory producer" {
                 Invoke-CheckedCommand "python -m ingestion.kafka.producer_sim.inventory_producer"
             }
