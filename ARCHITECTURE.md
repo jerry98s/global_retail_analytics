@@ -1,338 +1,254 @@
-# Architecture Decision: Global Retail Analytics Platform
+# Architecture: Global Retail Analytics Platform
 
-
+This document is the current architecture authority for the repository.
+Cursor-specific agent rules live in `.cursor/rules/*.mdc`; operational
+procedures live in `docs/runbooks/`; detailed decisions live in
+`docs/decisions/ADR-*.md`.
 
 ## Problem Statement
 
+Three retail data sources must serve different latency and governance needs.
 
-
-Three siloed data sources must power three distinct use cases with
-
-conflicting latency, cost, and complexity requirements:
-
-
-
-| Source | Characteristics | Use Case |
-
+| Source | Shape | Primary use |
 |---|---|---|
+| POS transactions | Daily batch Parquet | Finance facts and reconciled reporting |
+| Inventory events | Real-time JSON stream | Operational inventory and hourly snapshots |
+| Clickstream events | High-volume event stream | Customer 360, sessions, RFM, consent-aware marketing |
 
-| POS transactions | Relational, daily snapshots | Finance fact table (T+8hr) |
+The platform separates raw capture, streaming processing, dimensional modeling,
+quality checks, and serving. One database is not asked to solve every problem.
 
-| Inventory system | Real-time JSON stream | Operational inventory (batch Gold dashboard) |
-
-| Marketing clickstream | Event logs, 10k/sec peak | Customer 360 (hourly dbt) |
-
-
-
----
-
-
-
-## Architecture Diagram
-
-
-
-End-to-end flow from the three sources through each storage layer to the
-
-serving tables. Table names match the Redshift DDL (`transformation/redshift/`)
-
-and dbt models (`transformation/dbt_project/`).
-
-
+## End-to-End Flow
 
 ```mermaid
-
 flowchart LR
-
   subgraph SRC["Sources"]
-
-    POS["POS<br/>daily batch Parquet"]
-
+    POS["POS batch<br/>Parquet"]
     INV["Inventory<br/>JSON stream"]
-
-    CLK["Clickstream<br/>~10k/sec"]
-
+    CLK["Clickstream<br/>JSON stream"]
   end
 
-
-
-  subgraph ING["Ingestion — Kafka (MSK)"]
-
+  subgraph KAFKA["Kafka / MSK"]
     KINV["inventory.events.v1"]
-
     KCLK["clickstream.events.v1"]
-
-    KDLQ["dlq.clickstream.schema_violations"]
-
+    KDLQ["DLQ topics"]
   end
 
-  subgraph STREAM["Stream processing — Flink"]
-
-    FINV_B["inventory_bronze<br/>dedup → bronze raw"]
-
-    FINV["inventory_silver<br/>watermark + hourly agg"]
-
-    FCLK["clickstream_events<br/>validate + dedup + DLQ"]
-
+  subgraph FLINK["Flink on EMR"]
+    FINVB["inventory_bronze_job"]
+    FINVS["inventory_silver_job"]
+    FCLKB["clickstream_bronze_job"]
+    FMAINT["iceberg_maintenance.py<br/>batch"]
   end
 
-
-
-  subgraph BATCH["Batch — Airflow MWAA"]
-
-    POSJOB["generate_pos_parquet<br/>daily 00:15 UTC"]
-
-    C360["marketing_hourly_customer_360_pipeline<br/>hourly :00 UTC"]
-
-  end
-
-
-
-  subgraph LAKE["Lake — Iceberg / Parquet on S3"]
-
-    BRZ["Bronze<br/>clickstream_events<br/>inventory_events<br/>pos_transactions"]
-
+  subgraph LAKE["Iceberg on S3"]
+    BRZ["Bronze<br/>inventory_events<br/>clickstream_events<br/>pos_transactions"]
     SLV["Silver<br/>inventory_hourly"]
-
   end
 
-
-
-  subgraph SPEC["Redshift Spectrum — external"]
-
-    EXT["bronze.* external tables"]
-
+  subgraph REDSHIFT["Redshift"]
+    SPEC["Spectrum<br/>bronze external schema"]
+    DBT["dbt staging<br/>intermediate<br/>finance + marketing marts"]
+    GOLD["Gold marts<br/>serving views"]
   end
 
-
-
-  subgraph DBT["dbt on Redshift"]
-
-    STG["staging.*"]
-
-    INT["intermediate.*<br/>identity · sessions · RFM"]
-
-    FIN["finance.* · marketing.*"]
-
+  subgraph AIRFLOW["Airflow / MWAA"]
+    D1["warehouse_daily_batch_pipeline"]
+    D2["marketing_hourly_customer_360_pipeline"]
+    D3["streaming_manual_flink_jobs"]
+    D4["catalog_bihourly_product_scd2_refresh"]
+    D5["quality_hourly_ge_checkpoint"]
+    D6["lakehouse_daily_iceberg_maintenance"]
   end
 
-
-
-  subgraph ORCH["Orchestration — MWAA"]
-
-    DAG["warehouse_daily_batch_pipeline<br/>POS → dbt finance → GE"]
-
-  end
-
-
-
-  subgraph SERVE["Serving"]
-
-    SV["serving.* · App Runner dashboard"]
-
-    BI["BI / Finance / Marketing"]
-
-  end
-
-
-
-  POS --> POSJOB
-
-  INV --> KINV
-
-  CLK --> KCLK
-
-
-
-  KINV --> FINV_B
-
-  KINV --> FINV
-
-  KCLK --> FCLK
-
-  FCLK -.invalid.-> KDLQ
-
-
-
-  FCLK --> BRZ
-
-  FINV_B --> BRZ
-
-  FINV --> SLV
-
-  POSJOB --> BRZ
-
-
-
-  BRZ --> EXT
-
-  EXT --> STG --> INT
-
-  INT --> FIN
-
-  FIN --> SV
-
-  FIN --> BI
-
-  SV --> BI
-
-
-
-  DAG --> POSJOB
-
-  DAG --> STG
-
-  C360 --> STG
-
+  POS --> BRZ
+  INV --> KINV --> FINVB --> BRZ
+  KINV --> FINVS --> SLV
+  CLK --> KCLK --> FCLKB --> BRZ
+  FCLKB -.invalid.-> KDLQ
+  BRZ --> SPEC --> DBT --> GOLD
+  SLV --> DBT
+  FMAINT --> BRZ
+  FMAINT --> SLV
+  D1 --> DBT
+  D2 --> DBT
+  D3 --> FLINK
+  D4 --> DBT
+  D5 --> GOLD
+  D6 --> FMAINT
 ```
 
+## Layers
 
-
-## Layer Definitions
-
-
-
-**Bronze:** Raw, append-only, schema-on-read. Full fidelity. Iceberg on S3.
-
-Invalid clickstream rows route to Kafka DLQ topics (see `clickstream_bronze_job.py`).
-
-Retention: 90 days Standard, 1yr IA, 3yr+ Glacier via Intelligent-Tiering.
-
-
-
-**Silver:** Cleaned, deduplicated, schema-enforced. Iceberg on S3 (MoR for
-
-inventory upserts). Flink writes `silver.inventory_hourly`; dbt marts rebuild
-
-inventory facts from **bronze** `inventory_events` (Spectrum) by design.
-
-Clickstream has no separate silver table — bronze feeds dbt directly.
-
-
-
-**Gold:** Business-ready, Kimball dimensional model. Redshift tables (bronze read
-
-via Spectrum over S3). Finance on **daily** batch; Customer 360 on **hourly** batch.
-
-
-
-**Summary:** Reusable daily rollups in schema `summary.*`, each from **one** Gold
-
-fact (no fact-to-fact joins). See `docs/data-model/platform-layers.md`.
-
-
-
-**Serving:** App Runner dashboard reads **Gold** tables on Redshift (and local
-
-Iceberg in dev). A dedicated Redis sub-5s path is **deferred** (see ADR-002).
-
-
-
-**Metadata:** Separate Redshift database `metadata` (`meta.*`) for catalog,
-
-pipeline runs, freshness, and DQ history — same workgroup, not Glue. See ADR-008.
-
-
-
----
-
-
-
-## Technology Choices (Summary)
-
-
-
-| Layer | Technology | Rationale |
-
+| Layer | Purpose | Implementation |
 |---|---|---|
+| Ingestion | Decouple producers/consumers and preserve event ownership | Kafka/MSK topics and JSON schemas |
+| Bronze | Raw, replayable source history | Iceberg on S3; Spectrum external access |
+| Silver | Cleaned or operational streaming outputs | Iceberg `silver.inventory_hourly` |
+| Gold | Governed business marts | Redshift tables built by dbt (`finance.*`, `marketing.*`) |
+| Summary | Reusable aggregates from one Gold fact | Redshift/DuckDB `summary.*` |
+| Serving | Consumer-specific views and dashboard access | Redshift serving views, Streamlit/App Runner |
+| Metadata | Ops catalog, pipeline runs, freshness, DQ history | Separate DB `metadata.meta.*` (same workgroup); local `local_metadata.duckdb` |
+| Quality | Contract, model, and runtime checks | JSON schemas, dbt tests, GE, pytest, Airflow reconciliation |
 
-| Message bus | Kafka (MSK) | Decouples producers from all consumers |
+See [docs/data-model/platform-layers.md](docs/data-model/platform-layers.md) and
+[ADR-008](docs/decisions/ADR-008-metadata-database.md).
 
-| Stream processing | Apache Flink on EMR | Stateful ops, exactly-once, watermarks |
+## Streaming Architecture
 
-| Table format | Apache Iceberg | Engine-agnostic, schema evolution, multi-consumer |
+The streaming path uses Flink on EMR with YARN Per-Job isolation.
 
-| Data warehouse | Amazon Redshift Serverless | All-AWS, pay-per-use RPUs, Spectrum reads S3 in place (ADR-005) |
+| Job | Input | Output | Notes |
+|---|---|---|---|
+| `inventory_bronze_job.py` | `inventory.events.v1` | `bronze.inventory_events` + inventory DLQ | Validate, dedup, preserve raw inventory stream |
+| `inventory_silver_job.py` | `inventory.events.v1` | `silver.inventory_hourly` | Hourly event-time aggregation; single owner of inventory kappa path |
+| `clickstream_bronze_job.py` | `clickstream.events.v1` | `bronze.clickstream_events` + clickstream DLQ | Validate, dedup, route invalid events visibly |
+| `iceberg_maintenance.py` | Iceberg catalog | Optimized Iceberg tables | Batch maintenance job; no long-running state |
 
-| Transformation | dbt Core | Version-controlled SQL, incremental models, lineage |
+Production Flink defaults:
 
-| Orchestration | Airflow (MWAA) | Daily finance + hourly marketing DAGs |
+- RocksDB state backend with incremental checkpoints.
+- `EXACTLY_ONCE` checkpointing and externalized checkpoints retained on cancellation.
+- 30-second minimum pause between checkpoints.
+- 7-day SQL state TTL.
+- 1-minute source idle timeout.
+- Kafka partition discovery every 5 minutes.
 
-| Quality | GE + pytest | Column-level (GE) + set-level SCD2 (pytest) |
+Reference: `docs/runbooks/flink-operations.md`.
 
-| IaC | Terraform | Reproducible infra, maps to existing team skills |
+## Kafka Architecture
 
+Kafka is the event boundary, not the warehouse.
 
+Core topics:
 
-Full rationale per decision: see `docs/decisions/` ADRs.
+- `inventory.events.v1`
+- `clickstream.events.v1`
+- `pos.transactions.v1`
+- `dlq.events.v1`
+- `dlq.clickstream.schema_violations`
+- `dlq.clickstream.business_violations`
+- `dlq.inventory.schema_violations`
 
+Producer defaults are configured in `ingestion/kafka/msk_config.py`:
 
+- `acks=all`
+- idempotence enabled
+- bounded delivery timeout with large retry budget
+- `max.in.flight.requests.per.connection=5`
+- batching and `lz4` compression
 
----
+Flink source offsets are checkpoint-managed with `enable.auto.commit=false`.
+Consumer lag is monitored through MSK CloudWatch `PCTConsumerLag` alarms.
 
+Reference: `docs/runbooks/kafka-operations.md`.
 
+## Data Model
 
-## Latency SLAs (as implemented)
+Gold is a Kimball-style Redshift model.
 
-
-
-| Pipeline | Latency | Mechanism |
-
-|---|---|---|
-
-| Inventory → Bronze | < 30 seconds | Flink continuous → Iceberg |
-
-| Inventory → Silver | < 10 minutes | Flink hourly snapshot job |
-
-| Inventory → Dashboard | Batch (daily/hourly Gold) | App Runner → Redshift `fact_inventory_snapshot` |
-
-| Clickstream → Bronze | < 30 seconds | Flink continuous → Iceberg + DLQ |
-
-| POS → Gold (fact_sales) | T + 8 hours | `warehouse_daily_batch_pipeline` → dbt |
-
-| Customer 360 refresh | < 75 minutes | `marketing_hourly_customer_360_pipeline` → dbt marketing marts |
-
-
-
-> **Deferred:** Flink → Redis sub-5s inventory dashboard (ADR-002 original target).
-
-> Revisit when operational SLA requires sub-minute store-floor actions.
-
-
-
----
-
-
-
-## Cost Summary (100GB scale, ap-southeast-1)
-
-
-
-| Component | Optimized Monthly Cost |
-
+| Model | Grain |
 |---|---|
+| `finance.fact_sales` | One row per transaction line item |
+| `finance.fact_inventory_snapshot` | One row per product, store, snapshot date, snapshot hour |
+| `marketing.fact_customer_session` | One row per session |
+| `marketing.dim_customer` | One row per customer |
+| `finance.dim_product` | SCD Type 2 product history |
 
-| S3 storage (all tiers) | $430 |
+Rules:
 
-| Redshift managed storage | $100 |
+- Surrogate integer keys on facts and dimensions.
+- SCD Type 2 only on `dim_product`.
+- No fact-to-fact joins; use drill-across patterns.
+- Enforce marketing consent before customer PII access.
+- Data contract changes require schema version bumps.
 
-| EMR / Flink (Spot) | $330 |
+Reference: `docs/data-model/dimensional-model.md`.
 
-| Redshift Serverless compute (RPU) | $3,108 |
+## Orchestration
 
-| MSK (Serverless) | $400 |
+Current Airflow DAGs:
 
-| Data transfer | $200 |
+| DAG | Purpose |
+|---|---|
+| `warehouse_daily_batch_pipeline` | POS Bronze, dbt finance/marts, Redshift ANALYZE, row-count reconciliation, GE |
+| `marketing_hourly_customer_360_pipeline` | Identity graph, sessions, RFM, dim_customer, Customer 360 |
+| `streaming_manual_flink_jobs` | Submit Flink jobs to EMR with duplicate-run guard |
+| `catalog_bihourly_product_scd2_refresh` | Intra-day `dim_product` SCD2 refresh |
+| `quality_hourly_ge_checkpoint` | Hourly `gold_layer_daily` GE checkpoint |
+| `lakehouse_daily_iceberg_maintenance` | Submit Iceberg compaction and snapshot expiration job |
 
-| Monitoring/misc | $100 |
+Reference: `docs/runbooks/dag-review-checklist.md`.
 
-| **Total** | **~$4,668** |
+## Lakehouse Maintenance
 
+Iceberg tables use low-cardinality daily partitioning:
 
+- `bronze.inventory_events`: `event_date` (identity on CAST(event_time AS DATE))
+- `bronze.clickstream_events`: `event_date` (identity on CAST(event_time AS DATE))
+- `silver.inventory_hourly`: `snapshot_date_key`
+- POS Spectrum table: `dt`
 
-Redis ($80/mo) excluded until the sub-5s path is implemented.
+The maintenance DAG submits a Flink batch job that calls Iceberg maintenance
+procedures for compaction and snapshot expiration. Redshift `ANALYZE` runs
+after daily mart builds.
 
+Reference: `docs/runbooks/iceberg-maintenance.md`.
 
+## Deployment
 
-Full model: [docs/decisions/ADR-004-cost-model.md](./docs/decisions/ADR-004-cost-model.md)
+Terraform has two stacks:
 
+| Stack | Path | Purpose |
+|---|---|---|
+| `bootstrap` | `infra/terraform/bootstrap/` | State bucket, locks, budget |
+| `platform` | `infra/terraform/` | S3, MSK, EMR, Redshift, MWAA, dashboard |
+
+Use the wrapper:
+
+```powershell
+.\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action plan
+.\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action apply
+```
+
+Runtime sync and Flink submission:
+
+```powershell
+.\scripts\cloud\deploy_platform.ps1 -Env dev
+.\scripts\cloud\deploy_platform.ps1 -Env dev -Action airflow-vars
+```
+
+Never run raw Terraform inside a stack directory.
+
+## Local Development
+
+Local testing uses Docker, Kafka, Flink, Iceberg files, DuckDB, dbt, and pytest.
+
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task up
+.\scripts\local\run_local_stack.ps1 -Task topics
+.\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task flink
+python -m pytest tests/unit/ -q
+```
+
+Use `127.0.0.1:9092` from the Windows host for Kafka.
+
+## Non-Goals and Deferred Paths
+
+- No Delta/Hudi replacement for Iceberg.
+- No SCD Type 2 dimensions beyond `dim_product`.
+- No CSV POS staging path.
+- No separate lean/redshift-dev Terraform stack.
+- Sub-5-second Redis inventory serving remains deferred until the business SLA
+  requires store-floor action in seconds.
+
+## Key Runbooks
+
+- `docs/runbooks/kafka-operations.md`
+- `docs/runbooks/flink-operations.md`
+- `docs/runbooks/iceberg-maintenance.md`
+- `docs/runbooks/dag-review-checklist.md`
+- `docs/runbooks/backfill-verification.md`
+- `docs/runbooks/upstream-incident-response.md`
+- `docs/runbooks/dw-checklist-audit.md`

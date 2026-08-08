@@ -58,10 +58,6 @@ with DAG(
             aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/dbt_project /tmp/dbt_project
             aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts
             cp /tmp/dbt_project/profiles.yml.example /tmp/dbt_project/profiles.yml
-            export RS_HOST='{{ var.value.redshift_host }}'
-            export RS_USER='{{ var.value.redshift_user }}'
-            export RS_PASSWORD='{{ var.value.redshift_password }}'
-            export RS_DATABASE='{{ var.value.redshift_database }}'
             cd /tmp/dbt_project && \
             dbt deps && \
             dbt run --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform customer_360_serving --exclude int_product_catalog dim_product --target prod && \

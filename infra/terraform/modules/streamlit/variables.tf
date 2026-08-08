@@ -79,8 +79,43 @@ variable "redshift_user" {
   type        = string
 }
 
-variable "redshift_password" {
-  description = "Redshift password (RS_PASSWORD); stored in Secrets Manager and injected as a runtime secret."
+variable "redshift_secret_arn" {
+  description = "Secrets Manager ARN holding the Redshift password; injected as the RS_PASSWORD runtime secret. Owned by the root module so the password exists in exactly one place."
   type        = string
-  sensitive   = true
+}
+
+variable "enable_auth" {
+  description = "Make the App Runner service private and put a public ALB with a Cognito login in front of it. Requires auth_domain_name, acm_certificate_arn, alb_subnet_ids, and vpce_subnet_ids."
+  type        = bool
+  default     = false
+}
+
+variable "auth_domain_name" {
+  description = "Public FQDN visitors use for the dashboard; used for the Cognito callback URL. Its DNS must point at the ALB (see the alb_dns_name output)."
+  type        = string
+  default     = ""
+}
+
+variable "acm_certificate_arn" {
+  description = "ACM certificate ARN covering auth_domain_name, in this region."
+  type        = string
+  default     = ""
+}
+
+variable "alb_subnet_ids" {
+  description = "Public subnets (>= 2 AZs, internet-gateway route) for the ALB."
+  type        = list(string)
+  default     = []
+}
+
+variable "vpce_subnet_ids" {
+  description = "Subnets for the App Runner interface-endpoint ENIs; must be routable from alb_subnet_ids."
+  type        = list(string)
+  default     = []
+}
+
+variable "auth_allowed_cidrs" {
+  description = "CIDRs allowed to reach the ALB on 80/443. Cognito authentication still applies to every request."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }

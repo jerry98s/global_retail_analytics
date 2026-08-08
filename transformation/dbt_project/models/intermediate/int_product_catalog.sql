@@ -65,10 +65,9 @@ select
     supplier_id,
     effective_from,
     last_seen_date,
-    sha2(
-        coalesce(product_id, '')
-        || '|' || coalesce(brand, '')
-        || '|' || coalesce(cast(unit_cost as varchar), ''),
-        256
-    ) as record_hash
+    {{ record_hash_sha256(
+        "coalesce(product_id, '')"
+        ~ " || '|' || coalesce(brand, '')"
+        ~ " || '|' || coalesce(cast(unit_cost as varchar), '')"
+    ) }} as record_hash
 from prepared

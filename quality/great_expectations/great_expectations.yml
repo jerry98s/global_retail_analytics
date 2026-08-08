@@ -11,6 +11,29 @@ datasources:
         class_name: RuntimeDataConnector
         batch_identifiers:
           - default_identifier_name
+  # Local DuckDB gold (transformation/dbt_project/local_retail.duckdb).
+  # Used by checkpoints/gold_layer_local.yml via scripts/local/run_ge_local.py.
+  duckdb_local:
+    class_name: Datasource
+    execution_engine:
+      class_name: SqlAlchemyExecutionEngine
+      connection_string: ${DUCKDB_SQLALCHEMY_URL}
+    data_connectors:
+      default_runtime_data_connector_name:
+        class_name: RuntimeDataConnector
+        batch_identifiers:
+          - default_identifier_name
+  # Pandas runtime batches: run_ge_local.py loads DuckDB query results into
+  # DataFrames (avoids GE 0.18 SqlAlchemy+duckdb-engine metric bugs).
+  pandas_local:
+    class_name: Datasource
+    execution_engine:
+      class_name: PandasExecutionEngine
+    data_connectors:
+      default_runtime_data_connector_name:
+        class_name: RuntimeDataConnector
+        batch_identifiers:
+          - default_identifier_name
 
 stores:
   expectations_store:

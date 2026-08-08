@@ -14,6 +14,7 @@ The platform supports:
 - Data quality governance
 - Cloud deployment on AWS
 - Local simulation with Docker, Flink, and DuckDB
+- Production operations runbooks for Kafka, Flink, Iceberg, Airflow, and dbt
 
 The central challenge is that retail data has different shapes, ownership
 models, and latency requirements.
@@ -331,6 +332,7 @@ pos.transactions.v1
 dlq.events.v1
 dlq.clickstream.schema_violations
 dlq.clickstream.business_violations
+dlq.inventory.schema_violations
 ```
 
 Do not automatically create one topic for every event type.
@@ -365,6 +367,21 @@ For example:
 - Fraud or bot detection may need device-level ordering.
 
 No single partitioning strategy satisfies every downstream workload.
+
+Kafka reliability is handled in configuration rather than left to producer
+defaults.
+
+The producer config uses:
+
+- `acks=all`
+- Idempotent producer writes
+- Large retry budget with a delivery timeout
+- Batching and `lz4` compression
+
+Flink consumes with checkpoint-managed offsets. The jobs keep
+`enable.auto.commit=false` so Kafka offsets do not race ahead of successful
+Flink checkpoints. Consumer lag is monitored from MSK CloudWatch metrics
+instead.
 
 ---
 
@@ -444,11 +461,20 @@ Technical duplicates and business duplicates are different problems.
 
 The project makes this explicit in the streaming and dbt layers.
 
+For the streaming jobs, exactly-once is not a slogan. It is a set of
+coordinated choices:
+
+- Kafka producers are idempotent.
+- Flink checkpoints run in `EXACTLY_ONCE` mode.
+- Kafka source offsets are committed by Flink checkpoints.
+- Iceberg commits are checkpoint-bound.
+- Gold models remain idempotent through stable keys and incremental filters.
+
 ---
 
 ## 9. Lakehouse Architecture
 
-The historical platform uses:
+The platform uses:
 
 - Kafka for event ingestion
 - Flink for streaming validation, deduplication, and Iceberg writes
@@ -578,6 +604,17 @@ Streaming jobs must distinguish:
 - Processing time: when the pipeline received it
 
 Flink uses watermarks and checkpointing to process event-time windows.
+
+The platform uses event time, not processing time, for the streaming paths.
+The Bronze jobs use a tighter watermark, while the Silver inventory job uses
+a wider one because hourly aggregation can absorb more lateness.
+
+The current production posture is:
+
+- Watermark delay handles normal late arrival.
+- Invalid or malformed records are routed visibly to DLQ topics.
+- Extreme late-event correction is handled through replay from retained Kafka
+  and Bronze data rather than a separate side-output stream.
 
 The inventory hourly model is provisional in streaming form. Gold tables can be
 rebuilt later from Bronze for authoritative reporting.
@@ -987,6 +1024,21 @@ Flink is a good fit because the platform needs:
 - Durable Iceberg writes
 - Continuous ingestion
 
+The production Flink configuration is intentionally conservative:
+
+- RocksDB state backend for disk-backed state
+- Incremental checkpoints
+- Externalized checkpoints retained on cancellation
+- 30-second minimum pause between checkpoints
+- 7-day SQL state TTL
+- 1-minute source idle timeout so an inactive Kafka partition does not stall
+  the whole watermark
+- Dynamic Kafka partition discovery every five minutes
+
+These settings live in `streaming/config/state.yaml`,
+`streaming/config/checkpoints.yaml`, and the Kafka source DDLs. The design is
+documented in [`docs/runbooks/flink-operations.md`](../runbooks/flink-operations.md).
+
 ---
 
 ## 20. Batch Orchestration
@@ -1001,6 +1053,7 @@ marketing_hourly_customer_360_pipeline  # hourly  — identity graph -> sessions
 streaming_manual_flink_jobs        # ad-hoc / scheduled — submit Flink jobs with idempotency guard
 catalog_bihourly_product_scd2_refresh        # 0 */2 * * * — dim_product SCD2 catch-up (intra-day catalog changes)
 quality_hourly_ge_checkpoint           # 45 * * * * — GE gold_layer_daily between Flink silver writes
+lakehouse_daily_iceberg_maintenance    # 03:00 UTC — compact Iceberg files + expire snapshots
 ```
 
 Each DAG carries a `doc_md` block in-file covering purpose, idempotency, and
@@ -1027,6 +1080,9 @@ dbt tests
    |
    v
 row_count_reconciliation   # day-over-day Gold mart delta, warns >20%
+   |
+   v
+Redshift ANALYZE
    |
    v
 Great Expectations gold_layer_daily checkpoint
@@ -1066,6 +1122,10 @@ idempotency guard (P1.4) checks existing YARN applications by name before
 re-submitting, so a re-run of the DAG after a partial deploy will not
 launch duplicate Flink jobs.
 
+The DAG is the operational entry point for restart and upgrade work. The Flink
+runbook describes the savepoint-first upgrade sequence: savepoint, stop, deploy,
+resume.
+
 ### SCD2 Product Refresh
 
 `dim_product` is the only SCD2 dimension in the platform. Product catalog
@@ -1080,6 +1140,12 @@ Hourly at :45 (off-peak between Flink silver writes at :00 and the daily
 batch at 02:00). Runs the same `gold_layer_daily` GE checkpoint that the
 daily batch runs, so quality drift is caught within an hour rather than
 at the next daily run.
+
+### Iceberg Maintenance
+
+Runs the Flink maintenance job that calls Iceberg procedures for compaction and
+snapshot expiration. This prevents streaming writes from turning the lake into
+a large collection of small files.
 
 ---
 
@@ -1192,13 +1258,25 @@ Pytest covers behavior that is easier to express in Python:
   `integration_duckdb`)
 - Row-count reconciliation logic (17 unit tests against the pure
   functions in `orchestration/airflow/plugins/row_count_reconciliation.py`)
+- Kafka producer and Flink source reliability defaults
+- Flink state backend, checkpoint, source-idleness, and partition-discovery
+  contracts
+- DAG naming, alerting, idempotency, and documentation contracts
 
 ### Data Warehouse Checklist Audit
 
 A formal audit against a 10-item Data Model Review Checklist and a
 6-item Idempotent Design Checklist identified 21 gaps (6 P1, 9 P2, 6 P3)
-across the 10 audited models. All 21 gaps were closed across 8 PRs; the
-status index at
+across the 10 audited models. All 21 gaps were closed across 8 PRs.
+
+The same audit index now also tracks the later production-hardening passes:
+
+- Data lake layout and Iceberg maintenance
+- Airflow DAG design and naming
+- Kafka reliability, monitoring, and operations
+- Flink state, checkpoint, source, and upgrade practices
+
+The status index at
 [`docs/runbooks/dw-checklist-audit.md`](../runbooks/dw-checklist-audit.md)
 maps each closed gap to the artefact that enforces or documents the fix
 (dbt test, GE suite, Flink job, Airflow task, runbook, or regression
@@ -1325,6 +1403,14 @@ Optimized Parquet files
 ```
 
 This is essential for a lakehouse design to stay healthy over time.
+
+In this project, `lakehouse_daily_iceberg_maintenance` submits a Flink batch
+job that calls Iceberg maintenance procedures. The daily batch pipeline also
+runs Redshift `ANALYZE` after mart builds so Spectrum and Gold queries have
+fresh statistics.
+
+The operational details live in
+[`docs/runbooks/iceberg-maintenance.md`](../runbooks/iceberg-maintenance.md).
 
 ---
 
@@ -1466,6 +1552,7 @@ The platform stack includes:
 
 - S3 buckets
 - MSK
+- MSK consumer-lag CloudWatch alarms
 - EMR / Flink
 - Redshift Serverless
 - MWAA
@@ -1480,6 +1567,16 @@ Runtime deployment uses:
 
 This syncs orchestration assets and submits Flink jobs.
 
+Operational runbooks explain the parts that should not be improvised during an
+incident:
+
+- Kafka lag and producer behavior:
+  [`docs/runbooks/kafka-operations.md`](../runbooks/kafka-operations.md)
+- Flink savepoint-first upgrades, state, and checkpoints:
+  [`docs/runbooks/flink-operations.md`](../runbooks/flink-operations.md)
+- Iceberg compaction and snapshot expiration:
+  [`docs/runbooks/iceberg-maintenance.md`](../runbooks/iceberg-maintenance.md)
+
 ---
 
 ## 29. Cost and Trade-Offs
@@ -1488,9 +1585,9 @@ The architecture deliberately chooses different tools for different jobs.
 
 | Choice | Why |
 |---|---|
-| Kafka | Decouple producers and consumers |
-| Flink | Stateful streaming, checkpoints, watermarks |
-| Iceberg | Replayable lakehouse tables with schema evolution |
+| Kafka | Decouple producers and consumers, with monitored consumer lag |
+| Flink | Stateful streaming, checkpoints, watermarks, and event-time recovery |
+| Iceberg | Replayable lakehouse tables with schema evolution and maintenance |
 | Redshift | Governed Gold marts and BI serving |
 | dbt | Version-controlled SQL transformations and tests |
 | Airflow | Scheduled orchestration |
@@ -1501,6 +1598,10 @@ Trade-offs:
 - Real-time inventory is fresher but more complex than batch.
 - Gold marts are easier for analysts but require careful modeling.
 - Iceberg adds maintenance overhead but enables replay and multi-engine access.
+- RocksDB-backed Flink state is slower than heap state but avoids production
+  OOM failure modes.
+- Kafka offset monitoring is handled through MSK metrics rather than
+  `enable.auto.commit=true`, preserving checkpoint-based recovery.
 - Redshift is convenient for serving but should not be the raw ingestion system.
 - DuckDB is excellent for local simulation but not a substitute for AWS scale
   testing.
@@ -1636,7 +1737,9 @@ Use this sequence:
 9. Explain Customer 360 and identity resolution.
 10. Cover consent, privacy, and public-device handling.
 11. Discuss data quality, DLQ, and reconciliation.
-12. Explain deployment, local testing, and cost trade-offs.
+12. Explain operations: Kafka lag, Flink checkpoints, Iceberg maintenance,
+    Airflow recovery, and local testing.
+13. Explain deployment and cost trade-offs.
 
 Do not start by listing tools.
 
@@ -1664,16 +1767,19 @@ This project demonstrates:
 - Gold row-count reconciliation Airflow task (P2.5)
 - DLQ SQL regression tests (P1.5)
 - POS Parquet determinism + `--seed` override (P3.6)
-- pytest behavioral tests (82 unit tests + integration tests)
+- Kafka reliability tests and Flink state/source contract tests
+- pytest behavioral tests (203 unit tests + integration tests)
 - Terraform AWS deployment
-- Airflow orchestration (5 DAGs, each with `doc_md`)
+- Airflow orchestration (6 DAGs, each with `doc_md`)
 - DuckDB local simulation
 - DW checklist audit — 21 gaps identified and closed across 8 PRs
-  (6 P1, 9 P2, 6 P3), status index at
+  (6 P1, 9 P2, 6 P3), with later data lake, DAG, Kafka, and Flink
+  production checklists tracked in the same status index at
   [`docs/runbooks/dw-checklist-audit.md`](../runbooks/dw-checklist-audit.md)
 - Runbooks for backfill verification, upstream incident response,
-  late-event remediation, DLQ investigation, consent revocation, and
-  local data queries
+  late-event remediation, DLQ investigation, consent revocation,
+  Iceberg maintenance, Kafka operations, Flink operations, DAG review,
+  and local data queries
 
 A reviewer can evaluate both:
 

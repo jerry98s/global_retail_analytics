@@ -7,8 +7,8 @@ runs on EMR (no Docker) — see `../emr-bootstrap/` for that side.
 
 | Path | Purpose |
 |------|---------|
-| `compose/docker-compose.yml` | Local dev stack: Zookeeper + Kafka + schema-registry + Flink JobManager/TaskManager. Iceberg warehouse on a local named volume (`file:///tmp/iceberg`). |
-| `compose/docker-compose.dashboard.yml` | Optional overlay: Streamlit dashboard reading the shared `flink-iceberg` volume. |
+| `compose/docker-compose.yml` | Local dev stack: Zookeeper + Kafka + schema-registry + Flink JobManager/TaskManager. Iceberg warehouse bind-mounted at repo `.local/iceberg` → `/tmp/iceberg` (dbt reuses these Parquet files). |
+| `compose/docker-compose.dashboard.yml` | Optional overlay: Streamlit dashboard reading the same host Iceberg dir. |
 | `flink/Dockerfile` | Local Flink 1.17.1 image, pinned to match EMR 6.15.0. Installs Iceberg + Kafka + Hadoop-AWS + AWS SDK connector JARs. |
 | `flink/versions.env` | Single source of truth for the four shared connector version pins (Iceberg, Kafka, Hadoop-AWS, AWS SDK). |
 | `../emr-bootstrap/install_flink_connectors.sh` | EMR bootstrap action that installs the same connector JARs on cluster nodes. Versions kept in sync with `flink/versions.env` via `tests/unit/test_flink_connector_versions.py`. |
@@ -22,8 +22,9 @@ file path itself so you can invoke it from any cwd:
 ```powershell
 .\scripts\local\run_local_stack.ps1 -Task up
 .\scripts\local\run_local_stack.ps1 -Task topics
-.\scripts\local\run_local_stack.ps1 -Task simulate
 .\scripts\local\run_local_stack.ps1 -Task flink
+.\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task dbt
 ```
 
 Ad-hoc `docker compose` calls need the `-f` flag since the compose files

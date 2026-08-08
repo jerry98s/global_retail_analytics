@@ -92,8 +92,15 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task flink      # before simulate (latest-offset)
 .\scripts\local\run_local_stack.ps1 -Task simulate
 .\scripts\local\run_local_stack.ps1 -Task dbt        # -DbtSource iceberg (default)
+.\scripts\local\run_local_stack.ps1 -Task quality    # dbt test + GE gold_layer_local + pytest
 docker compose -f infra/docker/compose/docker-compose.yml -f infra/docker/compose/docker-compose.dashboard.yml up -d dashboard
 ```
+
+Local `-Task quality` runs Great Expectations against DuckDB via
+`scripts/local/run_ge_local.py` (queries from `gold_layer_local.yml`, same
+suites as cloud `gold_layer_daily`). Batches are loaded with DuckDB→Pandas
+because GE 0.18's SqlAlchemy+duckdb-engine path is unreliable. Cloud GE remains
+MWAA `quality_hourly_ge_checkpoint` / warehouse daily `ge_gold_checkpoint`.
 
 For querying the local Iceberg warehouse: see
 [`docs/runbooks/local-data-queries.md`](./runbooks/local-data-queries.md).
@@ -131,7 +138,7 @@ dbt (staging → intermediate → marts) → finance.* / marketing.* / summary.*
 
 GE checkpoint gold_layer_daily → validates fact_sales + dim_product + dim_customer + customer_360_view + fact_inventory_snapshot + inventory_bronze
 
-metadata DB (same Redshift workgroup; local branch: local_metadata.duckdb)
+metadata DB (same Redshift workgroup; local: local_metadata.duckdb)
   └─ meta.{layer_catalog, metric_catalog, pipeline_run, table_freshness, dq_check_result}
 ```
 

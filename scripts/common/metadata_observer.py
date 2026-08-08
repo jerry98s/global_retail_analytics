@@ -12,6 +12,11 @@ Usage (CLI)::
     python scripts/common/metadata_observer.py parse-dbt --backend local ...
     python scripts/common/metadata_observer.py collect-freshness --backend local ...
     python scripts/common/metadata_observer.py seed-catalog --backend local
+
+Redshift credentials come from the environment: ``RS_HOST``, ``RS_USER``, and
+either ``RS_PASSWORD`` or ``RS_SECRET_ARN`` (a Secrets Manager secret resolved
+at runtime). Passwords are never accepted on argv, where `ps` and task logs
+would expose them.
 """
 
 from __future__ import annotations
@@ -276,6 +281,43 @@ class RedshiftMetadataWriter(MetadataWriter):
         self._conn.close()
 
 
+def fetch_secret_password(secret_id: str) -> str:
+    """Read a Redshift password out of AWS Secrets Manager.
+
+    Accepts either a bare password string or a JSON blob carrying a
+    ``password`` key, so the same secret also serves RDS-style consumers.
+    """
+    import boto3
+
+    raw = boto3.client("secretsmanager").get_secret_value(SecretId=secret_id)
+    secret = raw.get("SecretString") or ""
+    try:
+        parsed = json.loads(secret)
+    except (json.JSONDecodeError, TypeError):
+        return secret
+    if isinstance(parsed, dict):
+        return str(parsed.get("password") or parsed.get("RS_PASSWORD") or secret)
+    return secret
+
+
+def resolve_rs_password() -> str:
+    """Password from ``RS_PASSWORD``, else fetched via ``RS_SECRET_ARN``.
+
+    Airflow tasks are handed the secret ARN rather than the password itself,
+    so the plaintext never reaches a rendered template, a task log, or argv.
+    """
+    password = os.environ.get("RS_PASSWORD")
+    if password:
+        return password
+    secret_id = os.environ.get("RS_SECRET_ARN")
+    if not secret_id:
+        raise RuntimeError(
+            "No Redshift password available. Set RS_PASSWORD, or point "
+            "RS_SECRET_ARN at a Secrets Manager secret this caller can read."
+        )
+    return fetch_secret_password(secret_id)
+
+
 def open_writer(backend: str, args: argparse.Namespace) -> MetadataWriter:
     if backend == "local":
         path = Path(args.metadata_duckdb)
@@ -288,7 +330,7 @@ def open_writer(backend: str, args: argparse.Namespace) -> MetadataWriter:
             database=args.rs_metadata_database
             or os.environ.get("RS_METADATA_DATABASE", "metadata"),
             user=args.rs_user or os.environ["RS_USER"],
-            password=args.rs_password or os.environ["RS_PASSWORD"],
+            password=resolve_rs_password(),
             port=int(args.rs_port or os.environ.get("RS_PORT", "5439")),
         )
         writer.ensure_schema()
@@ -313,7 +355,7 @@ def open_analytics_reader(backend: str, args: argparse.Namespace) -> Any:
         port=int(args.rs_port or os.environ.get("RS_PORT", "5439")),
         database=args.rs_database or os.environ.get("RS_DATABASE", "dev"),
         user=args.rs_user or os.environ["RS_USER"],
-        password=args.rs_password or os.environ["RS_PASSWORD"],
+        password=resolve_rs_password(),
     )
 
 
@@ -729,7 +771,8 @@ def _add_backend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--rs-host", default=None)
     p.add_argument("--rs-port", default=None)
     p.add_argument("--rs-user", default=None)
-    p.add_argument("--rs-password", default=None)
+    # Deliberately no --rs-password: a password on argv is readable via `ps`
+    # and echoed into task logs. Use RS_PASSWORD or RS_SECRET_ARN instead.
     p.add_argument("--rs-database", default=None)
     p.add_argument("--rs-metadata-database", default=None)
 

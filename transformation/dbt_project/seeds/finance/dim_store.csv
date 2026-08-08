@@ -2,3 +2,20 @@ store_key,store_id,store_name,store_type,city,country_code,region,is_active
 1,STORE-001,Kuala Lumpur Central,RETAIL,Kuala Lumpur,MY,Central,true
 2,STORE-002,Petaling Jaya Main,RETAIL,Petaling Jaya,MY,Central,true
 3,STORE-003,Shah Alam Plaza,RETAIL,Shah Alam,MY,Central,true
+4,STORE-004,Subang Parade,RETAIL,Subang Jaya,MY,Central,true
+5,STORE-005,Penang Gurney,RETAIL,George Town,MY,North,true
+6,STORE-006,Penang Queensbay,RETAIL,Bayan Lepas,MY,North,true
+7,STORE-007,Ipoh Parade,RETAIL,Ipoh,MY,North,true
+8,STORE-008,Johor Bahru City,RETAIL,Johor Bahru,MY,South,true
+9,STORE-009,Melaka Mall,RETAIL,Melaka,MY,South,true
+10,STORE-010,Kuching Riverside,RETAIL,Kuching,MY,East,true
+11,STORE-011,Kota Kinabalu Suria,RETAIL,Kota Kinabalu,MY,East,true
+12,STORE-012,Seremban Gateway,RETAIL,Seremban,MY,Central,true
+13,STORE-013,Klang Sentral,RETAIL,Klang,MY,Central,true
+14,STORE-014,Cyberjaya Hub,RETAIL,Cyberjaya,MY,Central,true
+15,STORE-015,Putrajaya Presint,RETAIL,Putrajaya,MY,Central,true
+16,STORE-016,Alor Setar Mall,RETAIL,Alor Setar,MY,North,true
+17,STORE-017,Kuantan City,RETAIL,Kuantan,MY,East,true
+18,STORE-018,Miri Boulevard,RETAIL,Miri,MY,East,true
+19,STORE-019,Sandakan Plaza,RETAIL,Sandakan,MY,East,true
+20,STORE-020,Klang Valley Outlet,RETAIL,Puchong,MY,Central,true

@@ -66,5 +66,41 @@ When `redshift_publicly_accessible = false`, set
 subnets' CIDRs are inside `redshift_allowed_cidrs` so the App Runner VPC
 connector can reach Redshift on `5439`.
 
-> App Runner ingress is public HTTPS. Put it behind your own auth (e.g. an
-> identity-aware proxy) before exposing real data to the internet.
+### Login: Cognito + ALB in front of App Runner
+
+By default the App Runner URL is public to anyone who finds it. Set
+`dashboard_enable_auth = true` (see the commented block in
+`infra/terraform/envs/prod.tfvars.example`) and Terraform instead makes the
+service private and fronts it with an ALB that requires a Cognito Hosted UI
+login:
+
+```
+internet -> ALB (HTTPS + Cognito) -> VPC interface endpoint -> App Runner (private)
+```
+
+Prerequisites, because they can't be created fully from Terraform:
+
+- a **domain you control** (`dashboard_auth_domain_name`), and
+- an **ACM certificate** for it in the stack's region
+  (`dashboard_acm_certificate_arn`; request it in the ACM console and complete
+  DNS validation before applying),
+- **public subnets** for the ALB (`dashboard_alb_subnet_ids`, >= 2 AZs) and
+  subnets for the endpoint ENIs (`dashboard_vpce_subnet_ids`; the same private
+  subnets as the VPC connector are fine).
+
+After apply:
+
+```powershell
+# 1) Point your domain at the ALB (CNAME or Route53 alias)
+terraform -chdir=infra/terraform output dashboard_alb_dns_name
+
+# 2) Create at least one login (users are not managed in Terraform, so no
+#    passwords touch state). Cognito emails a temporary password.
+$pool = terraform -chdir=infra/terraform output -raw dashboard_cognito_user_pool_id
+aws cognito-idp admin-create-user --user-pool-id $pool --username you@example.com
+```
+
+Extra cost: ALB (~$16/mo + LCU usage) plus one interface endpoint per AZ
+(~$7/mo each); Cognito stays in free tier at demo scale. HTTP:80 on the ALB
+redirects to HTTPS, and `dashboard_auth_allowed_cidrs` can further restrict who
+reaches the login page at all.

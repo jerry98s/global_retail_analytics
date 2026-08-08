@@ -85,10 +85,6 @@ with DAG(
             "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/dbt_project /tmp/dbt_project && "
             "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts && "
             "cp /tmp/dbt_project/profiles.yml.example /tmp/dbt_project/profiles.yml && "
-            "export RS_HOST='{{ var.value.redshift_host }}' "
-            "RS_USER='{{ var.value.redshift_user }}' "
-            "RS_PASSWORD='{{ var.value.redshift_password }}' "
-            "RS_DATABASE='{{ var.value.redshift_database }}' && "
             "cd /tmp/dbt_project && dbt deps && "
             "dbt run --select dim_product --target prod"
         ),
@@ -97,10 +93,6 @@ with DAG(
     test_dim_product = BashOperator(
         task_id="dbt_test_dim_product",
         bash_command=dbt_bash_with_metadata(
-            "export RS_HOST='{{ var.value.redshift_host }}' "
-            "RS_USER='{{ var.value.redshift_user }}' "
-            "RS_PASSWORD='{{ var.value.redshift_password }}' "
-            "RS_DATABASE='{{ var.value.redshift_database }}' && "
             "cd /tmp/dbt_project && "
             "dbt test --select dim_product --target prod"
         ),

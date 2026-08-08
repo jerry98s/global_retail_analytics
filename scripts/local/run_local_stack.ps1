@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet("up", "topics", "simulate", "flink", "flink-stop", "dbt", "quality", "all")]
+    [ValidateSet("up", "topics", "simulate", "flink", "flink-stop", "pos-parquet", "load-duckdb", "dbt", "quality", "all")]
     [string]$Task = "all",
     [Parameter(Mandatory = $false)]
     [ValidateRange(100, 100000)]
@@ -10,7 +10,17 @@ param(
     [int]$ClickstreamDurationSeconds = 30,
     [Parameter(Mandatory = $false)]
     [ValidateSet("clickstream", "inventory", "all")]
-    [string]$FlinkJob = "all"
+    [string]$FlinkJob = "all",
+    # iceberg = reuse Flink Parquet + local POS Parquet; seed only dim_date/dim_store.
+    # seeds   = curated CSV bronze/silver fixtures (CI identity scenarios).
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("iceberg", "seeds")]
+    [string]$DbtSource = "iceberg",
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(30, 600)]
+    [int]$IcebergWaitSeconds = 90,
+    [Parameter(Mandatory = $false)]
+    [int]$PosTransactionCount = 500
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +32,179 @@ $RepoRoot         = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $ComposeDir       = (Resolve-Path (Join-Path $PSScriptRoot '..\..\infra\docker\compose')).Path
 $MainCompose      = Join-Path $ComposeDir 'docker-compose.yml'
 $DashboardCompose = Join-Path $ComposeDir 'docker-compose.dashboard.yml'
+$IcebergHostDir   = Join-Path $RepoRoot '.local\iceberg'
+$DbtDir           = Join-Path $RepoRoot 'transformation\dbt_project'
+$VenvDir          = Join-Path $RepoRoot '.venv'
+$ProjectPython    = Join-Path $VenvDir 'Scripts\python.exe'
+$ProjectDbt       = Join-Path $VenvDir 'Scripts\dbt.exe'
+
+function Ensure-ProjectVenv {
+    if (-not (Test-Path $ProjectPython)) {
+        $uv = Get-Command uv -ErrorAction SilentlyContinue
+        if ($uv) {
+            Write-Host "Creating .venv via uv sync --group dev ..." -ForegroundColor DarkGray
+            Push-Location $RepoRoot
+            try {
+                & uv sync --group dev
+                if ($LASTEXITCODE -ne 0) {
+                    throw "uv sync failed with exit code $LASTEXITCODE"
+                }
+            }
+            finally {
+                Pop-Location
+            }
+        } else {
+            throw @"
+Project virtualenv not found at $VenvDir
+Install uv (https://docs.astral.sh/uv/) and run:
+  uv sync --group dev
+Or create .venv manually and pip install from pyproject.toml [dependency-groups].dev
+"@
+        }
+    }
+    if (-not (Test-Path $ProjectPython)) {
+        throw "Project Python not found at $ProjectPython after venv setup."
+    }
+}
+
+function Get-PythonCmd {
+    Ensure-ProjectVenv
+    return $ProjectPython
+}
+
+function Get-DbtCmd {
+    Ensure-ProjectVenv
+    if (Test-Path $ProjectDbt) {
+        return $ProjectDbt
+    }
+    return $ProjectPython
+}
+
+function Invoke-ProjectPython {
+    param(
+        [Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)]
+        [string[]]$Args
+    )
+    Ensure-ProjectVenv
+    Write-Host ">> $ProjectPython $($Args -join ' ')" -ForegroundColor DarkGray
+    # Native stderr (tqdm/GE progress) must not abort under $ErrorActionPreference=Stop.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $ProjectPython @Args
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($code -ne 0) {
+        throw "Python command failed with exit code ${code}: $($Args -join ' ')"
+    }
+}
+
+function Invoke-ProjectDbt {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Args,
+        [string]$ExecutionId = ""
+    )
+    Ensure-ProjectVenv
+    $dbtExe = Get-DbtCmd
+    Write-Host ">> $dbtExe $($Args -join ' ')" -ForegroundColor DarkGray
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($dbtExe -eq $ProjectPython) {
+            & $ProjectPython -m dbt @Args
+        } else {
+            & $dbtExe @Args
+        }
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($ExecutionId) {
+        # Parse run_results immediately before the next dbt command overwrites it.
+        Invoke-MetadataObserver @(
+            'parse-dbt',
+            '--backend', 'local',
+            '--execution-id', $ExecutionId,
+            '--run-results', (Join-Path $DbtDir 'target\run_results.json')
+        )
+    }
+    if ($code -ne 0) {
+        throw "dbt command failed with exit code ${code}: $($Args -join ' ')"
+    }
+}
+
+function Invoke-MetadataObserver {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Args
+    )
+    # Fail-open: metadata CLI itself exits 0 on write errors.
+    # Always use an absolute path — callers often Push-Location into dbt_project.
+    $observer = Join-Path $RepoRoot 'scripts\common\metadata_observer.py'
+    try {
+        Invoke-ProjectPython $observer @Args
+    } catch {
+        Write-Host "WARNING: metadata observer failed (ignored): $_" -ForegroundColor Yellow
+    }
+}
+
+function New-LocalExecutionId {
+    return [guid]::NewGuid().ToString()
+}
+
+function Start-LocalPipelineRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutionId,
+        [Parameter(Mandatory = $true)][string]$Pipeline
+    )
+    Invoke-MetadataObserver @(
+        'init-local',
+        '--backend', 'local',
+        '--metadata-duckdb', (Join-Path $DbtDir 'local_metadata.duckdb')
+    )
+    Invoke-MetadataObserver @(
+        'start-run',
+        '--backend', 'local',
+        '--execution-id', $ExecutionId,
+        '--pipeline', $Pipeline,
+        '--environment', 'local',
+        '--trigger', 'manual'
+    )
+}
+
+function Finish-LocalPipelineRun {
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutionId,
+        [Parameter(Mandatory = $true)][ValidateSet('SUCCESS','FAILED')][string]$Status,
+        [string]$ErrorText = ""
+    )
+    $args = @(
+        'finish-run',
+        '--backend', 'local',
+        '--execution-id', $ExecutionId,
+        '--status', $Status
+    )
+    if ($ErrorText) {
+        $args += @('--error', $ErrorText)
+    }
+    Invoke-MetadataObserver $args
+}
+
+function Invoke-LocalFreshness {
+    param([Parameter(Mandatory = $true)][string]$ExecutionId)
+    Invoke-MetadataObserver @(
+        'collect-freshness',
+        '--backend', 'local',
+        '--execution-id', $ExecutionId,
+        '--analytics-duckdb', (Join-Path $DbtDir 'local_retail.duckdb'),
+        '--metadata-duckdb', (Join-Path $DbtDir 'local_metadata.duckdb')
+    )
+}
 
 function Wait-ForKafka {
     param(
@@ -67,7 +250,6 @@ function Invoke-CheckedCommand {
 }
 
 function Ensure-LocalDbtProfile {
-    $DbtDir = Join-Path $RepoRoot 'transformation\dbt_project'
     $Profile = Join-Path $DbtDir 'profiles.yml'
     $ProfileExample = Join-Path $DbtDir 'profiles.yml.example'
 
@@ -77,10 +259,115 @@ function Ensure-LocalDbtProfile {
     }
 }
 
+function Ensure-IcebergHostDir {
+    if (-not (Test-Path $IcebergHostDir)) {
+        New-Item -ItemType Directory -Force -Path $IcebergHostDir | Out-Null
+        Write-Host "Created $IcebergHostDir (Flink bind-mount)." -ForegroundColor DarkGray
+    }
+}
+
+function Wait-ForIcebergParquet {
+    param(
+        [int]$TimeoutSec = 90,
+        [string[]]$RelativeDirs = @(
+            'bronze\clickstream_events\data',
+            'bronze\inventory_events\data'
+        )
+    )
+    Write-Host "Waiting up to ${TimeoutSec}s for Iceberg Parquet under $IcebergHostDir ..." -ForegroundColor DarkGray
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $ready = $true
+        foreach ($rel in $RelativeDirs) {
+            $dir = Join-Path $IcebergHostDir $rel
+            $hits = @()
+            if (Test-Path $dir) {
+                $hits = @(Get-ChildItem -Path $dir -Filter '*.parquet' -Recurse -ErrorAction SilentlyContinue)
+            }
+            if ($hits.Count -eq 0) { $ready = $false; break }
+        }
+        if ($ready) {
+            Write-Host "Iceberg Parquet present." -ForegroundColor DarkGray
+            return
+        }
+        Start-Sleep -Seconds 5
+    }
+    Write-Host "WARNING: timed out waiting for Iceberg Parquet - dbt load may fail." -ForegroundColor Yellow
+}
+
+function Invoke-PosParquetLocal {
+    $outDir = Join-Path $IcebergHostDir 'bronze\pos_transactions'
+    $txnDate = (Get-Date).ToString('yyyy-MM-dd')
+    Invoke-ProjectPython -m ingestion.batch.generate_pos_parquet `
+        --date $txnDate `
+        --output-dir $outDir `
+        --transaction-count $PosTransactionCount
+}
+
+function Invoke-LoadDuckdb {
+    Invoke-ProjectPython scripts/local/load_iceberg_to_duckdb.py `
+        --iceberg-dir $IcebergHostDir `
+        --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
+}
+
+function Invoke-DbtIceberg {
+    param([string]$ExecutionId = "")
+    Ensure-LocalDbtProfile
+    Ensure-IcebergHostDir
+    Invoke-Step "Generate local POS Parquet (not streamed to Iceberg)" {
+        Invoke-PosParquetLocal
+    }
+    Invoke-Step "Load Iceberg + POS Parquet into DuckDB" {
+        Invoke-LoadDuckdb
+    }
+    if ($ExecutionId) {
+        Invoke-LocalFreshness -ExecutionId $ExecutionId
+    }
+    Push-Location $DbtDir
+    try {
+        Invoke-ProjectDbt @('deps', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+        # Only reference dims - stream + POS tables already loaded from Parquet.
+        Invoke-ProjectDbt @(
+            'seed', '--profiles-dir', '.', '--target', 'local',
+            '--select', 'dim_date', 'dim_store'
+        ) -ExecutionId $ExecutionId
+        Invoke-ProjectDbt @('run', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+    }
+    finally {
+        Pop-Location
+    }
+    if ($ExecutionId) {
+        Invoke-LocalFreshness -ExecutionId $ExecutionId
+    }
+}
+
+function Invoke-DbtSeeds {
+    param([string]$ExecutionId = "")
+    Ensure-LocalDbtProfile
+    $duckDb = Join-Path $DbtDir 'local_retail.duckdb'
+    if (Test-Path $duckDb) {
+        Remove-Item $duckDb -Force
+        Write-Host "Removed $duckDb for clean CSV seed load." -ForegroundColor DarkGray
+    }
+    Push-Location $DbtDir
+    try {
+        Invoke-ProjectDbt @('deps', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+        Invoke-ProjectDbt @('seed', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+        Invoke-ProjectDbt @('run', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+    }
+    finally {
+        Pop-Location
+    }
+    if ($ExecutionId) {
+        Invoke-LocalFreshness -ExecutionId $ExecutionId
+    }
+}
+
 Push-Location $RepoRoot
 try {
     switch ($Task) {
         "up" {
+            Ensure-IcebergHostDir
             Invoke-Step "Starting local Kafka stack" {
                 Invoke-CheckedCommand "docker compose -f $MainCompose up -d"
             }
@@ -92,21 +379,25 @@ try {
                 if (-not $env:KAFKA_BOOTSTRAP_SERVERS) {
                     $env:KAFKA_BOOTSTRAP_SERVERS = "127.0.0.1:9092"
                 }
-                Invoke-CheckedCommand "python ingestion/kafka/topics.py"
+                Invoke-ProjectPython ingestion/kafka/topics.py
             }
         }
         "simulate" {
-            Invoke-Step "Running POS producer" {
-                Invoke-CheckedCommand "python -m ingestion.kafka.producer_sim.pos_producer"
+            Invoke-Step "Running POS producer (Kafka only; POS bronze uses pos-parquet for dbt)" {
+                Invoke-ProjectPython -m ingestion.kafka.producer_sim.pos_producer
             }
             Invoke-Step "Running inventory producer" {
-                Invoke-CheckedCommand "python -m ingestion.kafka.producer_sim.inventory_producer"
+                # 90s spans >1 local silver window; with 5s local watermark delay
+                # at least one tumble can close before the post-simulate wait.
+                Invoke-ProjectPython -m ingestion.kafka.producer_sim.inventory_producer --duration 90
             }
             Invoke-Step "Running clickstream producer" {
-                Invoke-CheckedCommand "python -c `"from ingestion.kafka.producer_sim.clickstream_producer import run_producer; run_producer(events_per_second=$ClickstreamEventsPerSecond, duration_seconds=$ClickstreamDurationSeconds)`""
+                $code = "from ingestion.kafka.producer_sim.clickstream_producer import run_producer; run_producer(events_per_second=$ClickstreamEventsPerSecond, duration_seconds=$ClickstreamDurationSeconds)"
+                Invoke-ProjectPython -c $code
             }
         }
         "flink" {
+            Ensure-IcebergHostDir
             Invoke-Step "Building/starting local Flink cluster" {
                 Invoke-CheckedCommand "docker compose -f $MainCompose up -d --build flink-jobmanager flink-taskmanager"
             }
@@ -130,10 +421,6 @@ try {
             $submit = {
                 param([string]$entry, [string]$jobName, [string]$pyFiles)
                 Write-Host ">> Submitting $jobName" -ForegroundColor DarkGray
-                # Flink 1.17 accepts a comma-separated file/archive list for
-                # -pyfs, not a directory. Ship each shared helper explicitly.
-                # -pyexec / -pyclientexec point Flink at python3 explicitly; Debian images
-                # do not ship a `python` binary by default.
                 Invoke-CheckedCommand "docker compose -f $MainCompose exec -T flink-jobmanager flink run -d -pyexec /usr/bin/python3 -pyclientexec /usr/bin/python3 -pyfs $pyFiles -py /opt/streaming/flink_jobs/$entry"
             }
             Invoke-Step "Submitting Flink jobs" {
@@ -145,9 +432,26 @@ try {
                     & $submit "inventory_silver_job.py" "inventory-hourly" $PyFiles
                 }
             }
+            # The chown above runs before submission, but the jobs create the
+            # Iceberg table dirs only once they start — and those come back
+            # root-owned on Docker Desktop bind mounts, which makes every
+            # checkpoint commit fail with Permission denied on a fresh clone.
+            # Re-chown after submission, waiting for the dirs to appear first.
+            Invoke-Step "Aligning Iceberg dir ownership post-submit" {
+                $deadline = (Get-Date).AddSeconds(90)
+                do {
+                    Start-Sleep -Seconds 10
+                    docker compose -f $MainCompose exec -T -u root flink-jobmanager chown -R flink:flink /tmp/iceberg 2>$null | Out-Null
+                    $leftover = docker compose -f $MainCompose exec -T flink-jobmanager find /tmp/iceberg -user root -print -quit 2>$null
+                } while ($leftover -and (Get-Date) -lt $deadline)
+                if ($leftover) {
+                    Write-Host "WARNING: $leftover still root-owned; Iceberg commits may fail (Permission denied)." -ForegroundColor Yellow
+                }
+            }
             Write-Host ""
             Write-Host "Flink Web UI:  http://localhost:8082" -ForegroundColor Yellow
-            Write-Host "Iceberg data:  docker compose -f $MainCompose exec flink-taskmanager ls -lah /tmp/iceberg/" -ForegroundColor Yellow
+            Write-Host "Iceberg host:  $IcebergHostDir" -ForegroundColor Yellow
+            Write-Host "Tip: start Flink BEFORE simulate (latest-offset). Task all does this." -ForegroundColor Yellow
         }
         "flink-stop" {
             Invoke-Step "Cancelling running Flink jobs and stopping cluster" {
@@ -164,42 +468,129 @@ try {
                 Invoke-CheckedCommand "docker compose -f $MainCompose stop flink-taskmanager flink-jobmanager"
             }
         }
+        "pos-parquet" {
+            Ensure-IcebergHostDir
+            Invoke-Step "Generate local POS bronze Parquet" {
+                Invoke-PosParquetLocal
+            }
+        }
+        "load-duckdb" {
+            Ensure-IcebergHostDir
+            Invoke-Step "Load Iceberg warehouse into DuckDB" {
+                Invoke-LoadDuckdb
+            }
+        }
         "dbt" {
-            Invoke-Step "Installing dbt packages and running models" {
-                Ensure-LocalDbtProfile
-                Push-Location "transformation/dbt_project"
-                try {
-                    Invoke-CheckedCommand "dbt deps --profiles-dir . --target local"
-                    Invoke-CheckedCommand "dbt seed --profiles-dir . --target local"
-                    Invoke-CheckedCommand "dbt run --profiles-dir . --target local"
+            $execId = New-LocalExecutionId
+            $pipelineStatus = "SUCCESS"
+            $pipelineError = ""
+            try {
+                Start-LocalPipelineRun -ExecutionId $execId -Pipeline "local_dbt"
+                if ($DbtSource -eq "iceberg") {
+                    Invoke-Step "dbt local (Iceberg Parquet + dim seeds)" {
+                        Invoke-DbtIceberg -ExecutionId $execId
+                    }
+                } else {
+                    Invoke-Step "dbt local (CSV seeds fixture mode)" {
+                        Invoke-DbtSeeds -ExecutionId $execId
+                    }
                 }
-                finally {
-                    Pop-Location
-                }
+            } catch {
+                $pipelineStatus = "FAILED"
+                $pipelineError = "$_"
+                throw
+            } finally {
+                Finish-LocalPipelineRun -ExecutionId $execId -Status $pipelineStatus -ErrorText $pipelineError
+                Write-Host "Metadata execution_id: $execId" -ForegroundColor DarkGray
             }
         }
         "quality" {
-            Invoke-Step "Running dbt tests" {
-                Ensure-LocalDbtProfile
-                Push-Location "transformation/dbt_project"
-                try {
-                    Invoke-CheckedCommand "dbt test --profiles-dir . --target local"
+            $execId = New-LocalExecutionId
+            $pipelineStatus = "SUCCESS"
+            $pipelineError = ""
+            try {
+                Start-LocalPipelineRun -ExecutionId $execId -Pipeline "local_quality"
+                Invoke-Step "Running dbt tests" {
+                    Ensure-LocalDbtProfile
+                    Push-Location $DbtDir
+                    try {
+                        Invoke-ProjectDbt @('test', '--profiles-dir', '.', '--target', 'local') -ExecutionId $execId
+                    }
+                    finally {
+                        Pop-Location
+                    }
                 }
-                finally {
-                    Pop-Location
+                Invoke-Step "Running Great Expectations gold_layer_local (DuckDB)" {
+                    Invoke-ProjectPython scripts/local/run_ge_local.py `
+                        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
+                        --execution-id $execId `
+                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb')
                 }
-            }
-            Invoke-Step "Running offline pytest suite" {
-                Invoke-CheckedCommand "python -m pytest tests/unit -q"
+                Invoke-LocalFreshness -ExecutionId $execId
+                Invoke-Step "Running offline pytest suite" {
+                    Invoke-ProjectPython -m pytest tests/unit -q
+                }
+            } catch {
+                $pipelineStatus = "FAILED"
+                $pipelineError = "$_"
+                throw
+            } finally {
+                Finish-LocalPipelineRun -ExecutionId $execId -Status $pipelineStatus -ErrorText $pipelineError
+                Write-Host "Metadata execution_id: $execId" -ForegroundColor DarkGray
             }
         }
         "all" {
-            & $PSCommandPath -Task up
-            & $PSCommandPath -Task topics
-            & $PSCommandPath -Task simulate -ClickstreamEventsPerSecond $ClickstreamEventsPerSecond -ClickstreamDurationSeconds $ClickstreamDurationSeconds
-            & $PSCommandPath -Task flink -FlinkJob $FlinkJob
-            & $PSCommandPath -Task dbt
-            & $PSCommandPath -Task quality
+            # Flink before simulate: jobs use scan.startup.mode=latest-offset.
+            $execId = New-LocalExecutionId
+            $pipelineStatus = "SUCCESS"
+            $pipelineError = ""
+            try {
+                Start-LocalPipelineRun -ExecutionId $execId -Pipeline "local_e2e"
+                & $PSCommandPath -Task up
+                & $PSCommandPath -Task topics
+                & $PSCommandPath -Task flink -FlinkJob $FlinkJob
+                & $PSCommandPath -Task simulate -ClickstreamEventsPerSecond $ClickstreamEventsPerSecond -ClickstreamDurationSeconds $ClickstreamDurationSeconds
+                Wait-ForIcebergParquet -TimeoutSec $IcebergWaitSeconds
+                # Allow silver 1-minute windows + idle timeout to close after produce stops.
+                Write-Host "Waiting 75s for silver windows / checkpoints ..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds 75
+                if ($DbtSource -eq "iceberg") {
+                    Invoke-Step "dbt local (Iceberg Parquet + dim seeds)" {
+                        Invoke-DbtIceberg -ExecutionId $execId
+                    }
+                } else {
+                    Invoke-Step "dbt local (CSV seeds fixture mode)" {
+                        Invoke-DbtSeeds -ExecutionId $execId
+                    }
+                }
+                Invoke-Step "Running dbt tests" {
+                    Ensure-LocalDbtProfile
+                    Push-Location $DbtDir
+                    try {
+                        Invoke-ProjectDbt @('test', '--profiles-dir', '.', '--target', 'local') -ExecutionId $execId
+                    }
+                    finally {
+                        Pop-Location
+                    }
+                }
+                Invoke-Step "Running Great Expectations gold_layer_local (DuckDB)" {
+                    Invoke-ProjectPython scripts/local/run_ge_local.py `
+                        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
+                        --execution-id $execId `
+                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb')
+                }
+                Invoke-LocalFreshness -ExecutionId $execId
+                Invoke-Step "Running offline pytest suite" {
+                    Invoke-ProjectPython -m pytest tests/unit -q
+                }
+            } catch {
+                $pipelineStatus = "FAILED"
+                $pipelineError = "$_"
+                throw
+            } finally {
+                Finish-LocalPipelineRun -ExecutionId $execId -Status $pipelineStatus -ErrorText $pipelineError
+                Write-Host "Metadata execution_id: $execId (local_metadata.duckdb)" -ForegroundColor Yellow
+            }
         }
     }
 }

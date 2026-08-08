@@ -51,14 +51,17 @@ services:
   flink-jobmanager:
     build: ../flink
     image: retail-analytics/flink:1.17.1
-    # Local named volumes are root-owned on first mount; root avoids checkpoint
-    # and Iceberg warehouse permission failures during laptop smoke tests.
+    # Local named volumes are root-owned on first mount on Docker Desktop for
+    # Windows; chmod -R 777 does not propagate to the mountpoint. chown'ing to
+    # flink:flink before the entrypoint drops privileges lets the JobManager
+    # process (uid=flink) write checkpoints, savepoints, and Iceberg data.
     user: "0:0"
     command:
       - bash
       - -lc
       - |
         mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chown -R flink:flink /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
         chmod -R 777 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
         exec /docker-entrypoint.sh jobmanager
     depends_on:
@@ -81,9 +84,17 @@ services:
       KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       ICEBERG_BRONZE_WAREHOUSE: ${ICEBERG_BRONZE_WAREHOUSE:-file:///tmp/iceberg}
       ICEBERG_SILVER_WAREHOUSE: ${ICEBERG_SILVER_WAREHOUSE:-file:///tmp/iceberg}
+      # Local short sims: 1-minute tumble so silver closes without waiting for
+      # the wall-clock hour. Cloud/EMR leave this unset (job default = 1 HOUR).
+      INVENTORY_SILVER_WINDOW: ${INVENTORY_SILVER_WINDOW:-INTERVAL '1' MINUTE}
+      # Local: 60s cloud watermark never closes 1-min windows during a ~60–90s
+      # sim (need event_time past window_end + delay). Keep cloud default 60.
+      INVENTORY_SILVER_WATERMARK_DELAY_SECONDS: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-5}
     volumes:
       - ../../../streaming:/opt/streaming
-      - flink-iceberg:/tmp/iceberg
+      # Host bind-mount so dbt/DuckDB can reuse Flink Iceberg Parquet without
+      # docker cp. Path is repo-root .local/iceberg (see scripts/local/).
+      - ../../../.local/iceberg:/tmp/iceberg
       - flink-checkpoints:/tmp/flink-checkpoints
 
   flink-taskmanager:
@@ -97,6 +108,7 @@ services:
       - -lc
       - |
         mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chown -R flink:flink /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
         chmod -R 777 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
         exec /docker-entrypoint.sh taskmanager
     depends_on:
@@ -104,7 +116,7 @@ services:
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 4
+        taskmanager.numberOfTaskSlots: 20
         state.backend: rocksdb
         state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink-checkpoints}
         state.savepoints.dir: ${FLINK_SAVEPOINT_DIR:-file:///tmp/flink-savepoints}
@@ -113,11 +125,12 @@ services:
       KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       ICEBERG_BRONZE_WAREHOUSE: ${ICEBERG_BRONZE_WAREHOUSE:-file:///tmp/iceberg}
       ICEBERG_SILVER_WAREHOUSE: ${ICEBERG_SILVER_WAREHOUSE:-file:///tmp/iceberg}
+      INVENTORY_SILVER_WINDOW: ${INVENTORY_SILVER_WINDOW:-INTERVAL '1' MINUTE}
+      INVENTORY_SILVER_WATERMARK_DELAY_SECONDS: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-5}
     volumes:
       - ../../../streaming:/opt/streaming
-      - flink-iceberg:/tmp/iceberg
+      - ../../../.local/iceberg:/tmp/iceberg
       - flink-checkpoints:/tmp/flink-checkpoints
 
 volumes:
-  flink-iceberg:
   flink-checkpoints:

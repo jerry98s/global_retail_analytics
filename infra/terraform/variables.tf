@@ -47,6 +47,30 @@ variable "emr_ec2_instance_profile_arn" {
   type        = string
 }
 
+variable "emr_master_instance_type" {
+  description = "EMR master node instance type."
+  type        = string
+  default     = "m5.xlarge"
+}
+
+variable "emr_core_instance_type" {
+  description = "EMR core node instance type."
+  type        = string
+  default     = "m5.2xlarge"
+}
+
+variable "emr_core_instance_count" {
+  description = "Number of EMR core nodes."
+  type        = number
+  default     = 2
+}
+
+variable "emr_core_bid_price" {
+  description = "Spot bid price for EMR core nodes."
+  type        = string
+  default     = "0.28"
+}
+
 variable "redshift_subnet_ids" {
   description = "Subnet IDs (>= 3 AZs) for the Redshift Serverless workgroup."
   type        = list(string)
@@ -121,6 +145,48 @@ variable "dashboard_vpc_connector_subnet_ids" {
   description = "Private subnets for the dashboard's App Runner VPC connector (needed when Redshift is VPC-only). Empty = public egress."
   type        = list(string)
   default     = []
+}
+
+variable "dashboard_enable_auth" {
+  description = <<-EOT
+    Put a Cognito login in front of the dashboard: the App Runner service
+    becomes private (VPC-only), and a public ALB terminates HTTPS, requires a
+    Cognito Hosted UI login, and forwards authenticated traffic. Requires
+    dashboard_auth_domain_name, dashboard_acm_certificate_arn,
+    dashboard_alb_subnet_ids, and dashboard_vpce_subnet_ids.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "dashboard_auth_domain_name" {
+  description = "Public FQDN for the dashboard (e.g. dashboard.example.com). Point its DNS at the ALB (output dashboard_alb_dns_name). Required when dashboard_enable_auth = true."
+  type        = string
+  default     = ""
+}
+
+variable "dashboard_acm_certificate_arn" {
+  description = "ACM certificate ARN covering dashboard_auth_domain_name, in the same region as the stack. Required when dashboard_enable_auth = true (ALB HTTPS listeners cannot use self-signed or default certs)."
+  type        = string
+  default     = ""
+}
+
+variable "dashboard_alb_subnet_ids" {
+  description = "Public subnets (>= 2 AZs, with an internet-gateway route) for the dashboard ALB. Required when dashboard_enable_auth = true."
+  type        = list(string)
+  default     = []
+}
+
+variable "dashboard_vpce_subnet_ids" {
+  description = "Subnets for the App Runner VPC interface endpoint ENIs (private subnets are fine; must be routable from the ALB subnets). Required when dashboard_enable_auth = true."
+  type        = list(string)
+  default     = []
+}
+
+variable "dashboard_auth_allowed_cidrs" {
+  description = "CIDRs allowed to reach the dashboard ALB on 80/443. Default open to the internet (Cognito still gates access); tighten to office/VPN ranges if the dashboard is internal-only."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
 }
 
 variable "enable_mwaa" {

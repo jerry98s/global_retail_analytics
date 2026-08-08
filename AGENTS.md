@@ -48,6 +48,7 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task flink
 .\scripts\local\run_local_stack.ps1 -Task simulate
 .\scripts\local\run_local_stack.ps1 -Task dbt
+.\scripts\local\run_local_stack.ps1 -Task quality
 ```
 
 - Default `-DbtSource iceberg`: Flink Parquet under `.local/iceberg` + local POS
@@ -57,6 +58,7 @@ uv sync --group dev
 - Start **Flink before simulate** (`latest-offset`). Task `all` does this.
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
+- `-Task quality`: `dbt test` + GE `gold_layer_local` (DuckDB) + `pytest tests/unit`.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/ -q
@@ -93,12 +95,11 @@ Never run raw Terraform from a stack directory.
 
 - Analytics schema `summary.*` (dbt `marts.summary`) holds daily rollups from
   one Gold fact each — see `docs/data-model/platform-layers.md`.
-- Operational DB `metadata.meta.*` (local branch: `local_metadata.duckdb`) is
-  written by `scripts/common/metadata_observer.py` (fail-open). Not a Glue
-  replacement.
+- Operational DB `metadata.meta.*` (local: `local_metadata.duckdb`) is written
+  by `scripts/common/metadata_observer.py` (fail-open). Not a Glue replacement.
 - Cloud bootstrap: `.\scripts\cloud\bootstrap_redshift.ps1 -Env dev -MetadataOnly`
   (two Query Editor scripts; switch database between create and schema DDL).
-- Shared contracts may land on `local-testing-version` first; cherry-pick
+- Implement shared contracts on `local-testing-version` first; cherry-pick
   cloud-safe summary/metadata/Airflow wiring to `main` without local compose
   bind-mounts.
 

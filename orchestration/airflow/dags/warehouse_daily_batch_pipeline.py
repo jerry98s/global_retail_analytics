@@ -14,7 +14,9 @@ Required Airflow Variables (seed from `.\scripts\cloud\deploy_platform.ps1 -Env 
   - redshift_metadata_database  : Operational metadata database (default metadata)
   - redshift_host               : Redshift workgroup endpoint (no port)
   - redshift_user               : Redshift admin user
-  - redshift_password           : Redshift admin password (Airflow secret)
+  - redshift_secret_arn         : Secrets Manager ARN of the Redshift password.
+                                  Tasks fetch the value at runtime, so the
+                                  password itself is never an Airflow Variable.
   - pos_bronze_s3_path          : s3://<bronze-bucket>/iceberg/bronze/pos_transactions/
 
 Optional Airflow Variables for row-count reconciliation (P2.5):
@@ -76,15 +78,11 @@ def _dbt_step(
         )
     else:
         inner = f"cd /tmp/dbt_project && {dbt_cmd_str}"
+    # No env= here: dbt_bash_with_metadata exports RS_HOST/RS_USER/RS_DATABASE
+    # and resolves RS_PASSWORD from Secrets Manager inside the task shell.
     return BashOperator(
         task_id=task_id,
         bash_command=dbt_bash_with_metadata(inner),
-        env={
-            "RS_HOST": "{{ var.value.redshift_host }}",
-            "RS_USER": "{{ var.value.redshift_user }}",
-            "RS_PASSWORD": "{{ var.value.redshift_password }}",
-            "RS_DATABASE": "{{ var.value.redshift_database }}",
-        },
     )
 
 
@@ -163,10 +161,10 @@ with DAG(
 
     ge_checkpoint = BashOperator(
         task_id      = "ge_gold_checkpoint",
+        # RS_SQLALCHEMY_URL is built by ge_bash_with_metadata from the secret.
         bash_command = ge_bash_with_metadata("""
             aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/quality/great_expectations /tmp/great_expectations
             aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts
-            export RS_SQLALCHEMY_URL="redshift+redshift_connector://{{ var.value.redshift_user }}:{{ var.value.redshift_password }}@{{ var.value.redshift_host }}:5439/{{ var.value.redshift_database }}"
             cd /tmp/great_expectations && \
             great_expectations checkpoint run gold_layer_daily
         """),

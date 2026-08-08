@@ -41,6 +41,29 @@ def _observer() -> Any | None:
         return None
 
 
+def redshift_password() -> str:
+    """Resolve the Redshift password for in-process (PythonOperator) tasks.
+
+    Prefers the ``redshift_secret_arn`` Variable, which holds a Secrets Manager
+    ARN rather than the password, so the plaintext is never stored in the
+    Airflow metadata DB or shown in the UI. Falls back to a legacy
+    ``redshift_password`` Variable so an environment mid-migration keeps running.
+    """
+    from airflow.models import Variable
+
+    secret_arn = Variable.get("redshift_secret_arn", default_var="")
+    if not secret_arn:
+        return Variable.get("redshift_password")
+    observer = _observer()
+    if observer is None:
+        raise RuntimeError(
+            "metadata_observer is unavailable, so redshift_secret_arn cannot "
+            "be resolved. Check that metadata_observer.py deployed alongside "
+            "the plugins."
+        )
+    return observer.fetch_secret_password(secret_arn)
+
+
 def _writer(observer: Any) -> Any | None:
     try:
         from airflow.models import Variable
@@ -50,7 +73,7 @@ def _writer(observer: Any) -> Any | None:
             port=int(Variable.get("redshift_port", default_var="5439")),
             database=Variable.get("redshift_metadata_database", default_var="metadata"),
             user=Variable.get("redshift_user"),
-            password=Variable.get("redshift_password"),
+            password=redshift_password(),
         )
     except Exception as exc:  # noqa: BLE001
         log.warning("metadata writer init failed (fail-open): %s", exc)
@@ -195,7 +218,7 @@ def collect_freshness_task(**context: Any) -> int:
             port=int(Variable.get("redshift_port", default_var="5439")),
             database=Variable.get("redshift_database", default_var="prod"),
             user=Variable.get("redshift_user"),
-            password=Variable.get("redshift_password"),
+            password=redshift_password(),
         )
         return int(
             observer.collect_table_freshness(
@@ -219,9 +242,46 @@ def collect_freshness_task(**context: Any) -> int:
             pass
 
 
+def redshift_env_prelude(*, sqlalchemy_url: bool = False) -> str:
+    """Bash that exports Redshift connection env for a task.
+
+    Only non-secret values are templated by Jinja. The password is fetched from
+    Secrets Manager by the shell at runtime, so the rendered command (which
+    Airflow stores, displays in the Rendered Template tab, and writes to task
+    logs) contains the secret's ARN and never its value. Never add ``set -x``
+    here: tracing would echo the expanded password.
+    """
+    prelude = """
+export RS_HOST='{{ var.value.redshift_host }}'
+export RS_USER='{{ var.value.redshift_user }}'
+export RS_DATABASE='{{ var.value.redshift_database }}'
+export RS_METADATA_DATABASE='{{ var.value.redshift_metadata_database }}'
+export RS_SECRET_ARN='{{ var.value.redshift_secret_arn }}'
+RS_PASSWORD="$(aws secretsmanager get-secret-value --secret-id "$RS_SECRET_ARN" --query SecretString --output text)"
+export RS_PASSWORD
+if [ -z "$RS_PASSWORD" ]; then
+  echo "FATAL: could not read Redshift password from $RS_SECRET_ARN" >&2
+  exit 1
+fi
+""".strip()
+    if not sqlalchemy_url:
+        return prelude
+    # Great Expectations reads ${RS_SQLALCHEMY_URL} (quality/great_expectations/
+    # great_expectations.yml). Percent-encode the password so characters like
+    # @ / : cannot break the URL. Reads from env, not argv.
+    return (
+        prelude
+        + """
+RS_PASSWORD_ENC="$(python -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["RS_PASSWORD"], safe=""))')"
+export RS_SQLALCHEMY_URL="redshift+redshift_connector://$RS_USER:$RS_PASSWORD_ENC@$RS_HOST:5439/$RS_DATABASE"
+""".rstrip()
+    )
+
+
 def dbt_bash_with_metadata(inner_bash: str) -> str:
     """Run dbt bash, parse run_results in the same task, preserve exit code."""
     return f"""
+{redshift_env_prelude()}
 set +e
 {inner_bash}
 DBT_RC=$?
@@ -232,10 +292,6 @@ python /tmp/scripts/common/metadata_observer.py parse-dbt \\
   --backend redshift \\
   --execution-id "$EXEC_ID" \\
   --run-results /tmp/dbt_project/target/run_results.json \\
-  --rs-host '{{{{ var.value.redshift_host }}}}' \\
-  --rs-user '{{{{ var.value.redshift_user }}}}' \\
-  --rs-password '{{{{ var.value.redshift_password }}}}' \\
-  --rs-metadata-database '{{{{ var.value.redshift_metadata_database }}}}' \\
   || true
 exit $DBT_RC
 """.strip()
@@ -244,6 +300,7 @@ exit $DBT_RC
 def ge_bash_with_metadata(inner_bash: str) -> str:
     """Run GE checkpoint bash and record a single suite outcome; preserve RC."""
     return f"""
+{redshift_env_prelude(sqlalchemy_url=True)}
 set +e
 {inner_bash}
 GE_RC=$?
@@ -256,10 +313,6 @@ python /tmp/scripts/common/metadata_observer.py record-ge \\
   --execution-id "$EXEC_ID" \\
   --suite gold_layer_daily \\
   $SUCCESS_FLAG \\
-  --rs-host '{{{{ var.value.redshift_host }}}}' \\
-  --rs-user '{{{{ var.value.redshift_user }}}}' \\
-  --rs-password '{{{{ var.value.redshift_password }}}}' \\
-  --rs-metadata-database '{{{{ var.value.redshift_metadata_database }}}}' \\
   || true
 exit $GE_RC
 """.strip()

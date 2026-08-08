@@ -32,19 +32,9 @@ resource "aws_ecr_repository" "this" {
   tags = merge(local.tags, { Name = "${local.name_prefix}-dashboard" })
 }
 
-# --- Secret: Redshift password injected as a runtime secret -------------------
-
-resource "aws_secretsmanager_secret" "rs_password" {
-  name_prefix             = "${local.name_prefix}-dashboard-rs-"
-  description             = "Redshift password for the ${local.service_name} App Runner service."
-  recovery_window_in_days = 0
-  tags                    = local.tags
-}
-
-resource "aws_secretsmanager_secret_version" "rs_password" {
-  secret_id     = aws_secretsmanager_secret.rs_password.id
-  secret_string = var.redshift_password
-}
+# The password lives in the platform-level secret created by the root module
+# (aws_secretsmanager_secret.redshift_admin in main.tf); this module only
+# receives its ARN. A second copy here would drift on password rotation.
 
 # --- IAM: ECR access role (App Runner pulls the image) ------------------------
 
@@ -94,7 +84,7 @@ data "aws_iam_policy_document" "instance_secret" {
     sid       = "ReadRedshiftSecret"
     effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.rs_password.arn]
+    resources = [var.redshift_secret_arn]
   }
 }
 
@@ -164,7 +154,7 @@ resource "aws_apprunner_service" "this" {
         }
 
         runtime_environment_secrets = {
-          RS_PASSWORD = aws_secretsmanager_secret.rs_password.arn
+          RS_PASSWORD = var.redshift_secret_arn
         }
       }
     }
@@ -186,6 +176,12 @@ resource "aws_apprunner_service" "this" {
   }
 
   network_configuration {
+    ingress_configuration {
+      # With enable_auth, the only way in is the ALB -> VPC endpoint path in
+      # auth.tf; the public *.awsapprunner.com URL stops serving traffic.
+      is_publicly_accessible = !var.enable_auth
+    }
+
     egress_configuration {
       egress_type       = local.use_vpc ? "VPC" : "DEFAULT"
       vpc_connector_arn = local.use_vpc ? aws_apprunner_vpc_connector.this[0].arn : null
@@ -193,6 +189,4 @@ resource "aws_apprunner_service" "this" {
   }
 
   tags = merge(local.tags, { Name = local.service_name })
-
-  depends_on = [aws_secretsmanager_secret_version.rs_password]
 }

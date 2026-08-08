@@ -1,5 +1,9 @@
 """Verify identity graph output from the local DuckDB simulation.
 
+Requires fixture-mode seeds (not Iceberg fidelity mode)::
+
+    .\\scripts\\local\\run_local_stack.ps1 -Task dbt -DbtSource seeds
+
 Runs after `dbt run --target local --select +identity_graph`.
 Checks the scenarios encoded in seeds/bronze/clickstream_events.csv:
   1. Loyalty match    : loyalty:L1001 <-> customer:L1001 via POS loyalty_value_match

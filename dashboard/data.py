@@ -51,8 +51,9 @@ def load_local_table(name: str) -> pd.DataFrame:
     """
     if name not in _LOCAL_TABLES:
         raise ValueError(f"Unknown local table '{name}'. Choices: {sorted(_LOCAL_TABLES)}")
-    pattern = os.path.join(_local_dir(), _LOCAL_TABLES[name], "*.parquet")
-    files = sorted(glob.glob(pattern))
+    # Iceberg identity partitions nest under data/event_date=.../ — recursive glob.
+    pattern = os.path.join(_local_dir(), _LOCAL_TABLES[name], "**", "*.parquet")
+    files = sorted(glob.glob(pattern, recursive=True))
     if not files:
         return pd.DataFrame()
     return pd.concat((pd.read_parquet(f) for f in files), ignore_index=True)

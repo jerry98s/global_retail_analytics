@@ -42,6 +42,23 @@ resource "aws_sns_topic_subscription" "alert_email" {
   endpoint  = var.alert_email
 }
 
+# The Redshift admin password is stored here so runtime consumers (MWAA task
+# processes, App Runner) resolve it themselves. Airflow receives only this ARN,
+# which keeps the plaintext out of rendered templates, task logs, and argv.
+# recovery_window_in_days = 0 avoids the 30-day deletion window blocking a
+# re-apply that recreates the secret under the same name.
+resource "aws_secretsmanager_secret" "redshift_admin" {
+  name                    = "${var.project_name}-${var.environment}-redshift-admin"
+  description             = "Redshift admin password for dbt, Great Expectations, and metadata tasks."
+  recovery_window_in_days = 0
+  tags                    = local.common_tags
+}
+
+resource "aws_secretsmanager_secret_version" "redshift_admin" {
+  secret_id     = aws_secretsmanager_secret.redshift_admin.id
+  secret_string = var.redshift_admin_password
+}
+
 module "s3" {
   source      = "./modules/s3"
   project     = var.project_name
@@ -71,6 +88,10 @@ module "emr" {
   log_uri                      = "s3://${module.s3.bronze_bucket_name}/emr-logs/"
   artifacts_bucket             = module.s3.artifacts_bucket_name
   checkpoints_bucket           = module.s3.checkpoints_bucket_name
+  master_instance_type         = var.emr_master_instance_type
+  core_instance_type           = var.emr_core_instance_type
+  core_instance_count          = var.emr_core_instance_count
+  core_bid_price               = var.emr_core_bid_price
 }
 
 module "redshift" {
@@ -105,10 +126,17 @@ module "dashboard" {
   vpc_id                   = var.vpc_id
   vpc_connector_subnet_ids = var.dashboard_vpc_connector_subnet_ids
 
-  redshift_host     = module.redshift.endpoint
-  redshift_database = var.redshift_database_name
-  redshift_user     = var.redshift_admin_username
-  redshift_password = var.redshift_admin_password
+  enable_auth         = var.dashboard_enable_auth
+  auth_domain_name    = var.dashboard_auth_domain_name
+  acm_certificate_arn = var.dashboard_acm_certificate_arn
+  alb_subnet_ids      = var.dashboard_alb_subnet_ids
+  vpce_subnet_ids     = var.dashboard_vpce_subnet_ids
+  auth_allowed_cidrs  = var.dashboard_auth_allowed_cidrs
+
+  redshift_host       = module.redshift.endpoint
+  redshift_database   = var.redshift_database_name
+  redshift_user       = var.redshift_admin_username
+  redshift_secret_arn = aws_secretsmanager_secret.redshift_admin.arn
 }
 
 module "mwaa" {
@@ -126,4 +154,5 @@ module "mwaa" {
   environment_class     = var.mwaa_environment_class
   max_workers           = var.mwaa_max_workers
   webserver_access_mode = var.mwaa_webserver_access_mode
+  redshift_secret_arn   = aws_secretsmanager_secret.redshift_admin.arn
 }

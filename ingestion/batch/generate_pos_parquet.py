@@ -1,11 +1,12 @@
 """
-Generate a daily POS Parquet snapshot and upload to S3 bronze.
+Generate a daily POS Parquet snapshot for bronze.
 
-Used by the warehouse_daily_batch_pipeline Airflow DAG (and manually for dev). Writes
-directly to the Spectrum/dbt bronze path — same layout as Flink bronze jobs.
+Used by the warehouse_daily_batch_pipeline Airflow DAG (and manually for
+dev/local). Writes the same layout Flink bronze jobs use under ``data/``.
 
-Output layout:
+Output layouts:
   s3://<bucket>/iceberg/bronze/pos_transactions/data/dt=<YYYY-MM-DD>/part-00000.parquet
+  <local-dir>/data/dt=<YYYY-MM-DD>/part-00000.parquet   (--output-dir for local dbt)
 
 Idempotency (P3.6, docs/runbooks/dw-checklist-audit.md):
   The default seed is derived deterministically from `--date` so re-running
@@ -26,10 +27,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import structlog
@@ -165,6 +166,8 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 
 def upload_parquet(output_s3: str, txn_date: str, table: pa.Table) -> str:
+    import boto3  # lazy: only the S3 path needs the AWS SDK; local Parquet writes don't
+
     bucket, prefix = parse_s3_uri(output_s3)
     key = f"{prefix}data/dt={txn_date}/part-00000.parquet"
     buffer = io.BytesIO()
@@ -176,16 +179,50 @@ def upload_parquet(output_s3: str, txn_date: str, table: pa.Table) -> str:
     return uri
 
 
+def write_local_parquet(output_dir: str, txn_date: str, table: pa.Table) -> str:
+    """Write POS Parquet under a local Iceberg-style bronze prefix.
+
+    Layout (matches Spectrum Hive partition naming used in cloud)::
+
+        <output_dir>/data/dt=<YYYY-MM-DD>/part-00000.parquet
+
+    Pass ``--output-dir .local/iceberg/bronze/pos_transactions`` for the
+    local Flink warehouse bind-mount so ``load_iceberg_to_duckdb.py`` can
+    pick it up alongside stream tables.
+    """
+    root = Path(output_dir)
+    part_dir = root / "data" / f"dt={txn_date}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    path = part_dir / "part-00000.parquet"
+    pq.write_table(table, path, compression="snappy")
+    log.info("pos_parquet_written", path=str(path), rows=table.num_rows)
+    return str(path)
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate daily POS Parquet bronze and upload to S3.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate daily POS Parquet bronze. "
+            "Upload to S3 (--output-s3) or write locally (--output-dir)."
+        )
+    )
     parser.add_argument("--date", default=date.today().isoformat(), help="Transaction date YYYY-MM-DD.")
     parser.add_argument(
         "--output-s3",
-        default=os.environ.get(
-            "POS_BRONZE_S3_PATH",
-            "s3://retail-platform-dev-bronze/iceberg/bronze/pos_transactions/",
+        default=None,
+        help=(
+            "S3 prefix for bronze POS Parquet (trailing slash optional). "
+            "Default from POS_BRONZE_S3_PATH when --output-dir is omitted."
         ),
-        help="S3 prefix for bronze POS Parquet (trailing slash optional).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=(
+            "Local directory for bronze POS Parquet "
+            "(writes data/dt=<date>/part-00000.parquet). "
+            "Use for local dbt/DuckDB fidelity instead of --output-s3."
+        ),
     )
     parser.add_argument("--transaction-count", type=int, default=5000)
     parser.add_argument("--max-lines-per-txn", type=int, default=5)
@@ -204,6 +241,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.output_dir and args.output_s3:
+        raise SystemExit("Pass only one of --output-dir or --output-s3.")
     txn_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     rows = generate_rows(
         txn_date,
@@ -211,7 +250,16 @@ def main() -> None:
         args.max_lines_per_txn,
         seed_override=args.seed,
     )
-    uri = upload_parquet(args.output_s3, txn_date.isoformat(), rows_to_table(rows))
+    table = rows_to_table(rows)
+    if args.output_dir:
+        path = write_local_parquet(args.output_dir, txn_date.isoformat(), table)
+        print(f"Wrote {len(rows)} line items to {path}")
+        return
+    output_s3 = args.output_s3 or os.environ.get(
+        "POS_BRONZE_S3_PATH",
+        "s3://retail-platform-dev-bronze/iceberg/bronze/pos_transactions/",
+    )
+    uri = upload_parquet(output_s3, txn_date.isoformat(), table)
     print(f"Uploaded {len(rows)} line items to {uri}")
 
 
