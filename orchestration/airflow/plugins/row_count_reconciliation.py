@@ -74,22 +74,34 @@ class MartRowCount:
     row_count: int
 
 
-def _query_row_counts(conn: Any) -> list[MartRowCount]:
+def _query_row_counts(conn: Any, schema_suffix: str = "") -> list[MartRowCount]:
     """SELECT COUNT(*) from each Gold mart. Missing/unqueryable tables -> -1.
 
     Errors are logged at WARNING and recorded as -1 so the reconciliation
     still produces a full report instead of aborting on the first failure.
+
+    ``schema_suffix`` (ADR-009) retargets the read at pending schemas during the
+    audit phase: ``("_pending")`` makes ``finance.fact_sales`` resolve to
+    ``finance_pending.fact_sales``. Reference dims ``dim_date`` / ``dim_store``
+    are never suffixed — they are stable seed data not published through WAP.
     """
+    # Tables loaded by bootstrap/seeds, not built by dbt, never go to pending.
+    no_suffix = {("finance", "dim_date"), ("finance", "dim_store")}
     results: list[MartRowCount] = []
     with conn.cursor() as cur:
         for schema, table in GOLD_MARTS:
+            effective_schema = schema
+            if schema_suffix and (schema, table) not in no_suffix:
+                effective_schema = f"{schema}{schema_suffix}"
             try:
-                cur.execute(f"SELECT COUNT(*) FROM {schema}.{table}")
+                cur.execute(f"SELECT COUNT(*) FROM {effective_schema}.{table}")
                 row = cur.fetchone()
                 count = int(row[0]) if row and row[0] is not None else -1
             except Exception as exc:  # noqa: BLE001
-                log.warning("Failed to query %s.%s: %s", schema, table, exc)
+                log.warning("Failed to query %s.%s: %s", effective_schema, table, exc)
                 count = -1
+            # Keep the baseline key on the LIVE name so trend continuity is
+            # preserved across pending/live reads.
             results.append(MartRowCount(schema, table, count))
     return results
 
@@ -136,14 +148,18 @@ def reconcile_gold_row_counts(
     conn: Any,
     var_get: Any,
     var_set: Any,
+    schema_suffix: str = "",
 ) -> dict[str, Any]:
     """Compare current Gold mart row counts to baseline; warn on >threshold delta.
 
     Returns a dict with per-mart deltas and a ``warned`` flag. Updates the
     baseline only if no mart exceeded the threshold (preserves last known good
     on a warned run).
+
+    ``schema_suffix`` (ADR-009) reads from pending schemas during the audit
+    phase while keeping baseline keys on the live names.
     """
-    current = _query_row_counts(conn)
+    current = _query_row_counts(conn, schema_suffix)
     baseline = _load_baseline(var_get)
     threshold = _resolve_threshold(var_get)
 
@@ -232,11 +248,15 @@ def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> No
         log.warning("metadata emit from reconciliation failed (fail-open): %s", exc)
 
 
-def _airflow_entrypoint(**context: Any) -> dict[str, Any]:
+def _airflow_entrypoint(schema_suffix: str = "", **context: Any) -> dict[str, Any]:
     """Airflow PythonOperator entrypoint.
 
     Reads Redshift creds + baseline Variable from the Airflow runtime.
     Kept thin so the reconciliation logic itself is testable without Airflow.
+
+    ``schema_suffix`` is passed via the operator's ``op_kwargs`` (ADR-009): the
+    warehouse DAG passes ``"_pending"`` so the audit reads pending Gold before
+    publish; the default ``""`` keeps the hourly/live behavior.
     """
     import redshift_connector
     from airflow.models import Variable
@@ -255,6 +275,7 @@ def _airflow_entrypoint(**context: Any) -> dict[str, Any]:
             conn=conn,
             var_get=Variable.get,
             var_set=Variable.set,
+            schema_suffix=schema_suffix,
         )
         _emit_metadata(result, context)
         return result

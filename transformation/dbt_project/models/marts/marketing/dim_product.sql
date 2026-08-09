@@ -22,7 +22,7 @@ with source_products as (
 {% if is_incremental() %}
 
 existing as (
-    select * from {{ this }}
+    select * from {{ wap_prior_state() }}
 ),
 
 changed_products as (

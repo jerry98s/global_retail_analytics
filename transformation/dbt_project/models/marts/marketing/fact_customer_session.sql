@@ -35,7 +35,7 @@ with lookback as (
             -2,
             "coalesce(max(session_start_time), cast('1970-01-01' as timestamp))"
         ) }} as cutoff_ts
-    from {{ this }}
+    from {{ wap_prior_state() }}
 ),
 sessions as (
     select s.*
