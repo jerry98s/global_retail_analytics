@@ -14,7 +14,7 @@ from metadata_airflow import (
     on_dag_start,
     on_dag_success,
 )
-from wap_publish import publish_dim_product_task
+from wap_publish import clone_dim_product_task, publish_dim_product_task
 
 DAG_DOC_MD = """
 ## catalog_bihourly_product_scd2_refresh
@@ -27,6 +27,13 @@ Re-processes the dim_product dbt model every two hours so that upstream
 product catalog changes (price, category, brand, status) are captured as
 new SCD2 rows with `valid_from = now()` and the prior row is closed out
 with `valid_to = now()` and `is_current = false`.
+
+### Sole owner of marketing.dim_product
+This DAG is the only writer of `marketing.dim_product` and of its
+`marketing_pending` twin (ADR-009). `warehouse_daily_batch_pipeline` reads the
+last published version through the `wap_live_ref` dbt macro rather than
+rebuilding it, so the two schedules can overlap without clobbering each other's
+pending table.
 
 ### Why separate from warehouse_daily_batch_pipeline
 - The product catalog changes intra-day (merchandising team), and dashboards
@@ -80,6 +87,14 @@ with DAG(
         task_id="metadata_start",
         python_callable=on_dag_start,
     )
+    # WAP step 1: clone live marketing.dim_product into marketing_pending. This
+    # is what preserves SCD2 history — a pending schema that starts empty would
+    # make is_incremental() false and rebuild the dimension as current-only rows.
+    clone_dim_product = PythonOperator(
+        task_id="wap_clone_live_to_pending",
+        python_callable=clone_dim_product_task,
+    )
+
     refresh_dim_product = BashOperator(
         task_id="dbt_run_dim_product",
         bash_command=dbt_bash_with_metadata(
@@ -105,4 +120,10 @@ with DAG(
         python_callable=publish_dim_product_task,
     )
 
-    metadata_start >> refresh_dim_product >> test_dim_product >> publish_dim_product
+    (
+        metadata_start
+        >> clone_dim_product
+        >> refresh_dim_product
+        >> test_dim_product
+        >> publish_dim_product
+    )

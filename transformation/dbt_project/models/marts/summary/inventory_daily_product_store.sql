@@ -27,7 +27,7 @@ with hourly as (
     {% if is_incremental() %}
       where snapshot_date_key >= (
           select coalesce(max(snapshot_date_key), 0)
-          from {{ wap_prior_state() }}
+          from {{ this }}
       )
     {% endif %}
 ),

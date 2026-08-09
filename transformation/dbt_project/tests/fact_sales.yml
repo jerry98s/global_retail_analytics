@@ -22,7 +22,7 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_product')
+              to: "{{ wap_live_ref('dim_product') }}"
               field: product_key
       - name: store_key
         description: "Resolved store surrogate key (joins gold_finance.dim_store)."
@@ -80,7 +80,7 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_product')
+              to: "{{ wap_live_ref('dim_product') }}"
               field: product_key
       - name: store_key
         description: "Resolved store surrogate key."

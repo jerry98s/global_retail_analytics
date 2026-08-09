@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key='customer_key',
     incremental_strategy='delete+insert',
-    on_schema_change='sync_all_columns'
+    on_schema_change='sync_all_columns',
+    dist='customer_key',
+    sort='loyalty_id'
   )
 }}
 

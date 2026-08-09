@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key=['transaction_id', 'line_item_number'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    dist='product_key',
+    sort='date_key'
   )
 }}
 
@@ -34,7 +36,7 @@ with base as (
               max({{ date_from_date_key('date_key') }}),
               cast('1970-01-01' as date)
           )
-          from {{ wap_prior_state() }}
+          from {{ this }}
       )
     {% endif %}
 )
@@ -52,7 +54,9 @@ select
     b.gross_margin,
     b.is_voided
 from base b
-left join {{ ref('dim_product') }} p
+-- dim_product is owned by catalog_bihourly_product_scd2_refresh (ADR-009), so
+-- read the last published live version rather than this DAG's pending schema.
+left join {{ wap_live_ref('dim_product') }} p
   on b.product_id = p.product_id
  and p.is_current = true
 left join {{ source('gold_finance', 'dim_store') }} s

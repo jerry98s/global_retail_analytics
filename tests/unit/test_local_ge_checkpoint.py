@@ -61,7 +61,8 @@ class TestLocalGeCheckpoint:
 
     def test_stack_quality_invokes_ge_local(self) -> None:
         assert "run_ge_local.py" in _STACK
-        assert "gold_layer_local" in _STACK
+        assert "--pending-tables" in _STACK
+        assert "gold_layer_local" in _RUNNER
 
     def test_runner_points_at_local_duckdb(self) -> None:
         assert "gold_layer_local" in _RUNNER

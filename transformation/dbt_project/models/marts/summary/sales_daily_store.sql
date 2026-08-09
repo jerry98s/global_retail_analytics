@@ -29,7 +29,7 @@ with source_sales as (
     {% if is_incremental() %}
       where date_key >= (
           select coalesce(max(date_key), 0)
-          from {{ wap_prior_state() }}
+          from {{ this }}
       )
     {% endif %}
 ),

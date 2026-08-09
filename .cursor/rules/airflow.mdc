@@ -23,14 +23,13 @@ Do not dual-build `marts.marketing` on the daily warehouse DAG.
 
 ## Write-Audit-Publish (ADR-009)
 
-Gold marts are write → audit → publish: dbt writes `*_pending`, audits pass
-there, then `wap_publish` promotes to live. A failing audit leaves live intact.
+Gold marts are clone → write → audit → publish. A failing audit leaves live intact.
 
-- Warehouse/marketing/catalog DAGs pass `wap_phase=pending` to run/test, audit
-  via `schema_suffix="_pending"` (reconcile) + `run_ge_checkpoint.py
-  --schema-suffix _pending` (GE), then publish via `wap_publish` plugin.
-- Publish table list lives in `plugins/wap_publish.py` (`WAP_TABLES` +
-  per-DAG subsets). `dim_date`/`dim_store` excluded (seed reference dims).
+- Each owning DAG clones its live tables into `*_pending`, runs dbt with
+  `wap_phase=pending`, audits via `pending_tables` (reconcile) +
+  `run_ge_checkpoint.py --pending-tables schema.table,...` (GE), then publishes.
+- Table list lives in `plugins/wap_publish.py` (`WAP_TABLES` + disjoint per-DAG
+  subsets). `dim_product` is catalog-only. `dim_date`/`dim_store` excluded.
 - `quality_hourly_ge_checkpoint` stays on live (monitors published Gold).
 
 ## Conventions

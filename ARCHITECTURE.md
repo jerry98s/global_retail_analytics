@@ -147,9 +147,10 @@ Reference: `docs/runbooks/kafka-operations.md`.
 
 Gold is a Kimball-style Redshift model. Gold marts are delivered with
 Write-Audit-Publish ([ADR-009](docs/decisions/ADR-009-write-audit-publish.md)):
-dbt builds into `finance_pending` / `marketing_pending` / `summary_pending`,
-dbt tests + GE audit there, and an atomic rename promotes to live only on
-success — a failing run never touches the tables consumers read.
+live Gold is cloned into `finance_pending` / `marketing_pending` /
+`summary_pending`, dbt rebuilds there, dbt tests + GE audit the pending copies,
+and an atomic rename promotes to live only on success — a failing run never
+touches the tables consumers read. Each Gold table has one owning DAG.
 
 | Model | Grain |
 |---|---|

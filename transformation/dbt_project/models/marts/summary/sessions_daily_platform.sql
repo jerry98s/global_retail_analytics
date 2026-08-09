@@ -27,7 +27,7 @@ with sessions as (
     {% if is_incremental() %}
       where session_date_key >= (
           select coalesce(max(session_date_key), 0)
-          from {{ wap_prior_state() }}
+          from {{ this }}
       )
     {% endif %}
 )

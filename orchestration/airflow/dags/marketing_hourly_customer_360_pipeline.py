@@ -1,19 +1,23 @@
 """
 Hourly Customer 360 refresh DAG.
-Runs clickstream/POS staging → C360 intermediate → marketing marts (pending) →
-audits → WAP publish → serving refresh, on an hourly cadence (ADR-002 ~75min
-SLA).
+Runs WAP clone live→pending → clickstream/POS staging → C360 intermediate →
+marketing marts (pending) → audits → WAP publish → C360 view refresh, on an
+hourly cadence (ADR-002 ~75min SLA).
 
-Write-Audit-Publish (ADR-009): marketing Gold marts build into
-`marketing_pending` / `summary_pending` (`wap_phase='pending'`), are audited
-there by dbt tests, and are promoted to live only on success. A failing run
-leaves live `marketing` / `summary` untouched.
+Write-Audit-Publish (ADR-009): live marketing/summary Gold is cloned into
+`marketing_pending` / `summary_pending`, dbt rebuilds the marts there
+(`wap_phase='pending'`), dbt tests audit them, and they are promoted to live only
+on success. A failing run leaves live `marketing` / `summary` untouched. The
+clone is what lets the incremental models resume from prior state.
+
+The audit gate here is dbt tests; Great Expectations monitors live Gold hourly
+via `quality_hourly_ge_checkpoint`.
 
 Owns marketing Gold: dim_customer, fact_customer_session, identity_graph,
 customer_360_view, serving.customer_360_serving (+ intermediate identity/session/
 RFM/consent). Finance facts remain on warehouse_daily_batch_pipeline
 (`marts.finance` only). dim_product SCD2 + int_product_catalog stay on
-catalog_bihourly_product_scd2_refresh / warehouse (explicit --exclude).
+catalog_bihourly_product_scd2_refresh (explicit --exclude).
 Also builds `summary.sessions_daily_platform`.
 
 Enable MWAA and set the same Redshift Variables as warehouse_daily_batch_pipeline.
@@ -31,17 +35,21 @@ from metadata_airflow import (
     on_dag_start,
     on_dag_success,
 )
-from wap_publish import publish_marketing_task
+from wap_publish import clone_marketing_task, publish_marketing_task
 
-# WAP: staging + intermediate write in place; marketing/summary marts route to
-# *_pending via wap_phase. dim_product / int_product_catalog stay excluded
-# (owned by catalog_bihourly_product_scd2_refresh / warehouse DAG).
+# WAP: staging + intermediate write in place; marketing/summary mart *tables*
+# route to *_pending via wap_phase. Exclusions:
+#   int_product_catalog / dim_product — owned by catalog_bihourly_product_scd2_refresh.
+#   customer_360_view / customer_360_serving — views are never published, so they
+#   are built after the swap (SELECT_SERVING) against live tables.
 SELECT_PENDING = (
     "stg_clickstream_events stg_pos_transactions intermediate "
     "marts.marketing sessions_daily_platform "
-    "--exclude int_product_catalog dim_product"
+    "--exclude int_product_catalog dim_product customer_360_view"
 )
 VARS_PENDING = '{"wap_phase": "pending"}'
+
+SELECT_SERVING = "customer_360_view customer_360_serving"
 
 DEFAULT_ARGS = {
     "owner":            "data-platform",
@@ -69,6 +77,13 @@ with DAG(
         python_callable=on_dag_start,
     )
 
+    # WAP step 1: clone live marketing/summary Gold into the pending schemas so
+    # the incremental models resume from prior state instead of full-refreshing.
+    wap_clone = PythonOperator(
+        task_id         = "wap_clone_live_to_pending",
+        python_callable = clone_marketing_task,
+    )
+
     dbt_run_pending = BashOperator(
         task_id      = "dbt_customer_360_write_pending",
         bash_command = dbt_bash_with_metadata(f"""
@@ -94,13 +109,21 @@ with DAG(
         python_callable = publish_marketing_task,
     )
 
-    # Rebuild the serving view against the freshly published live marketing Gold.
+    # Build the C360 views against the freshly published live marketing Gold.
+    # Views are not WAP-published, so this is the only place they are created.
     dbt_serving = BashOperator(
         task_id      = "dbt_customer_360_serving_refresh",
-        bash_command = dbt_bash_with_metadata("""
+        bash_command = dbt_bash_with_metadata(f"""
             cd /tmp/dbt_project && \
-            dbt run --select customer_360_serving --target prod
+            dbt run --select {SELECT_SERVING} --target prod
         """),
     )
 
-    metadata_start >> dbt_run_pending >> dbt_test_pending >> wap_publish >> dbt_serving
+    (
+        metadata_start
+        >> wap_clone
+        >> dbt_run_pending
+        >> dbt_test_pending
+        >> wap_publish
+        >> dbt_serving
+    )

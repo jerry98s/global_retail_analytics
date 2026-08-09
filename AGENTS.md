@@ -120,9 +120,10 @@ dbt/GE, evidence capture, destroy checklist), follow
 - Treat `local-testing-version` local Docker settings as cloud defaults on `main`.
 - Mix operational metadata tables into Kimball Gold schemas.
 - Build Gold marts directly into live `finance`/`marketing`/`summary` — Gold uses
-  Write-Audit-Publish (ADR-009): write `*_pending`, audit, then publish via
-  `orchestration/airflow/plugins/wap_publish.py`. Gold incrementals anchor with
-  `{{ wap_prior_state() }}`, never a bare `from {{ this }}`.
+  Write-Audit-Publish (ADR-009): clone live → `*_pending`, audit, then publish
+  via `orchestration/airflow/plugins/wap_publish.py`. Incrementals anchor on
+  `{{ this }}` (pending is a live clone). Cross-DAG Gold reads use
+  `{{ wap_live_ref('model') }}`. Each Gold table has exactly one owning DAG.
 - Add `finance.dim_date` / `finance.dim_store` to the WAP publish list (stable
   seed reference dims, not dbt-built marts).
 

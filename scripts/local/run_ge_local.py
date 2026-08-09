@@ -21,8 +21,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 _REPO = Path(__file__).resolve().parents[2]
 _GE_ROOT = _REPO / "quality" / "great_expectations"
 _DEFAULT_DUCKDB = _REPO / "transformation" / "dbt_project" / "local_retail.duckdb"
@@ -34,27 +32,6 @@ _CHECKPOINT = _GE_ROOT / "checkpoints" / "gold_layer_local.yml"
 # Allow importing scripts.common.metadata_observer
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
-
-
-def _load_validations(checkpoint_path: Path) -> list[dict[str, str]]:
-    raw = yaml.safe_load(checkpoint_path.read_text(encoding="utf-8"))
-    out: list[dict[str, str]] = []
-    for item in raw.get("validations") or []:
-        br = item.get("batch_request") or {}
-        params = br.get("runtime_parameters") or {}
-        query = params.get("query")
-        suite = item.get("expectation_suite_name")
-        asset = br.get("data_asset_name") or suite
-        if not query or not suite:
-            raise ValueError(f"Invalid validation entry in {checkpoint_path}: {item}")
-        out.append(
-            {
-                "suite": str(suite),
-                "query": " ".join(str(query).split()),
-                "asset": str(asset),
-            }
-        )
-    return out
 
 
 def _print_failures(suite: str, validation_result: Any) -> None:
@@ -115,7 +92,7 @@ def run_checkpoint(
     *,
     execution_id: str | None = None,
     metadata_duckdb: Path = _DEFAULT_METADATA,
-    schema_suffix: str = "",
+    pending_tables: str = "",
 ) -> bool:
     if not duckdb_path.is_file():
         raise FileNotFoundError(
@@ -125,9 +102,13 @@ def run_checkpoint(
     if not _CHECKPOINT.is_file():
         raise FileNotFoundError(f"Checkpoint missing: {_CHECKPOINT}")
 
-    # ADR-009: reuse the shared Gold-schema suffixer so local GE audits the
-    # pending build (finance_pending.*) the same way the cloud wrapper does.
-    from scripts.common.run_ge_checkpoint import apply_schema_suffix
+    # ADR-009: reuse the shared checkpoint parsing / pending retargeting so the
+    # local audit and the cloud wrapper cannot drift apart.
+    from scripts.common.run_ge_checkpoint import (
+        load_validations,
+        parse_table_list,
+        prepare_validations,
+    )
 
     # Satisfy ${...} expansion for unused SqlAlchemy datasources at context load.
     placeholder = f"duckdb:///{duckdb_path.resolve().as_posix()}"
@@ -142,12 +123,9 @@ def run_checkpoint(
     import great_expectations as gx
     from great_expectations.core.batch import RuntimeBatchRequest
 
-    validations = _load_validations(_CHECKPOINT)
-    if schema_suffix:
-        for item in validations:
-            item["query"] = " ".join(
-                apply_schema_suffix(item["query"], schema_suffix).split()
-            )
+    validations = prepare_validations(
+        load_validations(_CHECKPOINT), parse_table_list(pending_tables)
+    )
     context = gx.get_context(context_root_dir=str(_GE_ROOT))
     con = duckdb.connect(str(duckdb_path), read_only=True)
     all_ok = True
@@ -215,9 +193,13 @@ def parse_args() -> argparse.Namespace:
         help="Path to local_metadata.duckdb",
     )
     p.add_argument(
-        "--schema-suffix",
+        "--pending-tables",
         default="",
-        help="Suffix appended to Gold mart schemas (e.g. _pending) for the WAP audit. Empty = live.",
+        help=(
+            "Comma-separated schema.table list to audit in its *_pending schema "
+            "(WAP gate). Only validations touching those tables run. "
+            "Empty = validate every batch against live."
+        ),
     )
     return p.parse_args()
 
@@ -229,7 +211,7 @@ def main() -> int:
             args.duckdb,
             execution_id=args.execution_id,
             metadata_duckdb=args.metadata_duckdb,
-            schema_suffix=args.schema_suffix,
+            pending_tables=args.pending_tables,
         )
     except Exception as exc:  # noqa: BLE001
         import traceback

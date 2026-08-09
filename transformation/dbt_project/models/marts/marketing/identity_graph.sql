@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key=['identifier_type', 'identifier_value'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    dist='customer_key',
+    sort=['identifier_type', 'identifier_value']
   )
 }}
 

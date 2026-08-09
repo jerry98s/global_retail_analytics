@@ -310,11 +310,53 @@ function Invoke-LoadDuckdb {
         --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
 }
 
-# ADR-009: promote the pending Gold marts into live schemas in local_retail.duckdb.
-# Reuses the shared canonical table list + DuckDB swap in the Airflow plugin so
-# local and cloud stay aligned. After publish, re-run the consent-gated serving
-# view against LIVE (wap_phase defaults to live) so DuckDB re-binds the view to
-# the freshly swapped marketing tables.
+# ADR-009 canonical WAP table list, as "schema.table" for the GE audit gate.
+# Must match WAP_TABLES in orchestration/airflow/plugins/wap_publish.py —
+# tests/unit/test_gold_wap.py fails the build if the two drift apart.
+$WapTableList = @(
+    'finance.fact_sales',
+    'finance.fact_inventory_snapshot',
+    'marketing.dim_customer',
+    'marketing.dim_product',
+    'marketing.fact_customer_session',
+    'marketing.identity_graph',
+    'summary.sales_daily_store',
+    'summary.inventory_daily_product_store',
+    'summary.sessions_daily_platform'
+) -join ','
+
+# Views over Gold. Never WAP-published (only tables are), so they are built after
+# the swap, against the freshly published live tables.
+$WapServingModels = @('customer_360_view', 'customer_360_serving')
+
+# ADR-009 step 1: clone live Gold into the *_pending schemas before dbt runs.
+# Without the clone the pending relations start empty, dbt's is_incremental() is
+# false, and every mart takes its full-refresh branch — which rebuilds
+# marketing.dim_product as current-only rows and destroys SCD2 history on publish.
+function Invoke-WapCloneLocal {
+    Invoke-ProjectPython -c @"
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(r'$RepoRoot')))
+import duckdb
+from orchestration.airflow.plugins.wap_publish import WAP_TABLES, clone_live_to_pending
+
+con = duckdb.connect(r'$(Join-Path $DbtDir 'local_retail.duckdb')')
+try:
+    for schema in {s for s, _ in WAP_TABLES}:
+        con.execute(f'CREATE SCHEMA IF NOT EXISTS {schema}')
+    result = clone_live_to_pending(con, WAP_TABLES, dialect='duckdb')
+    print('WAP cloned:', result['cloned'])
+    print('WAP clone skipped (no live table yet):', result['skipped'])
+finally:
+    con.close()
+"@
+}
+
+# ADR-009 step 3: promote the audited pending Gold marts into live schemas in
+# local_retail.duckdb, reusing the shared table list + swap from the Airflow
+# plugin so local and cloud stay aligned. Then build the C360 views against the
+# freshly published live tables.
 function Invoke-WapPublishLocal {
     Invoke-ProjectPython -c @"
 import sys
@@ -334,10 +376,9 @@ finally:
 "@
     Push-Location $DbtDir
     try {
-        Invoke-ProjectDbt @(
-            'run', '--profiles-dir', '.', '--target', 'local',
-            '--select', 'customer_360_serving'
-        )
+        Invoke-ProjectDbt (@(
+            'run', '--profiles-dir', '.', '--target', 'local', '--select'
+        ) + $WapServingModels)
     }
     finally {
         Pop-Location
@@ -365,12 +406,22 @@ function Invoke-DbtIceberg {
             'seed', '--profiles-dir', '.', '--target', 'local',
             '--select', 'dim_date', 'dim_store'
         ) -ExecutionId $ExecutionId
-        # ADR-009: build Gold marts into *_pending schemas; publish comes after
-        # the quality audits in the dbt/quality/all tasks.
-        Invoke-ProjectDbt @(
+    }
+    finally {
+        Pop-Location
+    }
+    Invoke-Step "WAP clone live Gold -> pending" {
+        Invoke-WapCloneLocal
+    }
+    Push-Location $DbtDir
+    try {
+        # ADR-009: build Gold mart tables into the *_pending clones; publish comes
+        # after the quality audits in the dbt/quality/all tasks. The C360 views
+        # are excluded — they are built post-publish against live.
+        Invoke-ProjectDbt (@(
             'run', '--profiles-dir', '.', '--target', 'local',
-            '--vars', '{"wap_phase": "pending"}'
-        ) -ExecutionId $ExecutionId
+            '--vars', '{"wap_phase": "pending"}', '--exclude'
+        ) + $WapServingModels) -ExecutionId $ExecutionId
     }
     finally {
         Pop-Location
@@ -392,11 +443,24 @@ function Invoke-DbtSeeds {
     try {
         Invoke-ProjectDbt @('deps', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
         Invoke-ProjectDbt @('seed', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
-        # ADR-009: build Gold marts into *_pending schemas.
-        Invoke-ProjectDbt @(
+    }
+    finally {
+        Pop-Location
+    }
+    # Fixture mode starts from a deleted DuckDB file, so there is no live Gold to
+    # clone — every table is skipped and dbt performs its initial load. The step
+    # still runs so both modes follow the identical clone/write/audit/publish path.
+    Invoke-Step "WAP clone live Gold -> pending" {
+        Invoke-WapCloneLocal
+    }
+    Push-Location $DbtDir
+    try {
+        # ADR-009: build Gold mart tables into the *_pending clones; C360 views
+        # are built post-publish against live.
+        Invoke-ProjectDbt (@(
             'run', '--profiles-dir', '.', '--target', 'local',
-            '--vars', '{"wap_phase": "pending"}'
-        ) -ExecutionId $ExecutionId
+            '--vars', '{"wap_phase": "pending"}', '--exclude'
+        ) + $WapServingModels) -ExecutionId $ExecutionId
     }
     finally {
         Pop-Location
@@ -567,15 +631,24 @@ try {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Running Great Expectations gold_layer_local (pending, DuckDB)" {
+                Invoke-Step "Running Great Expectations audit gate (pending, DuckDB)" {
                     Invoke-ProjectPython scripts/local/run_ge_local.py `
                         --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
                         --execution-id $execId `
                         --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb') `
-                        --schema-suffix _pending
+                        --pending-tables $WapTableList
                 }
                 Invoke-Step "WAP publish pending Gold -> live" {
                     Invoke-WapPublishLocal
+                }
+                # Mirrors the cloud quality_hourly_ge_checkpoint DAG: after the
+                # swap, validate live Gold plus the suites the gated run skips
+                # (Bronze windows, reference dims, customer_360_view).
+                Invoke-Step "Running Great Expectations live monitor (DuckDB)" {
+                    Invoke-ProjectPython scripts/local/run_ge_local.py `
+                        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
+                        --execution-id $execId `
+                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb')
                 }
                 Invoke-LocalFreshness -ExecutionId $execId
                 Invoke-Step "Running offline pytest suite" {
@@ -627,15 +700,24 @@ try {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Running Great Expectations gold_layer_local (pending, DuckDB)" {
+                Invoke-Step "Running Great Expectations audit gate (pending, DuckDB)" {
                     Invoke-ProjectPython scripts/local/run_ge_local.py `
                         --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
                         --execution-id $execId `
                         --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb') `
-                        --schema-suffix _pending
+                        --pending-tables $WapTableList
                 }
                 Invoke-Step "WAP publish pending Gold -> live" {
                     Invoke-WapPublishLocal
+                }
+                # Mirrors the cloud quality_hourly_ge_checkpoint DAG: after the
+                # swap, validate live Gold plus the suites the gated run skips
+                # (Bronze windows, reference dims, customer_360_view).
+                Invoke-Step "Running Great Expectations live monitor (DuckDB)" {
+                    Invoke-ProjectPython scripts/local/run_ge_local.py `
+                        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
+                        --execution-id $execId `
+                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb')
                 }
                 Invoke-LocalFreshness -ExecutionId $execId
                 Invoke-Step "Running offline pytest suite" {
