@@ -7,10 +7,13 @@
    WAP (ADR-009): when var('wap_phase') == 'pending', Gold marts
    (finance / marketing / summary) are routed to the *_pending schemas so a
    failing audit never touches live tables. staging / intermediate / serving
-   / bronze are never redirected. #}
-{% set wap_gold_schemas = ['finance', 'marketing', 'summary'] %}
+   / bronze are never redirected.
 
+   Keep the Gold schema list inside the macro — a top-level `{% set %}` in a
+   macros file is ignored (UnexpectedJinjaBlockDeprecation) and would silently
+   skip pending routing. #}
 {% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- set wap_gold_schemas = ['finance', 'marketing', 'summary'] -%}
     {%- if custom_schema_name is none -%}
         {{ target.schema }}
     {%- else -%}
