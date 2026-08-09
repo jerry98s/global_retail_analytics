@@ -48,5 +48,15 @@ Use adapter macros — do not call Redshift-only SQL in shared models:
 - Hourly marketing: `marts.marketing` + identity/session/RFM chain.
 - Bihourly catalog: `dim_product` SCD2.
 
+## Write-Audit-Publish (ADR-009)
+
+- Gold marts build into `*_pending` schemas when `--vars '{"wap_phase":"pending"}'`;
+  `generate_schema_name` routes only `finance`/`marketing`/`summary`.
+- Incremental self-refs use `{{ wap_prior_state() }}` (reads live, not empty
+  pending). Never a bare `from {{ this }}` anchor in a Gold incremental.
+- `dim_date`/`dim_store` are seed reference dims — never routed to pending and
+  excluded from the publish list. Serving/C360 views refresh against live after
+  publish; they are not renamed.
+
 Local: `-DbtSource iceberg` loads Parquet into DuckDB; `-DbtSource seeds` uses CSV fixtures.
 Keep `transformation/redshift/` DDL aligned with marts.

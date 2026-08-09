@@ -21,6 +21,18 @@ DAGs: `orchestration/airflow/dags/`. Plugins: `orchestration/airflow/plugins/`.
 
 Do not dual-build `marts.marketing` on the daily warehouse DAG.
 
+## Write-Audit-Publish (ADR-009)
+
+Gold marts are write → audit → publish: dbt writes `*_pending`, audits pass
+there, then `wap_publish` promotes to live. A failing audit leaves live intact.
+
+- Warehouse/marketing/catalog DAGs pass `wap_phase=pending` to run/test, audit
+  via `schema_suffix="_pending"` (reconcile) + `run_ge_checkpoint.py
+  --schema-suffix _pending` (GE), then publish via `wap_publish` plugin.
+- Publish table list lives in `plugins/wap_publish.py` (`WAP_TABLES` +
+  per-DAG subsets). `dim_date`/`dim_store` excluded (seed reference dims).
+- `quality_hourly_ge_checkpoint` stays on live (monitors published Gold).
+
 ## Conventions
 
 - Filename/DAG ID: `{domain}_{frequency}_{description}`.

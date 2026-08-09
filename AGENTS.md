@@ -119,6 +119,12 @@ dbt/GE, evidence capture, destroy checklist), follow
 - Reintroduce lean/redshift-dev stacks or CSV POS batch paths.
 - Treat `local-testing-version` local Docker settings as cloud defaults on `main`.
 - Mix operational metadata tables into Kimball Gold schemas.
+- Build Gold marts directly into live `finance`/`marketing`/`summary` — Gold uses
+  Write-Audit-Publish (ADR-009): write `*_pending`, audit, then publish via
+  `orchestration/airflow/plugins/wap_publish.py`. Gold incrementals anchor with
+  `{{ wap_prior_state() }}`, never a bare `from {{ this }}`.
+- Add `finance.dim_date` / `finance.dim_store` to the WAP publish list (stable
+  seed reference dims, not dbt-built marts).
 
 ## Key References
 
