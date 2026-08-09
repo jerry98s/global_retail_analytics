@@ -1,8 +1,16 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: POS Parquet bronze → dbt staging → dbt SCD2 → dbt marts →
-Redshift ANALYZE → dbt tests → row-count reconciliation → GE checkpoint →
+Orchestrates: POS Parquet bronze → dbt staging → dbt SCD2 (pending) →
+dbt marts (pending) → dbt tests (pending) → row-count reconciliation
+(pending) → GE checkpoint (pending) → WAP publish to live → Redshift ANALYZE →
 Redshift usage check.
+
+Write-Audit-Publish (ADR-009): Gold marts are built into `*_pending` schemas
+(`wap_phase='pending'`), audited there by dbt tests + GE, and only promoted to
+live `finance` / `marketing` / `summary` after every audit passes. A failing
+audit leaves live untouched, so consumers keep reading the last good publish.
+`finance.dim_date` / `finance.dim_store` are stable seed reference dims and are
+never published.
 
 Schedule: 00:15 UTC daily (15-min buffer for late clickstream events).
 
@@ -36,6 +44,7 @@ from airflow.operators.python import PythonOperator
 # in the cloud runtime. Local `python -m compileall` skips Airflow imports
 # (compileall does not execute imports).
 from row_count_reconciliation import reconcile_gold_row_counts_task
+from wap_publish import publish_finance_summary_task
 from metadata_airflow import (
     collect_freshness_task,
     dbt_bash_with_metadata,
@@ -124,6 +133,8 @@ with DAG(
         "dbt_catalog_bihourly_product_scd2_refresh",
         "run",
         "int_product_catalog dim_product",
+        # WAP: build the SCD2 dim into marketing_pending, not live marketing.
+        vars_json='{"wap_phase": "pending"}',
     )
 
     dbt_marts = _dbt_step(
@@ -131,8 +142,44 @@ with DAG(
         "run",
         # Finance marts + finance-owned summary rollups. Marketing sessions
         # summary is owned by marketing_hourly_customer_360_pipeline.
+        # WAP: writes land in finance_pending / summary_pending.
         "marts.finance sales_daily_store inventory_daily_product_store",
-        vars_json='{"run_date": "{{ ds }}"}',
+        vars_json='{"run_date": "{{ ds }}", "wap_phase": "pending"}',
+    )
+
+    # Audits run against the pending schemas; live is untouched until publish.
+    dbt_tests = _dbt_step("dbt_tests", "test", "", vars_json='{"wap_phase": "pending"}')
+
+    row_count_reconcile = PythonOperator(
+        task_id          = "row_count_reconciliation",
+        python_callable  = reconcile_gold_row_counts_task,
+        op_kwargs        = {"schema_suffix": "_pending"},
+    )
+
+    metadata_freshness = PythonOperator(
+        task_id="metadata_collect_freshness",
+        python_callable=collect_freshness_task,
+    )
+
+    ge_checkpoint = BashOperator(
+        task_id      = "ge_gold_checkpoint",
+        # RS_SQLALCHEMY_URL is built by ge_bash_with_metadata from the secret.
+        # run_ge_checkpoint retargets the checkpoint SQL at *_pending so the
+        # daily audit validates the pending build before WAP publish.
+        bash_command = ge_bash_with_metadata("""
+            aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/quality/great_expectations /tmp/great_expectations
+            aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts
+            python /tmp/scripts/common/run_ge_checkpoint.py \
+                --ge-root /tmp/great_expectations \
+                --checkpoint gold_layer_daily \
+                --schema-suffix _pending
+        """),
+    )
+
+    # Audit gate passed — atomically promote pending marts into live schemas.
+    wap_publish = PythonOperator(
+        task_id         = "wap_publish_gold",
+        python_callable = publish_finance_summary_task,
     )
 
     redshift_analyze = RedshiftDataOperator(
@@ -145,29 +192,6 @@ with DAG(
             ANALYZE summary;
             ANALYZE serving;
         """,
-    )
-
-    dbt_tests = _dbt_step("dbt_tests", "test", "")
-
-    row_count_reconcile = PythonOperator(
-        task_id          = "row_count_reconciliation",
-        python_callable  = reconcile_gold_row_counts_task,
-    )
-
-    metadata_freshness = PythonOperator(
-        task_id="metadata_collect_freshness",
-        python_callable=collect_freshness_task,
-    )
-
-    ge_checkpoint = BashOperator(
-        task_id      = "ge_gold_checkpoint",
-        # RS_SQLALCHEMY_URL is built by ge_bash_with_metadata from the secret.
-        bash_command = ge_bash_with_metadata("""
-            aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/quality/great_expectations /tmp/great_expectations
-            aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts
-            cd /tmp/great_expectations && \
-            great_expectations checkpoint run gold_layer_daily
-        """),
     )
 
     cost_check = RedshiftDataOperator(
@@ -187,10 +211,11 @@ with DAG(
         >> dbt_staging
         >> dbt_scd2
         >> dbt_marts
-        >> redshift_analyze
         >> dbt_tests
         >> row_count_reconcile
         >> metadata_freshness
         >> ge_checkpoint
+        >> wap_publish
+        >> redshift_analyze
         >> cost_check
     )

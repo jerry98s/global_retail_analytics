@@ -78,7 +78,7 @@ new_or_changed as (
     {% if is_incremental() %}
       where (snapshot_date_key * 100 + snapshot_hour) > (
           select coalesce(max(snapshot_date_key * 100 + snapshot_hour), 0)
-          from {{ this }}
+          from {{ wap_prior_state() }}
       )
     {% endif %}
 )

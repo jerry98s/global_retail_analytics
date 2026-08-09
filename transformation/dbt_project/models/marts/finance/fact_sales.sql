@@ -34,7 +34,7 @@ with base as (
               max({{ date_from_date_key('date_key') }}),
               cast('1970-01-01' as date)
           )
-          from {{ this }}
+          from {{ wap_prior_state() }}
       )
     {% endif %}
 )

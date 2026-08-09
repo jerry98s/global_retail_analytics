@@ -14,6 +14,7 @@ from metadata_airflow import (
     on_dag_start,
     on_dag_success,
 )
+from wap_publish import publish_dim_product_task
 
 DAG_DOC_MD = """
 ## catalog_bihourly_product_scd2_refresh
@@ -86,7 +87,8 @@ with DAG(
             "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts && "
             "cp /tmp/dbt_project/profiles.yml.example /tmp/dbt_project/profiles.yml && "
             "cd /tmp/dbt_project && dbt deps && "
-            "dbt run --select dim_product --target prod"
+            # WAP: build into marketing_pending, audit there, then publish.
+            "dbt run --select dim_product --vars '{\"wap_phase\": \"pending\"}' --target prod"
         ),
     )
 
@@ -94,8 +96,13 @@ with DAG(
         task_id="dbt_test_dim_product",
         bash_command=dbt_bash_with_metadata(
             "cd /tmp/dbt_project && "
-            "dbt test --select dim_product --target prod"
+            "dbt test --select dim_product --vars '{\"wap_phase\": \"pending\"}' --target prod"
         ),
     )
 
-    metadata_start >> refresh_dim_product >> test_dim_product
+    publish_dim_product = PythonOperator(
+        task_id="wap_publish_dim_product",
+        python_callable=publish_dim_product_task,
+    )
+
+    metadata_start >> refresh_dim_product >> test_dim_product >> publish_dim_product

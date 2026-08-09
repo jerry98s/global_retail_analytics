@@ -48,6 +48,10 @@ sources:
       - name: inventory_hourly
   - name: gold_finance
     database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
+    # WAP (ADR-009): reference dims dim_date/dim_store are NOT published through
+    # pending — they are stable reference data loaded by bootstrap/seeds. Models
+    # read them from live `finance` regardless of wap_phase, so this source
+    # schema intentionally does NOT switch to finance_pending.
     schema: "{{ env_var('GOLD_SCHEMA', 'finance') }}"
     tables:
       - name: dim_date
