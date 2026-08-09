@@ -310,6 +310,40 @@ function Invoke-LoadDuckdb {
         --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
 }
 
+# ADR-009: promote the pending Gold marts into live schemas in local_retail.duckdb.
+# Reuses the shared canonical table list + DuckDB swap in the Airflow plugin so
+# local and cloud stay aligned. After publish, re-run the consent-gated serving
+# view against LIVE (wap_phase defaults to live) so DuckDB re-binds the view to
+# the freshly swapped marketing tables.
+function Invoke-WapPublishLocal {
+    Invoke-ProjectPython -c @"
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(r'$RepoRoot')))
+import duckdb
+from orchestration.airflow.plugins.wap_publish import WAP_TABLES, publish_gold
+
+con = duckdb.connect(r'$(Join-Path $DbtDir 'local_retail.duckdb')')
+try:
+    for schema in {s for s, _ in WAP_TABLES}:
+        con.execute(f'CREATE SCHEMA IF NOT EXISTS {schema}')
+    result = publish_gold(con, WAP_TABLES, dialect='duckdb')
+    print('WAP published:', result['published'])
+finally:
+    con.close()
+"@
+    Push-Location $DbtDir
+    try {
+        Invoke-ProjectDbt @(
+            'run', '--profiles-dir', '.', '--target', 'local',
+            '--select', 'customer_360_serving'
+        )
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 function Invoke-DbtIceberg {
     param([string]$ExecutionId = "")
     Ensure-LocalDbtProfile
@@ -331,7 +365,12 @@ function Invoke-DbtIceberg {
             'seed', '--profiles-dir', '.', '--target', 'local',
             '--select', 'dim_date', 'dim_store'
         ) -ExecutionId $ExecutionId
-        Invoke-ProjectDbt @('run', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+        # ADR-009: build Gold marts into *_pending schemas; publish comes after
+        # the quality audits in the dbt/quality/all tasks.
+        Invoke-ProjectDbt @(
+            'run', '--profiles-dir', '.', '--target', 'local',
+            '--vars', '{"wap_phase": "pending"}'
+        ) -ExecutionId $ExecutionId
     }
     finally {
         Pop-Location
@@ -353,7 +392,11 @@ function Invoke-DbtSeeds {
     try {
         Invoke-ProjectDbt @('deps', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
         Invoke-ProjectDbt @('seed', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
-        Invoke-ProjectDbt @('run', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
+        # ADR-009: build Gold marts into *_pending schemas.
+        Invoke-ProjectDbt @(
+            'run', '--profiles-dir', '.', '--target', 'local',
+            '--vars', '{"wap_phase": "pending"}'
+        ) -ExecutionId $ExecutionId
     }
     finally {
         Pop-Location
@@ -511,21 +554,28 @@ try {
             $pipelineError = ""
             try {
                 Start-LocalPipelineRun -ExecutionId $execId -Pipeline "local_quality"
-                Invoke-Step "Running dbt tests" {
+                Invoke-Step "Running dbt tests (pending)" {
                     Ensure-LocalDbtProfile
                     Push-Location $DbtDir
                     try {
-                        Invoke-ProjectDbt @('test', '--profiles-dir', '.', '--target', 'local') -ExecutionId $execId
+                        Invoke-ProjectDbt @(
+                            'test', '--profiles-dir', '.', '--target', 'local',
+                            '--vars', '{"wap_phase": "pending"}'
+                        ) -ExecutionId $execId
                     }
                     finally {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Running Great Expectations gold_layer_local (DuckDB)" {
+                Invoke-Step "Running Great Expectations gold_layer_local (pending, DuckDB)" {
                     Invoke-ProjectPython scripts/local/run_ge_local.py `
                         --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
                         --execution-id $execId `
-                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb')
+                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb') `
+                        --schema-suffix _pending
+                }
+                Invoke-Step "WAP publish pending Gold -> live" {
+                    Invoke-WapPublishLocal
                 }
                 Invoke-LocalFreshness -ExecutionId $execId
                 Invoke-Step "Running offline pytest suite" {
@@ -564,21 +614,28 @@ try {
                         Invoke-DbtSeeds -ExecutionId $execId
                     }
                 }
-                Invoke-Step "Running dbt tests" {
+                Invoke-Step "Running dbt tests (pending)" {
                     Ensure-LocalDbtProfile
                     Push-Location $DbtDir
                     try {
-                        Invoke-ProjectDbt @('test', '--profiles-dir', '.', '--target', 'local') -ExecutionId $execId
+                        Invoke-ProjectDbt @(
+                            'test', '--profiles-dir', '.', '--target', 'local',
+                            '--vars', '{"wap_phase": "pending"}'
+                        ) -ExecutionId $execId
                     }
                     finally {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Running Great Expectations gold_layer_local (DuckDB)" {
+                Invoke-Step "Running Great Expectations gold_layer_local (pending, DuckDB)" {
                     Invoke-ProjectPython scripts/local/run_ge_local.py `
                         --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
                         --execution-id $execId `
-                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb')
+                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb') `
+                        --schema-suffix _pending
+                }
+                Invoke-Step "WAP publish pending Gold -> live" {
+                    Invoke-WapPublishLocal
                 }
                 Invoke-LocalFreshness -ExecutionId $execId
                 Invoke-Step "Running offline pytest suite" {

@@ -115,6 +115,7 @@ def run_checkpoint(
     *,
     execution_id: str | None = None,
     metadata_duckdb: Path = _DEFAULT_METADATA,
+    schema_suffix: str = "",
 ) -> bool:
     if not duckdb_path.is_file():
         raise FileNotFoundError(
@@ -123,6 +124,10 @@ def run_checkpoint(
         )
     if not _CHECKPOINT.is_file():
         raise FileNotFoundError(f"Checkpoint missing: {_CHECKPOINT}")
+
+    # ADR-009: reuse the shared Gold-schema suffixer so local GE audits the
+    # pending build (finance_pending.*) the same way the cloud wrapper does.
+    from scripts.common.run_ge_checkpoint import apply_schema_suffix
 
     # Satisfy ${...} expansion for unused SqlAlchemy datasources at context load.
     placeholder = f"duckdb:///{duckdb_path.resolve().as_posix()}"
@@ -138,6 +143,11 @@ def run_checkpoint(
     from great_expectations.core.batch import RuntimeBatchRequest
 
     validations = _load_validations(_CHECKPOINT)
+    if schema_suffix:
+        for item in validations:
+            item["query"] = " ".join(
+                apply_schema_suffix(item["query"], schema_suffix).split()
+            )
     context = gx.get_context(context_root_dir=str(_GE_ROOT))
     con = duckdb.connect(str(duckdb_path), read_only=True)
     all_ok = True
@@ -204,6 +214,11 @@ def parse_args() -> argparse.Namespace:
         default=_DEFAULT_METADATA,
         help="Path to local_metadata.duckdb",
     )
+    p.add_argument(
+        "--schema-suffix",
+        default="",
+        help="Suffix appended to Gold mart schemas (e.g. _pending) for the WAP audit. Empty = live.",
+    )
     return p.parse_args()
 
 
@@ -214,6 +229,7 @@ def main() -> int:
             args.duckdb,
             execution_id=args.execution_id,
             metadata_duckdb=args.metadata_duckdb,
+            schema_suffix=args.schema_suffix,
         )
     except Exception as exc:  # noqa: BLE001
         import traceback
