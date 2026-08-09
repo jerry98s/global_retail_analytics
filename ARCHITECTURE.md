@@ -213,6 +213,10 @@ Clickstream has no separate silver table — bronze feeds dbt directly.
 **Gold:** Business-ready, Kimball dimensional model. Redshift tables (bronze read
 
 via Spectrum over S3). Finance on **daily** batch; Customer 360 on **hourly** batch.
+Gold marts ship with Write-Audit-Publish ([ADR-009](docs/decisions/ADR-009-write-audit-publish.md)):
+dbt builds into `finance_pending` / `marketing_pending` / `summary_pending`,
+dbt tests + GE audit there, and an atomic rename promotes to live only on
+success — a failing run never touches the tables consumers read.
 
 
 
@@ -272,7 +276,10 @@ Full rationale per decision: see `docs/decisions/` ADRs.
 
 
 
+<<<<<<< HEAD
 ## Latency SLAs (as implemented)
+=======
+>>>>>>> 2c615cf (docs(gold): ADR-009 + WAP notes in ARCHITECTURE/AGENTS/dbt/airflow rules; WAP unit tests)
 
 
 
