@@ -51,17 +51,19 @@ class TestClickstreamDbtGapFixes:
 
     def test_marketing_hourly_owns_c360_not_catalog(self) -> None:
         src = _read(_DAGS / "marketing_hourly_customer_360_pipeline.py")
-        run_cmd = next(
-            line.strip()
-            for line in src.splitlines()
-            if "dbt run --select" in line
-        )
-        assert "stg_clickstream_events" in run_cmd
-        assert "stg_pos_transactions" in run_cmd
-        assert "customer_360_serving" in run_cmd
-        assert "--exclude" in run_cmd
-        assert "int_product_catalog" in run_cmd
-        assert "dim_product" in run_cmd
+        # WAP (ADR-009) split the monolithic bash task into write-pending,
+        # audit, publish, and a serving refresh. The shared selector lives in
+        # SELECT_PENDING; the serving refresh is a separate live dbt run.
+        selector = src  # SELECT_PENDING block + task wiring
+        assert "stg_clickstream_events" in selector
+        assert "stg_pos_transactions" in selector
+        assert "customer_360_serving" in selector
+        assert "--exclude" in selector
+        assert "int_product_catalog" in selector
+        assert "dim_product" in selector
+        # WAP: write phase targets pending; publish promotes to live after audit.
+        assert "wap_phase" in selector
+        assert "wap_publish_marketing" in selector
         # Must not rebuild all staging (would pull inventory staging hourly).
-        assert "--select staging " not in run_cmd
-        assert "--select staging\n" not in run_cmd
+        assert "--select staging " not in selector
+        assert "--select staging\n" not in selector
