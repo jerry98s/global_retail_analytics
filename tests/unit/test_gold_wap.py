@@ -45,6 +45,12 @@ class TestGenerateSchemaNameWap:
         assert "wap_phase" in src
         assert "'finance', 'marketing', 'summary'" in src
         assert "_pending" in src
+        # The Gold schema list MUST live inside the macro. A top-level
+        # `{% set %}` in a macros file is ignored (UnexpectedJinjaBlock) and
+        # silently skips pending routing — caught in the first local E2E.
+        macro_idx = src.index("{% macro generate_schema_name")
+        set_idx = src.index("wap_gold_schemas")
+        assert set_idx > macro_idx
 
     def test_wap_prior_state_strips_pending_suffix(self) -> None:
         src = _read(_DBT / "macros" / "generate_schema_name.sql")
