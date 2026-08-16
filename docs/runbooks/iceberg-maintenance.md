@@ -203,9 +203,11 @@ expect to be reading, predicate pushdown is failing — likely causes:
 2. **Filter on non-partition column** — e.g. filtering on `store_id`
    without an `event_time` filter. Add a partition-column predicate
    or rely on Iceberg column stats for data skipping.
-3. **Spectrum external table not refreshed** — for POS, run
-   `MSCK REPAIR TABLE bronze.pos_transactions;` after each daily batch
-   to register new `dt=YYYY-MM-DD` directories.
+3. **Spectrum external table not refreshed** — for POS, the warehouse DAG
+   runs `ALTER TABLE bronze.pos_transactions ADD IF NOT EXISTS PARTITION
+   (dt='{{ ds }}') LOCATION '.../data/dt={{ ds }}/'` after each batch.
+   Iceberg Bronze/Silver tables are Glue/Iceberg catalogued; they do not
+   use Hive `MSCK REPAIR`.
 
 ## References
 

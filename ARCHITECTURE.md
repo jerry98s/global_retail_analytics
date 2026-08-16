@@ -124,11 +124,13 @@ Core topics:
 
 - `inventory.events.v1`
 - `clickstream.events.v1`
-- `pos.transactions.v1`
 - `dlq.events.v1`
 - `dlq.clickstream.schema_violations`
 - `dlq.clickstream.business_violations`
 - `dlq.inventory.schema_violations`
+
+POS is daily batch Parquet into Iceberg Bronze (`generate_pos_parquet.py`),
+not a Kafka topic.
 
 Producer defaults are configured in `ingestion/kafka/msk_config.py`:
 
@@ -158,7 +160,7 @@ touches the tables consumers read. Each Gold table has one owning DAG.
 | `finance.fact_inventory_snapshot` | One row per product, store, snapshot date, snapshot hour |
 | `marketing.fact_customer_session` | One row per session |
 | `marketing.dim_customer` | One row per customer |
-| `finance.dim_product` | SCD Type 2 product history |
+| `marketing.dim_product` | SCD Type 2 product history |
 
 Rules:
 

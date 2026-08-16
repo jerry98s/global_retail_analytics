@@ -12,7 +12,10 @@ Path: `transformation/dbt_project/`.
 
 - `staging/`: `source()` cleanup only (cast/rename); no business logic.
 - `intermediate/`: business logic; no raw `source()`.
-- `marts/`: finance/marketing grains; no direct staging refs.
+- `marts/`: finance/marketing grains. Do not `source()` Bronze/Silver from
+  marts — go through staging (or intermediate when there is logic). A mart
+  may `ref()` staging when the source grain *is* the fact (POS line items);
+  do not invent a pass-through int model for that.
 
 ## Portable Macros (Redshift + DuckDB)
 

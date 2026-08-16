@@ -39,11 +39,13 @@ cd transformation/dbt_project
 
 # Pick the model from the per-model section below.
 dbt run --select +<model_name> --target prod --full-refresh \
-        --vars '{"run_date": "<YYYY-MM-DD>"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 `--full-refresh` ignores the incremental lookback and recomputes the whole
-table from upstream sources. This is safe for our incremental models because:
+table from upstream sources. Gold marts must still be built with
+`wap_phase=pending` (clone live → pending first; publish after tests).
+This is safe for our incremental models because:
 
 - `fact_sales`, `fact_inventory_snapshot`, `fact_customer_session`,
   `dim_customer`, `dim_product` all use `delete+insert` + `unique_key` —
@@ -63,8 +65,12 @@ Flink `inventory_silver_job` has covered the backfill window — see the
 
 ```bash
 dbt run --select +fact_sales --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
+
+Register every backfill day first (`ALTER TABLE bronze.pos_transactions ADD
+IF NOT EXISTS PARTITION ...`). Incremental runs filter `stg_pos_transactions.dt`
+so Spectrum can prune.
 
 **Verification query — row count by day vs Bronze source:**
 
@@ -82,14 +88,15 @@ select
   count(*) as bronze_rows
 from bronze.pos_transactions
 where transaction_date between '2026-06-22' and '2026-06-28'
-  and not is_voided  -- fact_sales filters voided lines
+  -- fact_sales keeps voided lines; summary.sales_daily_store excludes them
 group by 1
 order by 1;
 ```
 
 **Pass criteria:** Gold rows per day within 0.1% of Bronze rows per day
-(small delta from late-arriving voids and SCD2 join fan-out is acceptable).
-A 1%+ delta indicates lost rows or duplicate product_key joins.
+(small delta from unmatched product/store keys failing the not_null tests
+is a gate, not a silent drop). A 1%+ delta indicates lost rows or a
+duplicate `is_current` product join.
 
 ### fact_inventory_snapshot (finance, kappa path)
 
@@ -111,7 +118,7 @@ range before backfilling the mart. See
 
 ```bash
 dbt run --select +fact_inventory_snapshot --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 **Verification query — running balance monotonicity:**
@@ -146,7 +153,7 @@ rounding for `numeric(38,0)` cast). No NULL `quantity_on_hand`. No
 
 ```bash
 dbt run --select +fact_customer_session --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 **Verification query — session reconstruction sanity:**
@@ -183,7 +190,7 @@ may merge or split a small fraction of sessions).
 
 ```bash
 dbt run --select +dim_customer --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 **Verification query:**
@@ -210,7 +217,7 @@ populated. No NULL `marketing_consent` (the consent gate is hard-required).
 
 ```bash
 dbt run --select int_product_catalog dim_product --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 **Verification query — SCD2 integrity:**
@@ -245,7 +252,7 @@ quicker equivalent (`dbt test --select dim_product`).
 
 ```bash
 dbt run --select +identity_graph --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 **Verification query:**
@@ -314,16 +321,17 @@ exact match on transaction count.
 - **Silver partitions missing:** backfill of `fact_inventory_snapshot` will
   silently produce fewer rows if Silver Flink job hasn't covered the
   window. Always run the Silver coverage check first.
-- **Bronze not refreshed:** Spectrum external tables read S3 at query
-  time. If Iceberg metadata hasn't been refreshed, the backfill sees stale
-  Bronze. Run `MSCK REPAIR TABLE bronze.pos_transactions;` (or the
-  Iceberg equivalent) before backfilling.
+- **Bronze POS partition missing:** Spectrum Hive partitions are not
+  auto-discovered. Register each backfill day:
+  `ALTER TABLE bronze.pos_transactions ADD IF NOT EXISTS PARTITION (dt='YYYY-MM-DD')
+  LOCATION 's3://<bronze>/iceberg/bronze/pos_transactions/data/dt=YYYY-MM-DD/'`.
+  Incremental `fact_sales` filters `dt` so Spectrum can prune.
 - **Full-refresh on dim_product during business hours:** SCD2 full refresh
   can take 10+ minutes on large catalogs. Run during the maintenance
   window (00:00-01:00 UTC) to avoid blocking downstream reads.
-- **Forgetting `--vars '{"run_date": "..."}'`:** some models depend on
-  `run_date` for filtering. Omitting it falls back to `current_date`,
-  which can skew incremental windows.
+- **Skipping `wap_phase=pending`:** Gold marts would write live and skip the
+  audit gate. Clone live → pending, run with `wap_phase=pending`, test, then
+  publish.
 
 ## Post-backfill
 

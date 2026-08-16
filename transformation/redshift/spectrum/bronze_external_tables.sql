@@ -56,11 +56,12 @@ LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/inventory_events/data/';
 
 -- pos_transactions (daily POS Parquet batch job — generate_pos_parquet.py)
 -- POS data lands at s3://.../iceberg/bronze/pos_transactions/data/dt=<YYYY-MM-DD>/
--- so we declare `dt` as a Hive-style partition key. Run `MSCK REPAIR TABLE
--- bronze.pos_transactions;` after each daily POS batch (or after backfills)
--- so Spectrum registers new dt=YYYY-MM-DD directories. Without this, queries
--- that filter on transaction_date still scan every partition. See
--- docs/runbooks/iceberg-maintenance.md (DL-A from the data lake checklist).
+-- so we declare `dt` as a Hive-style partition key. Redshift Spectrum does not
+-- support MSCK REPAIR; warehouse_daily_batch_pipeline registers each day with
+--   ALTER TABLE bronze.pos_transactions ADD IF NOT EXISTS PARTITION (dt='{{ ds }}')
+--   LOCATION '<pos_bronze_s3_path>data/dt={{ ds }}/'
+-- Without that, the new directory is invisible. Filter Gold on `dt` (not only
+-- transaction_date) so Spectrum can prune. See docs/runbooks/iceberg-maintenance.md.
 DROP TABLE IF EXISTS bronze.pos_transactions;
 CREATE EXTERNAL TABLE bronze.pos_transactions (
     transaction_id    varchar(64),
@@ -78,8 +79,9 @@ CREATE EXTERNAL TABLE bronze.pos_transactions (
 PARTITIONED BY (dt date)
 STORED AS PARQUET
 LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/pos_transactions/data/';
--- After first deploy + after every daily POS batch:
---   MSCK REPAIR TABLE bronze.pos_transactions;
+-- After first deploy + after every daily POS batch (the warehouse DAG does this):
+--   ALTER TABLE bronze.pos_transactions ADD IF NOT EXISTS PARTITION (dt='YYYY-MM-DD')
+--   LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/pos_transactions/data/dt=YYYY-MM-DD/';
 
 SELECT 'clickstream' AS tbl, COUNT(*) AS rows FROM bronze.clickstream_events
 UNION ALL

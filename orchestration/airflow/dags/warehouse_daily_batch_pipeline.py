@@ -1,9 +1,9 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: POS Parquet bronze → dbt staging → WAP clone live→pending →
-dbt marts (pending) → dbt tests (pending) → row-count reconciliation (pending)
-→ GE checkpoint (pending) → WAP publish to live → Redshift ANALYZE →
-Redshift usage check.
+Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging →
+WAP clone live→pending → dbt marts (pending) → dbt tests (pending) →
+row-count reconciliation (pending) → GE checkpoint (pending) → WAP publish to
+live → Redshift ANALYZE → Redshift usage check.
 
 Write-Audit-Publish (ADR-009): live Gold is cloned into `*_pending`, dbt rebuilds
 the marts there (`wap_phase='pending'`), dbt tests + GE audit the pending copies,
@@ -145,12 +145,26 @@ with DAG(
         """,
     )
 
+    # Spectrum does not auto-discover Hive partitions. Without this, today's
+    # dt=<ds> directory is invisible and fact_sales incremental reads yesterday.
+    # ADD IF NOT EXISTS keeps the task idempotent on DAG retry (S3 object is
+    # overwritten in place; the partition location does not change).
+    register_pos_partition = RedshiftDataOperator(
+        task_id        = "register_pos_spectrum_partition",
+        workgroup_name = "{{ var.value.redshift_workgroup_name }}",
+        database       = "{{ var.value.redshift_database }}",
+        sql            = """
+            ALTER TABLE bronze.pos_transactions
+            ADD IF NOT EXISTS PARTITION (dt='{{ ds }}')
+            LOCATION '{{ var.value.pos_bronze_s3_path }}data/dt={{ ds }}/'
+        """,
+    )
+
     dbt_staging = _dbt_step(
         "dbt_staging_and_intermediate",
         "run",
         "staging intermediate",
         bootstrap=True,
-        vars_json='{"run_date": "{{ ds }}"}',
     )
 
     # WAP step 1: copy live Gold into the pending schemas so the incremental
@@ -164,7 +178,7 @@ with DAG(
         "dbt_mart_models",
         "run",
         OWNED_SELECT,
-        vars_json='{"run_date": "{{ ds }}", "wap_phase": "pending"}',
+        vars_json='{"wap_phase": "pending"}',
     )
 
     # Audits run against the pending schemas; live is untouched until publish.
@@ -231,6 +245,7 @@ with DAG(
     (
         metadata_start
         >> generate_pos_parquet
+        >> register_pos_partition
         >> dbt_staging
         >> wap_clone
         >> dbt_marts
