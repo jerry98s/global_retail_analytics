@@ -11,31 +11,38 @@
   Sales fact at transaction line-item grain.
 
   Grain: one row per (transaction_id, line_item_number).
-  Source: bronze.pos_transactions (Spectrum external over S3 Parquet
-          written by generate_pos_parquet.py).
-  Joins: dim_product (SCD2 — filtered to is_current=true),
-         dim_store (Type 0/1, no SCD2 filter needed),
+  Source: stg_pos_transactions (typed view over bronze.pos_transactions
+          Parquet written by generate_pos_parquet.py).
+  Joins: dim_product CURRENT version only (is_current=true) — this is not an
+         as-of SCD2 join. Line items pick up the product_key that is current
+         at load time; already-loaded history is not restated when merchandising
+         changes price/category.
+         dim_store (Type 0/1 seed, never WAP'd).
          int_identity_resolution (loyalty_id -> customer_key; LEFT JOIN
-         yields NULL customer_key for anonymous transactions — see
-         not_null-with-where test on customer_key).
+         yields NULL customer_key for anonymous transactions).
 
-  Incremental strategy: crash-resilient lookback anchored on
-  max(date_key) from {{ this }} (NOT current_timestamp). If a run dies
-  after a partial insert, the next run picks up from the max committed
-  date_key — no cliff, no skipped days.
+  Incremental strategy: crash-resilient lookback on max(date_key) from
+  {{ wap_prior_state() }} (live Gold during a pending WAP build). Inclusive
+  overlap of the last loaded day + delete+insert on the grain key rewrites a
+  partial day.
+  `dt` is the Spectrum partition column (aliased from transaction_date on
+  DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
 */
 
-with base as (
-    select *
-    from {{ source('bronze', 'pos_transactions') }}
-    {% if is_incremental() %}
-      where cast(transaction_date as date) >= (
+{% set lookback %}
           select coalesce(
               max({{ date_from_date_key('date_key') }}),
               cast('1970-01-01' as date)
           )
           from {{ wap_prior_state() }}
-      )
+{% endset %}
+
+with base as (
+    select *
+    from {{ ref('stg_pos_transactions') }}
+    {% if is_incremental() %}
+      where transaction_date >= ( {{ lookback }} )
+        and dt >= ( {{ lookback }} )
     {% endif %}
 )
 select
@@ -43,7 +50,7 @@ select
     p.product_key,
     s.store_key,
     i.customer_key,
-    nullif(cast(b.loyalty_id as varchar), '') as loyalty_id,
+    b.loyalty_id,
     b.transaction_id,
     b.line_item_number,
     b.quantity_sold,
@@ -56,7 +63,7 @@ left join {{ ref('dim_product') }} p
   on b.product_id = p.product_id
  and p.is_current = true
 left join {{ source('gold_finance', 'dim_store') }} s
-  on cast(b.store_id as varchar) = s.store_id
+  on b.store_id = s.store_id
 left join {{ ref('int_identity_resolution') }} i
   on i.identifier_type = 'loyalty_id'
- and i.identifier_value = nullif(cast(b.loyalty_id as varchar), '')
+ and i.identifier_value = b.loyalty_id

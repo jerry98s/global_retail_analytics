@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: fact_sales
-    description: "Sales fact table at transaction line-item grain. One row per (transaction_id, line_item_number) from bronze.pos_transactions. Joins dim_product (SCD2-is_current), dim_store, and int_identity_resolution (loyalty_id -> customer_key; NULL for anonymous transactions)."
+    description: "Sales fact table at transaction line-item grain. One row per (transaction_id, line_item_number) from stg_pos_transactions. Joins dim_product current version (not as-of SCD2), dim_store, and int_identity_resolution (loyalty_id -> customer_key; NULL for anonymous transactions)."
     columns:
       - name: transaction_id
         description: "Transaction identifier (UUID from generate_pos_parquet.py)."
@@ -18,7 +18,7 @@ models:
               to: source('gold_finance', 'dim_date')
               field: date_key
       - name: product_key
-        description: "Resolved product surrogate key (joins dim_product on is_current=true)."
+        description: "Resolved product surrogate key. Joins live dim_product on is_current=true (current attributes at load time, not as-of SCD2)."
         tests:
           - not_null
           - relationships:

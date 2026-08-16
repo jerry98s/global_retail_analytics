@@ -1,9 +1,9 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: POS Parquet bronze → dbt staging → dbt SCD2 (pending) →
-dbt marts (pending) → dbt tests (pending) → row-count reconciliation
-(pending) → GE checkpoint (pending) → WAP publish to live → Redshift ANALYZE →
-Redshift usage check.
+Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging →
+dbt SCD2 (pending) → dbt marts (pending) → dbt tests (pending) →
+row-count reconciliation (pending) → GE checkpoint (pending) → WAP publish to
+live → Redshift ANALYZE → Redshift usage check.
 
 Write-Audit-Publish (ADR-009): Gold marts are built into `*_pending` schemas
 (`wap_phase='pending'`), audited there by dbt tests + GE, and only promoted to
@@ -121,12 +121,26 @@ with DAG(
         """,
     )
 
+    # Spectrum does not auto-discover Hive partitions. Without this, today's
+    # dt=<ds> directory is invisible and fact_sales incremental reads yesterday.
+    # ADD IF NOT EXISTS keeps the task idempotent on DAG retry (S3 object is
+    # overwritten in place; the partition location does not change).
+    register_pos_partition = RedshiftDataOperator(
+        task_id        = "register_pos_spectrum_partition",
+        workgroup_name = "{{ var.value.redshift_workgroup_name }}",
+        database       = "{{ var.value.redshift_database }}",
+        sql            = """
+            ALTER TABLE bronze.pos_transactions
+            ADD IF NOT EXISTS PARTITION (dt='{{ ds }}')
+            LOCATION '{{ var.value.pos_bronze_s3_path }}data/dt={{ ds }}/'
+        """,
+    )
+
     dbt_staging = _dbt_step(
         "dbt_staging_and_intermediate",
         "run",
         "staging intermediate",
         bootstrap=True,
-        vars_json='{"run_date": "{{ ds }}"}',
     )
 
     dbt_scd2 = _dbt_step(
@@ -144,7 +158,7 @@ with DAG(
         # summary is owned by marketing_hourly_customer_360_pipeline.
         # WAP: writes land in finance_pending / summary_pending.
         "marts.finance sales_daily_store inventory_daily_product_store",
-        vars_json='{"run_date": "{{ ds }}", "wap_phase": "pending"}',
+        vars_json='{"wap_phase": "pending"}',
     )
 
     # Audits run against the pending schemas; live is untouched until publish.
@@ -208,6 +222,7 @@ with DAG(
     (
         metadata_start
         >> generate_pos_parquet
+        >> register_pos_partition
         >> dbt_staging
         >> dbt_scd2
         >> dbt_marts

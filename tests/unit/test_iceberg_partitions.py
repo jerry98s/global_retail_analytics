@@ -136,6 +136,6 @@ class TestSpectrumPosPartitioning:
         assert re.search(r"PARTITIONED BY\s*\(\s*dt\s+date\s*\)", tail, re.IGNORECASE), (
             "bronze.pos_transactions Spectrum DDL must declare "
             "`PARTITIONED BY (dt date)` so Hive-style dt=YYYY-MM-DD "
-            "directories are pruned by Spectrum. Run MSCK REPAIR TABLE after "
-            "each daily POS batch."
+            "directories are pruned by Spectrum. Register each day with "
+            "ALTER TABLE ... ADD IF NOT EXISTS PARTITION after the POS batch."
         )

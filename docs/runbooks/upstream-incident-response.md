@@ -84,13 +84,14 @@ If all return 0:
 3. Check Kafka topics have producers:
    `aws kafka list-clusters` → broker SASL IAM string →
    `kafka-consumer-groups --bootstrap-server <brokers> --list`.
-4. Refresh Iceberg metadata in Spectrum:
+4. Refresh Spectrum metadata:
    ```sql
-   -- Redshift query editor
-   MSCK REPAIR TABLE bronze.pos_transactions;
-   MSCK REPAIR TABLE bronze.clickstream_events;
-   MSCK REPAIR TABLE bronze.inventory_events;
-   MSCK REPAIR TABLE silver.inventory_hourly;
+   -- POS is a Hive-partitioned Spectrum table (not Iceberg). Register the day:
+   ALTER TABLE bronze.pos_transactions
+   ADD IF NOT EXISTS PARTITION (dt='2026-06-28')
+   LOCATION 's3://<bronze-bucket>/iceberg/bronze/pos_transactions/data/dt=2026-06-28/';
+   -- Iceberg Bronze/Silver (clickstream, inventory) are Glue-catalogued;
+   -- they do not use Hive MSCK REPAIR.
    ```
 
 ### Recovery
@@ -133,11 +134,17 @@ python ingestion/batch/generate_pos_parquet.py --date 2026-06-28 \
        --output-s3 s3://<bronze-bucket>/iceberg/bronze/pos_transactions/
 ```
 
-Then refresh Spectrum metadata and re-run the dbt mart:
+Then register the Spectrum partition (Redshift does not support MSCK REPAIR)
+and re-run the dbt mart:
+
+```sql
+ALTER TABLE bronze.pos_transactions
+ADD IF NOT EXISTS PARTITION (dt='2026-06-28')
+LOCATION 's3://<bronze-bucket>/iceberg/bronze/pos_transactions/data/dt=2026-06-28/';
+```
 
 ```bash
-dbt run --select +fact_sales --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+dbt run --select +fact_sales --target prod --vars '{"wap_phase": "pending"}'
 ```
 
 #### fact_inventory_snapshot (kappa)
@@ -157,7 +164,7 @@ or the incremental lookback dropped the window. Backfill with
 
 ```bash
 dbt run --select +fact_customer_session --target prod --full-refresh \
-        --vars '{"run_date": "2026-06-28"}'
+        --vars '{"wap_phase": "pending"}'
 ```
 
 #### dim_customer / identity_graph
@@ -173,7 +180,7 @@ dbt run --select int_identity_edges int_identity_public_devices \
               int_identity_components int_identity_resolution \
               identity_graph dim_customer \
          --target prod --full-refresh \
-         --vars '{"run_date": "2026-06-28"}'
+         --vars '{"wap_phase": "pending"}'
 ```
 
 #### dim_product (SCD2)

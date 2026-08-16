@@ -271,16 +271,11 @@ pipeline runs, freshness, and DQ history — same workgroup, not Glue. See ADR-0
 Full rationale per decision: see `docs/decisions/` ADRs.
 
 
-
 ---
 
 
 
-<<<<<<< HEAD
 ## Latency SLAs (as implemented)
-=======
->>>>>>> 2c615cf (docs(gold): ADR-009 + WAP notes in ARCHITECTURE/AGENTS/dbt/airflow rules; WAP unit tests)
-
 
 
 | Pipeline | Latency | Mechanism |
