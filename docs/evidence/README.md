@@ -17,9 +17,16 @@ Environment: Windows, Python 3.11, local project virtual environment.
 | 2026-08-01 | `dbt test --target local` | 134/134 PASS |
 | 2026-08-01 | Great Expectations `gold_layer_local` | 11/11 suites successful |
 | 2026-08-01 | Metadata audit (`local_metadata.duckdb`) | `pipeline_run` SUCCESS for dbt + quality; all DQ checks `pass` |
+| 2026-08-16 | `main`: `python -m pytest tests/unit -q` | 291 passed in 4.85s |
+| 2026-08-16 | `main`: Ruff, Python bytecode compilation, Docker Compose config, dbt full compile | Passed |
+| 2026-08-16 | `local-testing-version`: `python -m pytest tests/unit -q` | 306 passed in 3.21s (isolated branch snapshot) |
+| 2026-08-16 | `local-testing-version`: Ruff, Python bytecode compilation, Docker Compose config, dbt full compile | Passed (isolated branch snapshot) |
 
 Re-run these commands after any material change and update the table only from
 captured output.
+
+These rows are not interchangeable: the 2026-08-01 entry is a full local E2E
+run, while the 2026-08-16 entries are offline regression checks on each branch.
 
 ## End-to-end acceptance checklist
 
@@ -34,6 +41,14 @@ Status from the 2026-08-01 run:
 - [ ] One deliberately invalid event appearing in the correct DLQ — the
       2026-08-01 run produced no poison events, so DLQs were legitimately
       empty; DLQ routing is covered offline by unit tests instead.
+
+## Cloud execution evidence
+
+The AWS implementation is present on `main`, but this evidence ledger does not
+yet contain a completed cloud run. Until it does, describe the project as
+**cloud-deployable and locally verified**, not as production-deployed or
+AWS-benchmarked. Follow [docs/runbooks/dev-cloud-test-run.md](../runbooks/dev-cloud-test-run.md)
+for a lowest-cost cloud session and capture results here afterwards.
 
 ## Throughput benchmark protocol
 

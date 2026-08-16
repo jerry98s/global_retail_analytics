@@ -24,7 +24,7 @@ From the latest full local run (2026-08-01, fresh volumes — raw evidence in
 | Streaming ingestion | 90,000 clickstream events emitted → **90,000/90,000 landed in Iceberg Bronze** (0 lost, 0 duplicates, 0 DLQ) · 9,000 inventory events landed (injected retry-duplicates aside) |
 | Batch | 1,480 POS line items → 1,480 `finance.fact_sales` rows (exact 1:1) |
 | Transformation | **22/22 dbt models built · 134/134 dbt tests pass** |
-| Data quality | **11/11 Great Expectations suites pass · 264/264 unit tests pass** |
+| Data quality | **11/11 Great Expectations suites pass · 264/264 unit tests pass** in the full run |
 | Identity / C360 | 123k identity edges resolved (loyalty match, session link, component anchor) → consent-gated Customer 360 serving view |
 
 | | |
@@ -36,7 +36,7 @@ From the latest full local run (2026-08-01, fresh volumes — raw evidence in
 
 | Branch | Role |
 |---|---|
-| **`main`** | Fully cloud-deployed path (MSK, EMR, Redshift, MWAA). |
+| **`main`** | Cloud-deployable AWS implementation (MSK, EMR, Redshift, MWAA); execution evidence is tracked separately. |
 | **`local-testing-version`** | Local Docker Kafka/Flink + DuckDB testing and demos. |
 
 Local-only compose bind-mounts and short Flink windows stay on
@@ -68,6 +68,7 @@ or one latency target.
 | Orchestration | Six Airflow DAGs (batch, C360, Flink, SCD2, GE, Iceberg maintenance) |
 | Infrastructure | Terraform: S3, MSK, EMR, Redshift Serverless, MWAA, App Runner |
 | Operations | ADRs + runbooks (replay, backfill, DLQ, consent, Kafka, Flink, Iceberg) |
+| Governed Gold | Write-Audit-Publish (ADR-009): clone → audit → atomic publish |
 
 ## Architecture overview
 
@@ -160,7 +161,7 @@ DuckDB — no Redshift credentials required.
 | `tests/` | Offline unit + DuckDB integration tests |
 | `metadata/` | Governed object + metric catalog (YAML) for `metadata.meta.*` |
 | `infra/` | Docker Compose, Flink image, Terraform, EMR bootstrap |
-| `scripts/local/` | Local stack runner + Iceberg→DuckDB loader |
+| `scripts/local/` | Local stack runner (Iceberg→DuckDB loader and GE runner live on `local-testing-version`) |
 | `scripts/cloud/` | Terraform wrapper, deploy, Redshift bootstrap, MSK producers |
 | `dashboard/` | Streamlit (local Iceberg or Redshift) |
 | `docs/` | Architecture, ADRs, data model, runbooks, evidence |
@@ -177,6 +178,8 @@ DuckDB — no Redshift credentials required.
 | [ADR-005](./docs/decisions/ADR-005-warehouse-redshift.md) | Why Redshift Serverless |
 | [ADR-006](./docs/decisions/ADR-006-flink-vs-spark.md) | Why Flink vs Spark Streaming |
 | [ADR-007](./docs/decisions/ADR-007-inventory-kappa.md) | Inventory kappa path |
+| [ADR-008](./docs/decisions/ADR-008-metadata-database.md) | Operational metadata DB |
+| [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) | Write-Audit-Publish for Gold |
 
 Cost figures are planning scenarios, not observed cloud bills.
 
@@ -275,6 +278,12 @@ AWS production deployment or a measured 10k events/s load test.
 4. Walk through product SCD2 and identity-resolution tests.
 5. Open the Streamlit dashboard and Flink checkpoint view.
 6. Close with recovery procedures, cost assumptions, and known limits.
+
+Current verification baselines are deliberately separated: the latest full
+local E2E run (2026-08-01) includes 264 unit tests, while the newer offline
+regression runs (2026-08-16) pass 291 tests on `main` and 306 tests on
+`local-testing-version`. See [docs/evidence](./docs/evidence/README.md) for the
+dated evidence ledger.
 
 ## License
 
