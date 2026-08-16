@@ -16,8 +16,8 @@ transformation/dbt_project/logs/
 transformation/dbt_project/dbt_packages/
 transformation/dbt_project/profiles.yml
 transformation/dbt_project/.user.yml
-transformation/dbt_project/*.duckdb
-transformation/dbt_project/*.duckdb.wal
+*.duckdb
+*.duckdb.wal
 
 # Terraform
 **/.terraform/

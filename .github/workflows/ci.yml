@@ -107,6 +107,14 @@ jobs:
           --vars '{"wap_phase": "pending"}'
           --select path:models/marts/finance path:models/marts/summary dim_product
 
+      - name: dbt compile pending marketing
+        run: >
+          dbt compile --no-partial-parse --profiles-dir . --target local
+          --vars '{"wap_phase": "pending"}'
+          --select stg_clickstream_events stg_pos_transactions intermediate
+          marts.marketing sessions_daily_platform
+          --exclude int_product_catalog dim_product customer_360_view
+
       - name: dbt seed
         run: dbt seed --profiles-dir . --target local
 
