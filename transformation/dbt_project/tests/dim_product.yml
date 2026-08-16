@@ -71,13 +71,16 @@ models:
         tests: [not_null]
     tests:
       - no_scd2_overlaps:
-          natural_key: product_id
-          effective_from: effective_from
-          effective_to: effective_to
+          arguments:
+            natural_key: product_id
+            effective_from: effective_from
+            effective_to: effective_to
       - no_scd2_gaps:
-          natural_key: product_id
-          effective_from: effective_from
-          effective_to: effective_to
+          arguments:
+            natural_key: product_id
+            effective_from: effective_from
+            effective_to: effective_to
       - one_current_per_natural_key:
-          natural_key: product_id
-          is_current_col: is_current
+          arguments:
+            natural_key: product_id
+            is_current_col: is_current

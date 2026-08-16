@@ -1,7 +1,8 @@
 # ADR-009: Write-Audit-Publish for Gold marts
 
-**Status:** Accepted  
-**Date:** 2026-08-09  
+**Status:** Accepted
+
+**Date:** 2026-08-09
 **Author:** Data platform team
 
 ---
@@ -54,15 +55,19 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts, with a
    an explicit `schema.table` list owned by that DAG (`pending_tables` /
    `--pending-tables`). A blanket schema suffix would point at pending twins
    the calling DAG never cloned.
-4. **Publish atomically.** Only after every audit passes does a publish step
-   promote pending to live: Redshift `ALTER TABLE pending.x SET SCHEMA live`
-   (rename swap keeping the old live as `x__wap_old` until commit);
-   DuckDB `CREATE TABLE live AS SELECT * FROM pending` in one transaction.
+4. **Publish atomically.** After every audit passes, preflight that every
+   DAG-owned pending table exists, then promote the **entire set** in one
+   transaction: Redshift `ALTER TABLE pending.x SET SCHEMA live` (rename swap
+   keeping the old live as `x__wap_old` until commit); DuckDB
+   `CREATE TABLE live AS SELECT * FROM pending` in that same transaction. A
+   missing later table aborts before any swap.
 
 Because pending already exists and holds prior state, `is_incremental()` is
-true and `{{ this }}` is the correct incremental anchor. Cross-DAG Gold reads
-(e.g. `fact_sales` joining `dim_product`) use the `wap_live_ref()` macro so
-they never write another DAG's pending table.
+true and `{{ this }}` is the correct incremental anchor. Cross-DAG Gold **model**
+reads (e.g. `fact_sales` joining `dim_product`) use the `wap_live_ref()` macro so
+they never write another DAG's pending table. Cross-DAG **relationship tests**
+use `source('gold_marketing', 'dim_product')` instead: dbt cannot infer a nested
+`ref()` inside generic test YAML, so `wap_live_ref` there fails `dbt compile`.
 
 Dependent Redshift views are **late-binding** (`dbt_project.yml` `+bind: false`,
 hand DDL `WITH NO SCHEMA BINDING`) so the rename/drop swap does not follow
@@ -76,7 +81,9 @@ OIDs. Gold models declare `dist` / `sort` matching
   carried forward.
 - **One owner per Gold table.** Per-DAG subsets of `WAP_TABLES` are disjoint
   and cover the full list. `marketing.dim_product` belongs only to
-  `catalog_bihourly_product_scd2_refresh`.
+  `catalog_bihourly_product_scd2_refresh`. Each of those DAGs sets
+  `max_active_runs=1` so overlapping runs cannot drop/reclone the same
+  `*_pending` tables.
 - **Reference dims are not published.** `finance.dim_date` and
   `finance.dim_store` are stable seed/bootstrap data. They stay in live
   `finance` and are excluded from clone/publish lists.
@@ -84,8 +91,9 @@ OIDs. Gold models declare `dist` / `sort` matching
   `serving.customer_360_serving` are views over live Gold. The marketing DAG
   rebuilds them after the swap. They are not renamed through WAP.
 - **Transaction handling.** `redshift_connector` is not autocommit: publish
-  commits via `conn.commit()`. Dropping `__wap_old` is a separate transaction
-  so a drop failure cannot roll the swap back.
+  preflights the full set, then commits every swap together via
+  `conn.commit()`. Dropping `__wap_old` is a follow-up transaction so a drop
+  failure cannot roll the swap back.
 
 ## Ownership boundaries
 

@@ -39,12 +39,17 @@ Clone strategy per table (Redshift)::
 defined in ``transformation/redshift/ddl/``; a plain CTAS would silently drop
 them and the publish swap would leave an untuned table behind.
 
-Publish strategy per table (Redshift)::
+Publish strategy (Redshift), one transaction for the whole DAG-owned set::
 
+    -- preflight: every pending table exists (else abort, no swaps)
     DROP TABLE IF EXISTS live.table__wap_old;
     ALTER TABLE live.table RENAME TO table__wap_old;   -- only if live exists
     ALTER TABLE live_pending.table SET SCHEMA live;    -- lands as live.table
-    -- commit, then drop the old copy
+    -- ...repeat for every owned table, then COMMIT once...
+    -- then drop the old copies in a follow-up transaction
+
+Each owning DAG also sets ``max_active_runs=1`` so a second run cannot drop
+and reclone ``*_pending`` while the first run is still building or publishing.
 
 The swap requires every dependent view to be late-binding — a bound Redshift
 view follows the renamed table by OID and would block the drop. That is why
@@ -135,9 +140,8 @@ def build_redshift_clone_statements(tables: list[tuple[str, str]]) -> list[str]:
 def build_redshift_publish_statements(tables: list[tuple[str, str]]) -> list[str]:
     """SQL statements promoting pending tables into live schemas (Redshift).
 
-    Each table is swapped in its own transaction so one failure cannot leave a
-    half-published set; the old live copy is kept as ``table__wap_old`` until
-    the swap commits, then dropped.
+    All swaps are issued before a single ``COMMIT``. ``__wap_old`` copies are
+    dropped only after that commit so a drop failure cannot undo the publish.
     """
     statements: list[str] = []
     for schema, table in tables:
@@ -150,10 +154,11 @@ def build_redshift_publish_statements(tables: list[tuple[str, str]]) -> list[str
                 f"DROP TABLE IF EXISTS {old_fqn}",
                 f"ALTER TABLE {live_fqn} RENAME TO {table}__wap_old",
                 f"ALTER TABLE {pending_fqn} SET SCHEMA {schema}",
-                "COMMIT",
-                f"DROP TABLE IF EXISTS {old_fqn}",
             ]
         )
+    statements.append("COMMIT")
+    for schema, table in tables:
+        statements.append(f"DROP TABLE IF EXISTS {schema}.{table}__wap_old")
     return statements
 
 
@@ -276,26 +281,39 @@ def publish_gold(
     ``conn`` is a ``redshift_connector`` connection (cloud) or a ``duckdb``
     connection (local). ``dialect`` selects the swap mechanics.
 
-    Raises if a pending table is missing (nothing to audit/publish). A missing
+    Raises if any pending table is missing (nothing to audit/publish). A missing
     live table is fine — that is the first-ever publish and the rename of live
     is simply skipped.
+
+    The whole owned set is preflighted, then swapped in one transaction, so a
+    missing later table cannot leave earlier tables published.
     """
+    missing = [
+        f"{_pending_schema(schema)}.{table}"
+        for schema, table in tables
+        if not _table_exists(conn, _pending_schema(schema), table, dialect)
+    ]
+    if missing:
+        raise RuntimeError(
+            "WAP publish aborted: pending table(s) do not exist: "
+            + ", ".join(missing)
+            + ". Run the clone task and dbt with wap_phase='pending' before publishing."
+        )
+
+    plan: list[tuple[str, str, bool]] = [
+        (schema, table, _table_exists(conn, schema, table, dialect))
+        for schema, table in tables
+    ]
+
     published: list[str] = []
-    for schema, table in tables:
-        pending = _pending_schema(schema)
-        if not _table_exists(conn, pending, table, dialect):
-            raise RuntimeError(
-                f"WAP publish aborted: pending table {pending}.{table} does not exist. "
-                "Run the clone task and dbt with wap_phase='pending' before publishing."
-            )
+    _begin(conn, dialect)
+    try:
+        for schema, table, live_exists in plan:
+            pending = _pending_schema(schema)
+            live_fqn = f"{schema}.{table}"
+            old_fqn = f"{schema}.{table}__wap_old"
+            pending_fqn = f"{pending}.{table}"
 
-        live_exists = _table_exists(conn, schema, table, dialect)
-        live_fqn = f"{schema}.{table}"
-        old_fqn = f"{schema}.{table}__wap_old"
-        pending_fqn = f"{pending}.{table}"
-
-        _begin(conn, dialect)
-        try:
             _exec(conn, f"DROP TABLE IF EXISTS {old_fqn}", dialect)
             if live_exists:
                 _exec(conn, f"ALTER TABLE {live_fqn} RENAME TO {table}__wap_old", dialect)
@@ -304,22 +322,34 @@ def publish_gold(
                 _exec(conn, f"DROP TABLE {pending_fqn}", dialect)
             else:
                 _exec(conn, f"ALTER TABLE {pending_fqn} SET SCHEMA {schema}", dialect)
-            _commit(conn, dialect)
-        except Exception:
-            _rollback(conn, dialect)
-            raise
+            published.append(live_fqn)
+        _commit(conn, dialect)
+    except Exception:
+        _rollback(conn, dialect)
+        raise
 
-        if live_exists:
-            # Separate transaction: the swap is already durable, so failing to
-            # drop the old copy must not roll the publish back.
-            try:
+    old_copies = [
+        f"{schema}.{table}__wap_old"
+        for schema, table, live_exists in plan
+        if live_exists
+    ]
+    if old_copies:
+        # Separate transaction: the swap is already durable, so failing to
+        # drop the old copies must not roll the publish back.
+        try:
+            for old_fqn in old_copies:
                 _exec(conn, f"DROP TABLE IF EXISTS {old_fqn}", dialect)
-                _commit(conn, dialect)
-            except Exception as exc:  # noqa: BLE001
-                _rollback(conn, dialect)
-                log.warning("WAP published %s but could not drop %s: %s", live_fqn, old_fqn, exc)
+            _commit(conn, dialect)
+        except Exception as exc:  # noqa: BLE001
+            _rollback(conn, dialect)
+            log.warning(
+                "WAP published %s but could not drop old copies %s: %s",
+                published,
+                old_copies,
+                exc,
+            )
 
-        published.append(live_fqn)
+    for live_fqn, (_, _, live_exists) in zip(published, plan, strict=True):
         log.info("WAP published %s (live existed: %s)", live_fqn, live_exists)
 
     return {"published": published, "count": len(published)}

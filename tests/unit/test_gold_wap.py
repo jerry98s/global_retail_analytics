@@ -95,6 +95,20 @@ class TestIncrementalSelfRefsUseThis:
                 f"{model}: dim_product is owned by the catalog DAG; join live."
             )
 
+    def test_cross_dag_relationship_tests_use_live_source(self) -> None:
+        for rel_path in (
+            "tests/fact_sales.yml",
+            "tests/summary.yml",
+        ):
+            src = _read(_DBT / rel_path)
+            assert "wap_live_ref" not in src, (
+                f"{rel_path}: nested wap_live_ref in generic tests breaks dbt compile"
+            )
+            assert "source('gold_marketing', 'dim_product')" in src
+        sources = _read(_DBT / "models" / "staging" / "_sources.yml")
+        assert "name: gold_marketing" in sources
+        assert "name: dim_product" in sources
+
     def test_dim_product_does_not_live_ref_itself(self) -> None:
         src = _read(_DBT / "models/marts/marketing/dim_product.sql")
         assert "wap_live_ref" not in src
@@ -107,7 +121,8 @@ class TestGoldDistSortPreserved:
     def test_model_declares_dist_and_sort(self, model: str, dist: str, sort: str) -> None:
         src = _read(_DBT / model)
         assert f"dist='{dist}'" in src, f"{model} missing dist='{dist}'"
-        assert f"sort=" in src and sort in src, f"{model} missing sort containing {sort}"
+        assert f"dist='{dist}'" in src, f"{model} missing dist='{dist}'"
+        assert "sort=" in src and sort in src, f"{model} missing sort containing {sort}"
 
 
 class TestLateBindingViews:
@@ -165,13 +180,17 @@ class TestWapPublishHelper:
         from orchestration.airflow.plugins import wap_publish
 
         stmts = wap_publish.build_redshift_publish_statements(
-            [("finance", "fact_sales")]
+            [("finance", "fact_sales"), ("summary", "sales_daily_store")]
         )
         joined = "\n".join(stmts)
+        assert stmts.count("COMMIT") == 1
+        assert joined.index("SET SCHEMA finance") < joined.index("COMMIT")
+        assert joined.index("SET SCHEMA summary") < joined.index("COMMIT")
+        assert joined.index("COMMIT") < joined.rindex(
+            "DROP TABLE IF EXISTS finance.fact_sales__wap_old"
+        )
         assert "ALTER TABLE finance.fact_sales RENAME TO fact_sales__wap_old" in joined
         assert "ALTER TABLE finance_pending.fact_sales SET SCHEMA finance" in joined
-        assert "DROP TABLE IF EXISTS finance.fact_sales__wap_old" in joined
-        assert "COMMIT" in joined
 
     def test_publish_aborts_when_pending_missing(self) -> None:
         from orchestration.airflow.plugins import wap_publish
@@ -200,6 +219,100 @@ class TestWapPublishHelper:
             wap_publish.publish_gold(
                 _Conn(), [("finance", "fact_sales")], dialect="redshift"
             )
+
+    def test_publish_preflights_set_before_any_swap(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.existing = {("finance_pending", "fact_sales")}
+                self.sql: list[str] = []
+                self.commits = 0
+                self._count = 0
+
+            def cursor(self) -> "_Conn":
+                return self
+
+            def execute(self, sql: str, params: tuple[str, str] | None = None) -> None:
+                self.sql.append(sql)
+                if params is not None:
+                    self._count = 1 if params in self.existing else 0
+
+            def fetchone(self) -> tuple[int]:
+                return (self._count,)
+
+            def close(self) -> None:
+                pass
+
+            def commit(self) -> None:
+                self.commits += 1
+
+            def rollback(self) -> None:
+                pass
+
+        conn = _Conn()
+        with pytest.raises(RuntimeError, match="fact_inventory_snapshot"):
+            wap_publish.publish_gold(
+                conn,
+                [
+                    ("finance", "fact_sales"),
+                    ("finance", "fact_inventory_snapshot"),
+                ],
+                dialect="redshift",
+            )
+        mutating = [
+            s for s in conn.sql if s.startswith(("DROP", "ALTER", "CREATE"))
+        ]
+        assert mutating == []
+        assert conn.commits == 0
+
+    def test_publish_commits_whole_set_once(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.existing = {
+                    ("finance_pending", "fact_sales"),
+                    ("finance_pending", "fact_inventory_snapshot"),
+                    ("finance", "fact_sales"),
+                    ("finance", "fact_inventory_snapshot"),
+                }
+                self.sql: list[str] = []
+                self.commits = 0
+                self._count = 0
+
+            def cursor(self) -> "_Conn":
+                return self
+
+            def execute(self, sql: str, params: tuple[str, str] | None = None) -> None:
+                self.sql.append(sql)
+                if params is not None:
+                    self._count = 1 if params in self.existing else 0
+
+            def fetchone(self) -> tuple[int]:
+                return (self._count,)
+
+            def close(self) -> None:
+                pass
+
+            def commit(self) -> None:
+                self.commits += 1
+
+            def rollback(self) -> None:
+                pass
+
+        conn = _Conn()
+        result = wap_publish.publish_gold(
+            conn,
+            [
+                ("finance", "fact_sales"),
+                ("finance", "fact_inventory_snapshot"),
+            ],
+            dialect="redshift",
+        )
+        assert result["count"] == 2
+        assert conn.commits == 2  # one swap transaction, one __wap_old drop
+        assert sum("SET SCHEMA finance" in s for s in conn.sql) == 2
 
     def test_clone_skips_missing_live_table(self) -> None:
         from orchestration.airflow.plugins import wap_publish
@@ -300,6 +413,7 @@ class TestDagWapContract:
         assert src.index("wap_publish") < src.index("redshift_analyze")
         # Warehouse no longer builds or publishes dim_product.
         assert "int_product_catalog dim_product" not in src
+        assert "max_active_runs" in src and "max_active_runs  = 1" in src
 
     def test_marketing_clone_pending_publish_serving(self) -> None:
         src = _read(_DAGS / "marketing_hourly_customer_360_pipeline.py")
@@ -309,6 +423,7 @@ class TestDagWapContract:
         assert "customer_360_serving" in src
         assert src.index("wap_clone") < src.index("dbt_run_pending")
         assert src.index("wap_publish") < src.index("dbt_serving")
+        assert "max_active_runs  = 1" in src
 
     def test_catalog_clones_and_publishes_dim_product(self) -> None:
         src = _read(_DAGS / "catalog_bihourly_product_scd2_refresh.py")
@@ -316,6 +431,7 @@ class TestDagWapContract:
         assert "publish_dim_product_task" in src
         assert "wap_phase" in src and "pending" in src
         assert src.index("clone_dim_product") < src.index("refresh_dim_product")
+        assert "max_active_runs=1" in src
 
     def test_hourly_ge_stays_on_live(self) -> None:
         src = _read(_DAGS / "quality_hourly_ge_checkpoint.py")

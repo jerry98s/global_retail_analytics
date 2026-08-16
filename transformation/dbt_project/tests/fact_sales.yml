@@ -15,27 +15,31 @@ models:
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_date')
-              field: date_key
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
       - name: product_key
         description: "Resolved product surrogate key. Joins live dim_product on is_current=true (current attributes at load time, not as-of SCD2)."
         tests:
           - not_null
           - relationships:
-              to: "{{ wap_live_ref('dim_product') }}"
-              field: product_key
+              arguments:
+                to: source('gold_marketing', 'dim_product')
+                field: product_key
       - name: store_key
         description: "Resolved store surrogate key (joins gold_finance.dim_store)."
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_store')
-              field: store_key
+              arguments:
+                to: source('gold_finance', 'dim_store')
+                field: store_key
       - name: customer_key
         description: "Resolved customer surrogate key. NULL for anonymous (non-loyalty) transactions — see the conditional not_null test below."
         tests:
           - not_null:
-              where: "loyalty_id is not null"
+              config:
+                where: "loyalty_id is not null"
       - name: loyalty_id
         description: "Loyalty identifier from POS; NULL for anonymous transactions. Used as the join key into int_identity_resolution."
       - name: quantity_sold
@@ -55,9 +59,10 @@ models:
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - transaction_id
-            - line_item_number
+          arguments:
+            combination_of_columns:
+              - transaction_id
+              - line_item_number
 
   - name: fact_inventory_snapshot
     description: "Inventory snapshot fact at hourly grain. Kappa path: reads from silver.inventory_hourly (Flink output) and adds running-balance + surrogate-key joins."
@@ -67,28 +72,32 @@ models:
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_date')
-              field: date_key
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
       - name: snapshot_hour
         description: "Hour of snapshot (0-23)."
         tests:
           - not_null
           - accepted_values:
-              values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+              arguments:
+                values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
       - name: product_key
         description: "Resolved product surrogate key."
         tests:
           - not_null
           - relationships:
-              to: "{{ wap_live_ref('dim_product') }}"
-              field: product_key
+              arguments:
+                to: source('gold_marketing', 'dim_product')
+                field: product_key
       - name: store_key
         description: "Resolved store surrogate key."
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_store')
-              field: store_key
+              arguments:
+                to: source('gold_finance', 'dim_store')
+                field: store_key
       - name: quantity_on_hand
         description: "Cumulative running balance of qty_delta_hour per (product, store)."
         tests: [not_null]
@@ -100,11 +109,13 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: [false]
+              arguments:
+                values: [false]
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - snapshot_date_key
-            - snapshot_hour
-            - product_key
-            - store_key
+          arguments:
+            combination_of_columns:
+              - snapshot_date_key
+              - snapshot_hour
+              - product_key
+              - store_key

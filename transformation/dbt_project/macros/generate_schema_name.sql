@@ -46,7 +46,11 @@
    so they read the last published live version instead of a pending copy.
 
    ref() is still called, so dbt's lineage and build ordering are unchanged —
-   only the schema is rewritten. #}
+   only the schema is rewritten.
+
+   Do not use this macro inside generic test YAML (`relationships.to`). dbt
+   cannot infer a nested ref() there, so compile fails. Cross-DAG FK tests
+   must point at source('gold_marketing', 'dim_product') (live). #}
 {% macro wap_live_ref(model_name) -%}
     {%- set rel = ref(model_name) -%}
     {%- if rel.schema.endswith('_pending') -%}

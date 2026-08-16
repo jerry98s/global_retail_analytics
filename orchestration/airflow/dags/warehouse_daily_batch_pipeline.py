@@ -13,7 +13,9 @@ is what preserves incremental state: without it every model would take its
 full-refresh branch.
 
 This DAG owns the finance marts and their summary rollups only.
-`marketing.dim_product` belongs to `catalog_bihourly_product_scd2_refresh` and is
+`max_active_runs=1` serializes overlapping schedules/backfills so two runs
+cannot drop/reclone the same `*_pending` tables. `marketing.dim_product`
+belongs to `catalog_bihourly_product_scd2_refresh` and is
 read live via the `wap_live_ref` macro; marketing marts belong to
 `marketing_hourly_customer_360_pipeline`. `finance.dim_date` /
 `finance.dim_store` are stable seed reference dims and are never published.
@@ -124,6 +126,7 @@ with DAG(
     default_args     = DEFAULT_ARGS,
     schedule_interval= "15 0 * * *",
     catchup          = False,
+    max_active_runs  = 1,
     tags             = ["batch", "core", "daily"],
     doc_md           = __doc__,
     on_success_callback = on_dag_success,

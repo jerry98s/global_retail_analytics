@@ -66,6 +66,7 @@ with DAG(
     default_args     = DEFAULT_ARGS,
     schedule_interval= "0 * * * *",
     catchup          = False,
+    max_active_runs  = 1,
     tags             = ["batch", "marketing", "hourly"],
     doc_md           = __doc__,
     on_success_callback = on_dag_success,
