@@ -74,25 +74,27 @@ class MartRowCount:
     row_count: int
 
 
-def _query_row_counts(conn: Any, schema_suffix: str = "") -> list[MartRowCount]:
+def _query_row_counts(
+    conn: Any, pending_tables: list[str] | None = None
+) -> list[MartRowCount]:
     """SELECT COUNT(*) from each Gold mart. Missing/unqueryable tables -> -1.
 
     Errors are logged at WARNING and recorded as -1 so the reconciliation
     still produces a full report instead of aborting on the first failure.
 
-    ``schema_suffix`` (ADR-009) retargets the read at pending schemas during the
-    audit phase: ``("_pending")`` makes ``finance.fact_sales`` resolve to
-    ``finance_pending.fact_sales``. Reference dims ``dim_date`` / ``dim_store``
-    are never suffixed — they are stable seed data not published through WAP.
+    ``pending_tables`` (ADR-009) is an explicit ``"schema.table"`` list to read
+    from the pending schema during a WAP audit — ``finance.fact_sales`` becomes
+    ``finance_pending.fact_sales``. Only the caller's own tables are listed:
+    a blanket suffix would point at pending twins that the calling DAG never
+    cloned, and every one of those would score -1 and raise a false alarm.
     """
-    # Tables loaded by bootstrap/seeds, not built by dbt, never go to pending.
-    no_suffix = {("finance", "dim_date"), ("finance", "dim_store")}
+    pending = set(pending_tables or ())
     results: list[MartRowCount] = []
     with conn.cursor() as cur:
         for schema, table in GOLD_MARTS:
             effective_schema = schema
-            if schema_suffix and (schema, table) not in no_suffix:
-                effective_schema = f"{schema}{schema_suffix}"
+            if f"{schema}.{table}" in pending:
+                effective_schema = f"{schema}_pending"
             try:
                 cur.execute(f"SELECT COUNT(*) FROM {effective_schema}.{table}")
                 row = cur.fetchone()
@@ -148,7 +150,7 @@ def reconcile_gold_row_counts(
     conn: Any,
     var_get: Any,
     var_set: Any,
-    schema_suffix: str = "",
+    pending_tables: list[str] | None = None,
 ) -> dict[str, Any]:
     """Compare current Gold mart row counts to baseline; warn on >threshold delta.
 
@@ -156,10 +158,11 @@ def reconcile_gold_row_counts(
     baseline only if no mart exceeded the threshold (preserves last known good
     on a warned run).
 
-    ``schema_suffix`` (ADR-009) reads from pending schemas during the audit
-    phase while keeping baseline keys on the live names.
+    ``pending_tables`` (ADR-009) reads the listed marts from their pending
+    schemas during the audit phase, while baseline keys stay on the live names so
+    the trend is continuous across pending and live reads.
     """
-    current = _query_row_counts(conn, schema_suffix)
+    current = _query_row_counts(conn, pending_tables)
     baseline = _load_baseline(var_get)
     threshold = _resolve_threshold(var_get)
 
@@ -248,15 +251,17 @@ def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> No
         log.warning("metadata emit from reconciliation failed (fail-open): %s", exc)
 
 
-def _airflow_entrypoint(schema_suffix: str = "", **context: Any) -> dict[str, Any]:
+def _airflow_entrypoint(
+    pending_tables: list[str] | None = None, **context: Any
+) -> dict[str, Any]:
     """Airflow PythonOperator entrypoint.
 
     Reads Redshift creds + baseline Variable from the Airflow runtime.
     Kept thin so the reconciliation logic itself is testable without Airflow.
 
-    ``schema_suffix`` is passed via the operator's ``op_kwargs`` (ADR-009): the
-    warehouse DAG passes ``"_pending"`` so the audit reads pending Gold before
-    publish; the default ``""`` keeps the hourly/live behavior.
+    ``pending_tables`` is passed via the operator's ``op_kwargs`` (ADR-009): the
+    warehouse DAG passes the marts it owns so the audit reads them from pending
+    before publish. The default reads everything live.
     """
     import redshift_connector
     from airflow.models import Variable
@@ -275,7 +280,7 @@ def _airflow_entrypoint(schema_suffix: str = "", **context: Any) -> dict[str, An
             conn=conn,
             var_get=Variable.get,
             var_set=Variable.set,
-            schema_suffix=schema_suffix,
+            pending_tables=pending_tables,
         )
         _emit_metadata(result, context)
         return result

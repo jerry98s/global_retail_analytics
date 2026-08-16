@@ -60,7 +60,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('dim_product')
+                to: source('gold_marketing', 'dim_product')
                 field: product_key
       - name: store_key
         tests:

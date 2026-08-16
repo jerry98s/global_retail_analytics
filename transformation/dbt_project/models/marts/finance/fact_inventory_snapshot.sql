@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key=['snapshot_date_key', 'snapshot_hour', 'product_key', 'store_key'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    dist='product_key',
+    sort='snapshot_date_key'
   )
 }}
 
@@ -78,7 +80,7 @@ new_or_changed as (
     {% if is_incremental() %}
       where (snapshot_date_key * 100 + snapshot_hour) > (
           select coalesce(max(snapshot_date_key * 100 + snapshot_hour), 0)
-          from {{ wap_prior_state() }}
+          from {{ this }}
       )
     {% endif %}
 )
@@ -92,7 +94,9 @@ select
     greatest(f.quantity_on_hand, 0) as quantity_available,
     f.is_estimated
 from new_or_changed f
-left join {{ ref('dim_product') }} p
+-- dim_product is owned by catalog_bihourly_product_scd2_refresh (ADR-009), so
+-- read the last published live version rather than this DAG's pending schema.
+left join {{ wap_live_ref('dim_product') }} p
   on f.product_id = p.product_id
  and p.is_current = true
 left join {{ source('gold_finance', 'dim_store') }} s

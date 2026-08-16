@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key='session_id',
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    dist='customer_key',
+    sort='session_date_key'
   )
 }}
 
@@ -35,7 +37,7 @@ with lookback as (
             -2,
             "coalesce(max(session_start_time), cast('1970-01-01' as timestamp))"
         ) }} as cutoff_ts
-    from {{ wap_prior_state() }}
+    from {{ this }}
 ),
 sessions as (
     select s.*

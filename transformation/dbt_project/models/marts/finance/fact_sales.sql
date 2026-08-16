@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key=['transaction_id', 'line_item_number'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    dist='product_key',
+    sort='date_key'
   )
 }}
 
@@ -16,15 +18,15 @@
   Joins: dim_product CURRENT version only (is_current=true) — this is not an
          as-of SCD2 join. Line items pick up the product_key that is current
          at load time; already-loaded history is not restated when merchandising
-         changes price/category.
+         changes price/category. Catalog DAG owns dim_product; this model reads
+         the last published live table via wap_live_ref.
          dim_store (Type 0/1 seed, never WAP'd).
          int_identity_resolution (loyalty_id -> customer_key; LEFT JOIN
          yields NULL customer_key for anonymous transactions).
 
   Incremental strategy: crash-resilient lookback on max(date_key) from
-  {{ wap_prior_state() }} (live Gold during a pending WAP build). Inclusive
-  overlap of the last loaded day + delete+insert on the grain key rewrites a
-  partial day.
+  {{ this }} (the WAP pending clone of live). Inclusive overlap of the last
+  loaded day + delete+insert on the grain key rewrites a partial day.
   `dt` is the Spectrum partition column (aliased from transaction_date on
   DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
 */
@@ -34,7 +36,7 @@
               max({{ date_from_date_key('date_key') }}),
               cast('1970-01-01' as date)
           )
-          from {{ wap_prior_state() }}
+          from {{ this }}
 {% endset %}
 
 with base as (
@@ -59,7 +61,7 @@ select
     b.gross_margin,
     b.is_voided
 from base b
-left join {{ ref('dim_product') }} p
+left join {{ wap_live_ref('dim_product') }} p
   on b.product_id = p.product_id
  and p.is_current = true
 left join {{ source('gold_finance', 'dim_store') }} s

@@ -3,7 +3,9 @@
     materialized='incremental',
     unique_key='product_key',
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    dist='product_key',
+    sort=['product_id', 'is_current']
   )
 }}
 
@@ -22,7 +24,7 @@ with source_products as (
 {% if is_incremental() %}
 
 existing as (
-    select * from {{ wap_prior_state() }}
+    select * from {{ this }}
 ),
 
 changed_products as (

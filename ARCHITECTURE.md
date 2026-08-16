@@ -214,9 +214,11 @@ Clickstream has no separate silver table — bronze feeds dbt directly.
 
 via Spectrum over S3). Finance on **daily** batch; Customer 360 on **hourly** batch.
 Gold marts ship with Write-Audit-Publish ([ADR-009](docs/decisions/ADR-009-write-audit-publish.md)):
-dbt builds into `finance_pending` / `marketing_pending` / `summary_pending`,
-dbt tests + GE audit there, and an atomic rename promotes to live only on
-success — a failing run never touches the tables consumers read.
+live Gold is cloned into `finance_pending` / `marketing_pending` /
+`summary_pending`, dbt rebuilds tables there, dbt tests + GE audit the pending
+copies, and an atomic rename promotes the DAG-owned set to live only on success.
+`marketing.dim_product` is catalog-owned; warehouse facts join the live table.
+A failing run never touches the tables consumers read.
 
 
 

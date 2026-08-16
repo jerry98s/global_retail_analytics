@@ -60,6 +60,19 @@ seeds:
 models:
   global_retail_analytics:
     +materialized: view
+    # Redshift-only config (ignored by dbt-duckdb): emit views as
+    # `WITH NO SCHEMA BINDING`. Required in two places:
+    #   1. WAP (ADR-009) publishes Gold by renaming live tables aside and
+    #      dropping the old copy. A *bound* view follows the renamed table by
+    #      OID, so dropping `<table>__wap_old` would error on the dependency
+    #      (or CASCADE-drop customer_360_view). Late binding resolves by name
+    #      at query time, so the swap is invisible to consumers.
+    #   2. Staging views read Bronze/Silver Spectrum external tables, which
+    #      Redshift only allows behind a late-binding view.
+    # Trade-off: dbt no longer fails at build time on a missing upstream
+    # column — the error surfaces when the view is queried. dbt tests and the
+    # GE audit gate cover that.
+    +bind: false
     staging:
       +schema: staging
       +materialized: view

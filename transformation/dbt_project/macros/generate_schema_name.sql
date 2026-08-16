@@ -9,6 +9,16 @@
    failing audit never touches live tables. staging / intermediate / serving
    / bronze are never redirected.
 
+   The pending tables are clones of live, created by the DAG's clone task before
+   dbt runs (orchestration/airflow/plugins/wap_publish.py). Because the relation
+   already exists and holds prior state, is_incremental() is true and `this` is
+   the correct incremental anchor — no special-casing needed in models.
+
+   Views in Gold schemas (customer_360_view) are NOT redirected: only tables are
+   published, so a view built into *_pending would never be promoted and the live
+   view would go stale. Views always build in the live schema over live tables,
+   which is why the DAGs build them after the publish step.
+
    Keep the Gold schema list inside the macro — a top-level `{% set %}` in a
    macros file is ignored (UnexpectedJinjaBlockDeprecation) and would silently
    skip pending routing. #}
@@ -18,7 +28,8 @@
         {{ target.schema }}
     {%- else -%}
         {%- set base = custom_schema_name | trim -%}
-        {%- if var('wap_phase', 'live') == 'pending' and base in wap_gold_schemas -%}
+        {%- set is_view = node is not none and node.config.materialized == 'view' -%}
+        {%- if var('wap_phase', 'live') == 'pending' and base in wap_gold_schemas and not is_view -%}
             {{ base }}_pending
         {%- else -%}
             {{ base }}
@@ -26,18 +37,23 @@
     {%- endif -%}
 {%- endmacro %}
 
-{# Returns the relation a model's incremental anchor should read from.
-   During a WAP pending build, `this` points at the (possibly empty) pending
-   relation, so the lookback must read the last committed LIVE table instead.
-   When wap_phase == 'live' this is just `this`.
+{# Resolves a ref() to its LIVE relation even during a pending build.
 
-   Do not nest this (or other ref-wrapping macros) inside generic test YAML
-   (`relationships.to`). dbt cannot infer a nested ref() there, so compile
-   fails. Same-DAG FKs should use ref('dim_product'); cross-DAG FKs should
-   use source('gold_marketing', 'dim_product'). #}
-{% macro wap_prior_state(node_relation=none) -%}
-    {%- set rel = node_relation if node_relation is not none else this -%}
-    {%- if var('wap_phase', 'live') == 'pending' and rel.schema.endswith('_pending') -%}
+   Use this for Gold tables owned by a *different* DAG. Every Gold table has one
+   owning DAG (ADR-009); a DAG must never write another DAG's pending table, or
+   two concurrent runs clobber each other. fact_sales / fact_inventory_snapshot
+   join marketing.dim_product, which catalog_bihourly_product_scd2_refresh owns,
+   so they read the last published live version instead of a pending copy.
+
+   ref() is still called, so dbt's lineage and build ordering are unchanged —
+   only the schema is rewritten.
+
+   Do not use this macro inside generic test YAML (`relationships.to`). dbt
+   cannot infer a nested ref() there, so compile fails. Cross-DAG FK tests
+   must point at source('gold_marketing', 'dim_product') (live). #}
+{% macro wap_live_ref(model_name) -%}
+    {%- set rel = ref(model_name) -%}
+    {%- if rel.schema.endswith('_pending') -%}
         {{ api.Relation.create(database=rel.database, schema=rel.schema[:-8], identifier=rel.identifier) }}
     {%- else -%}
         {{ rel }}
