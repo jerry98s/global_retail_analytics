@@ -424,6 +424,14 @@ class TestDagWapContract:
         assert src.index("wap_publish") < src.index("dbt_serving")
         assert "max_active_runs  = 1" in src
 
+    def test_ci_compiles_pending_finance_catalog_and_marketing(self) -> None:
+        src = _read(_REPO / ".github" / "workflows" / "ci.yml")
+        assert "--vars '{\"wap_phase\": \"pending\"}'" in src
+        assert "path:models/marts/finance" in src
+        assert "dim_product" in src
+        assert "marts.marketing" in src
+        assert "--exclude int_product_catalog dim_product customer_360_view" in src
+
     def test_catalog_clones_and_publishes_dim_product(self) -> None:
         src = _read(_DAGS / "catalog_bihourly_product_scd2_refresh.py")
         assert "clone_dim_product_task" in src
