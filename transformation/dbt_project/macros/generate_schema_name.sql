@@ -29,7 +29,12 @@
 {# Returns the relation a model's incremental anchor should read from.
    During a WAP pending build, `this` points at the (possibly empty) pending
    relation, so the lookback must read the last committed LIVE table instead.
-   When wap_phase == 'live' this is just `this`. #}
+   When wap_phase == 'live' this is just `this`.
+
+   Do not nest this (or other ref-wrapping macros) inside generic test YAML
+   (`relationships.to`). dbt cannot infer a nested ref() there, so compile
+   fails. Same-DAG FKs should use ref('dim_product'); cross-DAG FKs should
+   use source('gold_marketing', 'dim_product'). #}
 {% macro wap_prior_state(node_relation=none) -%}
     {%- set rel = node_relation if node_relation is not none else this -%}
     {%- if var('wap_phase', 'live') == 'pending' and rel.schema.endswith('_pending') -%}

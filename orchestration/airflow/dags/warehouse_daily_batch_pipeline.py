@@ -9,8 +9,9 @@ Write-Audit-Publish (ADR-009): Gold marts are built into `*_pending` schemas
 (`wap_phase='pending'`), audited there by dbt tests + GE, and only promoted to
 live `finance` / `marketing` / `summary` after every audit passes. A failing
 audit leaves live untouched, so consumers keep reading the last good publish.
-`finance.dim_date` / `finance.dim_store` are stable seed reference dims and are
-never published.
+`max_active_runs=1` serializes overlapping runs so two executions cannot
+clobber the same `*_pending` tables. `finance.dim_date` / `finance.dim_store`
+are stable seed reference dims and are never published.
 
 Schedule: 00:15 UTC daily (15-min buffer for late clickstream events).
 
@@ -100,6 +101,7 @@ with DAG(
     default_args     = DEFAULT_ARGS,
     schedule_interval= "15 0 * * *",
     catchup          = False,
+    max_active_runs  = 1,
     tags             = ["batch", "core", "daily"],
     doc_md           = __doc__,
     on_success_callback = on_dag_success,

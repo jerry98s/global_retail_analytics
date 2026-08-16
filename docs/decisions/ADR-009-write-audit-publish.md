@@ -1,7 +1,8 @@
 # ADR-009: Write-Audit-Publish for Gold marts
 
-**Status:** Accepted  
-**Date:** 2026-08-09  
+**Status:** Accepted
+
+**Date:** 2026-08-09
 **Author:** Data platform team
 
 ---
@@ -32,10 +33,12 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts:
    `gold_layer_daily` checkpoint run against the `*_pending` relations
    (reconcile via `schema_suffix`, GE via `run_ge_checkpoint.py
    --schema-suffix _pending`).
-3. **Publish atomically.** Only after every audit passes does a publish step
-   promote pending to live: Redshift `ALTER TABLE pending.x SET SCHEMA live`
-   (rename swap keeping the old live as `x__wap_old` until commit); DuckDB
-   `CREATE TABLE live AS SELECT * FROM pending` in one transaction.
+3. **Publish atomically.** After every audit passes, preflight that every
+   DAG-owned pending table exists, then promote the **entire set** in one
+   transaction: Redshift `ALTER TABLE pending.x SET SCHEMA live` (rename swap
+   keeping the old live as `x__wap_old` until commit); DuckDB
+   `CREATE TABLE live AS SELECT * FROM pending` in that same transaction. A
+   missing later table aborts before any swap.
 
 ## Correctness guarantees
 
@@ -44,7 +47,10 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts:
   empty, which would silently turn every incremental into a full rebuild. The
   `wap_prior_state()` macro returns the last committed **live** relation during
   a pending build (`this` when `wap_phase='live'`), preserving crash-resilient
-  incremental behavior.
+  incremental behavior. Generic relationship tests must use `ref()` / `source()`,
+  not nested macros — dbt cannot infer a nested `ref()` inside test YAML.
+- **Serialized WAP runs.** Each WAP DAG sets `max_active_runs=1` so overlapping
+  runs cannot clobber the same `*_pending` tables.
 - **Reference dims are not published.** `finance.dim_date` and
   `finance.dim_store` are stable seed/bootstrap data, not dbt-built marts. They
   stay in live `finance`, are excluded from the publish list, and their GE /
@@ -53,6 +59,9 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts:
   `serving.customer_360_serving` are views over Gold. The marketing DAG
   re-runs the serving view against **live** after the swap so it binds to the
   freshly published tables. They are not renamed through WAP.
+- **Transaction handling.** Publish preflights the full set, then commits every
+  swap together. Dropping `__wap_old` is a follow-up transaction so a drop
+  failure cannot roll the swap back.
 
 ## Ownership boundaries
 

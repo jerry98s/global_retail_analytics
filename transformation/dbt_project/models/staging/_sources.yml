@@ -82,21 +82,24 @@ sources:
             description: "Day of week (0=Sunday .. 6=Saturday)."
             tests:
               - accepted_values:
-                  values: [0, 1, 2, 3, 4, 5, 6]
+                  arguments:
+                    values: [0, 1, 2, 3, 4, 5, 6]
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
           - name: month_number
             description: "Month number (1-12)."
             tests:
               - accepted_values:
-                  values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+                  arguments:
+                    values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
           - name: quarter
             description: "Calendar quarter (1-4)."
             tests:
               - accepted_values:
-                  values: [1, 2, 3, 4]
+                  arguments:
+                    values: [1, 2, 3, 4]
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
           - name: is_weekend
@@ -147,7 +150,8 @@ sources:
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
               - accepted_values:
-                  values: ['RETAIL']
+                  arguments:
+                    values: ['RETAIL']
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
           - name: country_code
@@ -157,7 +161,8 @@ sources:
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
               - accepted_values:
-                  values: ['MY']
+                  arguments:
+                    values: ['MY']
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
           - name: region
@@ -167,7 +172,8 @@ sources:
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
               - accepted_values:
-                  values: ['Central', 'North', 'South', 'East']
+                  arguments:
+                    values: ['Central', 'North', 'South', 'East']
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
           - name: is_active
@@ -176,3 +182,13 @@ sources:
               - not_null:
                   config:
                     enabled: "{{ target.type != 'duckdb' }}"
+  - name: gold_marketing
+    database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
+    # Live marketing.dim_product owned by catalog_bihourly_product_scd2_refresh.
+    # Finance/summary relationship tests must use this source — a nested
+    # wap_live_ref()/ref() inside generic test YAML is invisible to dbt's
+    # graph, so `dbt compile` (and the warehouse audit task) fail.
+    # Schema stays live `marketing` even when wap_phase=pending.
+    schema: marketing
+    tables:
+      - name: dim_product

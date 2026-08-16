@@ -16,7 +16,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['platinum', 'gold', 'standard']
+              arguments:
+                values: ['platinum', 'gold', 'standard']
       - name: rfm_segment
         description: "RFM segment label from int_rfm_scoring (e.g., champion, loyal, at_risk, general)."
         tests: [not_null]
@@ -25,8 +26,9 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 1
+              arguments:
+                min_value: 0
+                max_value: 1
       - name: total_lifetime_value
         description: "Total lifetime value (monetary_value from int_rfm_scoring); 0 when RFM is unavailable."
         tests: [not_null]
@@ -51,8 +53,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_date')
-              field: date_key
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
       - name: customer_key
         description: "Resolved customer key. NULL for anonymous sessions (no loyalty_id and no client_id match in int_identity_resolution)."
       - name: client_id
@@ -112,9 +115,10 @@ models:
         description: "Client platform (from fact_customer_session)."
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - customer_key
-            - session_id
+          arguments:
+            combination_of_columns:
+              - customer_key
+              - session_id
 
   - name: identity_graph
     description: "Physical identity graph (identifier -> customer_key). Public devices excluded; see int_identity_resolution for the audit/full version."
@@ -135,21 +139,23 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 1
+              arguments:
+                min_value: 0
+                max_value: 1
       - name: resolution_method
         description: "Audit label describing how the identifier was resolved. Note: public_device_excluded is intentionally absent from accepted_values — those rows are filtered out upstream in int_identity_resolution, and this test guards against filter regressions."
         tests:
           - not_null
           - accepted_values:
-              values:
-                - 'component_anchor'
-                - 'loyalty_member'
-                - 'loyalty_match'
-                - 'customer_id_standalone'
-                - 'session_linked'
-                - 'device_only'
-                - 'unknown'
+              arguments:
+                values:
+                  - 'component_anchor'
+                  - 'loyalty_member'
+                  - 'loyalty_match'
+                  - 'customer_id_standalone'
+                  - 'session_linked'
+                  - 'device_only'
+                  - 'unknown'
       - name: is_public_device
         description: "True for client_ids that hit the public-device threshold (excluded from identity merge but kept for audit). Always false in identity_graph (filtered out upstream in int_identity_resolution)."
         tests: [not_null]
@@ -158,4 +164,5 @@ models:
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns: [identifier_type, identifier_value]
+          arguments:
+            combination_of_columns: [identifier_type, identifier_value]

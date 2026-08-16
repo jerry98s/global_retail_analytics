@@ -79,6 +79,16 @@ class TestIncrementalSelfRefsReadLive:
             f"{model}: found bare 'from {{{{ this }}}}' — use wap_prior_state()."
         )
 
+    def test_relationship_tests_avoid_nested_ref_macros(self) -> None:
+        for rel_path in (
+            "tests/fact_sales.yml",
+            "tests/summary.yml",
+        ):
+            src = _read(_DBT / rel_path)
+            assert "wap_live_ref" not in src
+            assert "wap_prior_state" not in src
+            assert "ref('dim_product')" in src
+
 
 class TestWapPublishHelper:
     def test_canonical_table_list(self) -> None:
@@ -100,13 +110,19 @@ class TestWapPublishHelper:
         from orchestration.airflow.plugins import wap_publish
 
         stmts = wap_publish.build_redshift_publish_statements(
-            [("finance", "fact_sales")]
+            [("finance", "fact_sales"), ("summary", "sales_daily_store")]
         )
         joined = "\n".join(stmts)
+        assert stmts.count("COMMIT") == 1
+        assert joined.index("SET SCHEMA finance") < joined.index("COMMIT")
+        assert joined.index("SET SCHEMA summary") < joined.index("COMMIT")
+        assert joined.index("COMMIT") < joined.rindex(
+            "DROP TABLE IF EXISTS finance.fact_sales__wap_old"
+        )
         assert "ALTER TABLE finance.fact_sales RENAME TO fact_sales__wap_old" in joined
         assert "ALTER TABLE finance_pending.fact_sales SET SCHEMA finance" in joined
         assert "DROP TABLE IF EXISTS finance.fact_sales__wap_old" in joined
-        assert joined.count("BEGIN") >= 1 and joined.count("COMMIT") >= 1
+        assert joined.count("BEGIN") == 1 and joined.count("COMMIT") == 1
 
     def test_publish_aborts_when_pending_missing(self) -> None:
         from orchestration.airflow.plugins import wap_publish
@@ -131,10 +147,110 @@ class TestWapPublishHelper:
             def cursor(self) -> _Cur:
                 return _Cur()
 
+            def commit(self) -> None:
+                pass
+
+            def rollback(self) -> None:
+                pass
+
         with pytest.raises(RuntimeError, match="pending table"):
             wap_publish.publish_gold(
                 _Conn(), [("finance", "fact_sales")], dialect="redshift"
             )
+
+    def test_publish_preflights_set_before_any_swap(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.existing = {("finance_pending", "fact_sales")}
+                self.sql: list[str] = []
+                self.commits = 0
+                self._count = 0
+
+            def cursor(self) -> "_Conn":
+                return self
+
+            def execute(self, sql: str, params: tuple[str, str] | None = None) -> None:
+                self.sql.append(sql)
+                if params is not None:
+                    self._count = 1 if params in self.existing else 0
+
+            def fetchone(self) -> tuple[int]:
+                return (self._count,)
+
+            def close(self) -> None:
+                pass
+
+            def commit(self) -> None:
+                self.commits += 1
+
+            def rollback(self) -> None:
+                pass
+
+        conn = _Conn()
+        with pytest.raises(RuntimeError, match="fact_inventory_snapshot"):
+            wap_publish.publish_gold(
+                conn,
+                [
+                    ("finance", "fact_sales"),
+                    ("finance", "fact_inventory_snapshot"),
+                ],
+                dialect="redshift",
+            )
+        mutating = [
+            s for s in conn.sql if s.startswith(("DROP", "ALTER", "CREATE"))
+        ]
+        assert mutating == []
+        assert conn.commits == 0
+
+    def test_publish_commits_whole_set_once(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        class _Conn:
+            def __init__(self) -> None:
+                self.existing = {
+                    ("finance_pending", "fact_sales"),
+                    ("finance_pending", "fact_inventory_snapshot"),
+                    ("finance", "fact_sales"),
+                    ("finance", "fact_inventory_snapshot"),
+                }
+                self.sql: list[str] = []
+                self.commits = 0
+                self._count = 0
+
+            def cursor(self) -> "_Conn":
+                return self
+
+            def execute(self, sql: str, params: tuple[str, str] | None = None) -> None:
+                self.sql.append(sql)
+                if params is not None:
+                    self._count = 1 if params in self.existing else 0
+
+            def fetchone(self) -> tuple[int]:
+                return (self._count,)
+
+            def close(self) -> None:
+                pass
+
+            def commit(self) -> None:
+                self.commits += 1
+
+            def rollback(self) -> None:
+                pass
+
+        conn = _Conn()
+        result = wap_publish.publish_gold(
+            conn,
+            [
+                ("finance", "fact_sales"),
+                ("finance", "fact_inventory_snapshot"),
+            ],
+            dialect="redshift",
+        )
+        assert result["count"] == 2
+        assert conn.commits == 2  # one swap transaction, one __wap_old drop
+        assert sum("SET SCHEMA finance" in s for s in conn.sql) == 2
 
 
 class TestGeSchemaSuffix:
@@ -180,6 +296,7 @@ class TestDagWapContract:
         assert "--schema-suffix _pending" in src
         # Publish precedes ANALYZE.
         assert src.index("wap_publish") < src.index("redshift_analyze")
+        assert "max_active_runs" in src and "max_active_runs  = 1" in src
 
     def test_marketing_pending_publish_serving(self) -> None:
         src = _read(_DAGS / "marketing_hourly_customer_360_pipeline.py")
@@ -188,11 +305,13 @@ class TestDagWapContract:
         assert "customer_360_serving" in src
         # Publish precedes the serving refresh.
         assert src.index("wap_publish") < src.index("dbt_serving")
+        assert "max_active_runs  = 1" in src
 
     def test_catalog_publishes_dim_product(self) -> None:
         src = _read(_DAGS / "catalog_bihourly_product_scd2_refresh.py")
         assert "wap_phase" in src and "pending" in src
         assert "publish_dim_product_task" in src
+        assert "max_active_runs=1" in src
 
     def test_hourly_ge_stays_on_live(self) -> None:
         src = _read(_DAGS / "quality_hourly_ge_checkpoint.py")

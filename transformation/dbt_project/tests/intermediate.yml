@@ -13,7 +13,8 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['session_link', 'loyalty_value_match']
+              arguments:
+                values: ['session_link', 'loyalty_value_match']
 
   - name: int_identity_public_devices
     columns:
@@ -59,15 +60,16 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values:
-                - component_anchor
-                - loyalty_member
-                - loyalty_match
-                - customer_id_standalone
-                - session_linked
-                - device_only
-                - public_device_excluded
-                - unknown
+              arguments:
+                values:
+                  - component_anchor
+                  - loyalty_member
+                  - loyalty_match
+                  - customer_id_standalone
+                  - session_linked
+                  - device_only
+                  - public_device_excluded
+                  - unknown
 
   - name: int_session_reconstruction
     columns:

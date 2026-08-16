@@ -61,6 +61,7 @@ If `dbt_test_dim_product` fails:
 
 with DAG(
     dag_id="catalog_bihourly_product_scd2_refresh",
+    max_active_runs=1,
     default_args={
         "owner": "data-platform",
         "start_date": datetime(2024, 1, 1),

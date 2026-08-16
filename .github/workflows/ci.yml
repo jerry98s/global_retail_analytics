@@ -52,7 +52,7 @@ jobs:
         run: pip install ruff==0.6.9
 
       - name: ruff check
-        run: ruff check ingestion streaming scripts quality orchestration
+        run: ruff check ingestion streaming scripts quality orchestration tests
 
       - name: compile-all (syntax errors fail fast)
         run: |
@@ -97,6 +97,15 @@ jobs:
 
       - name: dbt deps
         run: dbt deps --profiles-dir . --target local
+
+      - name: dbt compile full project
+        run: dbt compile --no-partial-parse --profiles-dir . --target local
+
+      - name: dbt compile pending finance and catalog
+        run: >
+          dbt compile --no-partial-parse --profiles-dir . --target local
+          --vars '{"wap_phase": "pending"}'
+          --select path:models/marts/finance path:models/marts/summary dim_product
 
       - name: dbt seed
         run: dbt seed --profiles-dir . --target local

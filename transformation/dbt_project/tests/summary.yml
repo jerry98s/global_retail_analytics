@@ -11,15 +11,17 @@ models:
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_date')
-              field: date_key
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
       - name: store_key
         description: Store surrogate key.
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_store')
-              field: store_key
+              arguments:
+                to: source('gold_finance', 'dim_store')
+                field: store_key
       - name: transaction_count
         tests:
           - not_null
@@ -36,9 +38,10 @@ models:
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - date_key
-            - store_key
+          arguments:
+            combination_of_columns:
+              - date_key
+              - store_key
 
   - name: inventory_daily_product_store
     description: >
@@ -49,20 +52,23 @@ models:
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_date')
-              field: date_key
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
       - name: product_key
         tests:
           - not_null
           - relationships:
-              to: ref('dim_product')
-              field: product_key
+              arguments:
+                to: ref('dim_product')
+                field: product_key
       - name: store_key
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_store')
-              field: store_key
+              arguments:
+                to: source('gold_finance', 'dim_store')
+                field: store_key
       - name: ending_on_hand_qty
         tests: [not_null]
       - name: ending_available_qty
@@ -77,14 +83,16 @@ models:
         tests:
           - not_null
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 24
+              arguments:
+                min_value: 0
+                max_value: 24
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - snapshot_date_key
-            - product_key
-            - store_key
+          arguments:
+            combination_of_columns:
+              - snapshot_date_key
+              - product_key
+              - store_key
 
   - name: sessions_daily_platform
     description: >
@@ -95,8 +103,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: source('gold_finance', 'dim_date')
-              field: date_key
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
       - name: platform
         tests: [not_null]
       - name: session_count
@@ -115,9 +124,10 @@ models:
         description: converted_sessions / session_count (NULL when no sessions).
         tests:
           - dbt_utils.accepted_range:
-              min_value: 0
-              max_value: 1
-              inclusive: true
+              arguments:
+                min_value: 0
+                max_value: 1
+                inclusive: true
       - name: product_view_count
         tests:
           - not_null
@@ -128,6 +138,7 @@ models:
           - non_negative
     tests:
       - dbt_utils.unique_combination_of_columns:
-          combination_of_columns:
-            - session_date_key
-            - platform
+          arguments:
+            combination_of_columns:
+              - session_date_key
+              - platform

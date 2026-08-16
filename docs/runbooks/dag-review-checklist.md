@@ -86,6 +86,12 @@ DAG file name MUST equal the `dag_id` (without `.py`). Enforced by
     logical date overwrites the same partition.
   - Streaming sinks: Flink `EXACTLY_ONCE` checkpoints handle
     idempotency at the connector level.
+- WAP DAGs (`warehouse_daily_batch_pipeline`,
+  `marketing_hourly_customer_360_pipeline`,
+  `catalog_bihourly_product_scd2_refresh`) must set `max_active_runs=1`.
+  They share fixed `*_pending` table names; a second active run can drop
+  and reclone pending state out from under the first. Enforced by
+  `tests/unit/test_gold_wap.py`.
 - Enforced by `test_dag_no_bare_insert_into` (no `INSERT INTO` without
   `OVERWRITE` in DAG source). Streaming DAGs that wrap Flink jobs
   are exempt — their INSERT INTO statements live in the Flink job
