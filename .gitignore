@@ -38,6 +38,7 @@ crash.*.log
 .env
 *.env
 !infra/docker/flink/versions.env
+!infra/docker/spark/versions.env
 secrets/
 *_credentials.json
 

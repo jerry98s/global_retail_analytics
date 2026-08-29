@@ -29,12 +29,10 @@ Cloud (EMR 6.15, Spark 3.4) — submitted by the marketing hourly DAG or
 
 Local (laptop, local-testing-version stack):
 
-    spark-submit \
-      --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12 \
-      identity_resolution_job.py --local \
-      --bronze-warehouse .local/iceberg \
-      --silver-warehouse .local/iceberg \
-      --pos-parquet-path .local/pos_parquet/
+    .\scripts\local\run_local_stack.ps1 -Task spark
+
+    (Docker image retail-analytics/spark-identity:3.4.1; warehouse
+     file:///tmp/iceberg via the compose bind-mount.)
 """
 
 from __future__ import annotations

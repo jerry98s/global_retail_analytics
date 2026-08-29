@@ -310,33 +310,15 @@ function Invoke-LoadDuckdb {
         --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
 }
 
-# ADR-010: run the GraphFrames identity job under local PySpark against
-# .local/iceberg (same job code as the EMR step). Requires spark-submit on
-# PATH (Spark 3.4.x + Java). Without it, the dbt task falls back to the
-# generated identity_resolution seed fixture.
+# ADR-010: run the GraphFrames identity job in the local Spark image
+# (infra/docker/spark) against .local/iceberg. Same job code as the EMR
+# step. No host Spark/JDK. The dbt iceberg task still seeds the fixture if
+# this output is missing (e.g. skipped -Task spark).
 function Invoke-SparkIdentityLocal {
     Ensure-IcebergHostDir
-    $sparkSubmit = Get-Command spark-submit -ErrorAction SilentlyContinue
-    if (-not $sparkSubmit) {
-        throw "spark-submit not found on PATH. Install Spark 3.4.x + Java (see spark/README.md), or skip: the dbt task seeds the identity fixture instead."
-    }
-    $packages = 'org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12'
-    $warehouseUri = 'file:///' + ($IcebergHostDir -replace '\\', '/')
     $checkpointDir = Join-Path $RepoRoot '.local\graphframes-checkpoints'
     New-Item -ItemType Directory -Force -Path $checkpointDir | Out-Null
-    Push-Location (Join-Path $RepoRoot 'spark\identity_resolution')
-    try {
-        & spark-submit --master 'local[*]' --packages $packages `
-            --py-files graph_logic.py identity_resolution_job.py --local `
-            --bronze-warehouse $warehouseUri `
-            --silver-warehouse $warehouseUri `
-            --pos-parquet-path (Join-Path $IcebergHostDir 'bronze\pos_transactions') `
-            --checkpoint-dir $checkpointDir
-        if ($LASTEXITCODE -ne 0) { throw "spark-submit failed with exit code $LASTEXITCODE" }
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-CheckedCommand "docker compose -f $MainCompose --profile spark run --rm --build --no-deps spark-identity"
 }
 
 # ADR-009 canonical WAP table list, as "schema.table" for the GE audit gate.
@@ -380,6 +362,28 @@ try:
 finally:
     con.close()
 "@
+}
+
+# Catalog DAG publishes dim_product before the warehouse DAG reads it via
+# wap_live_ref. Local `-Task dbt` builds both in one process, so a cold
+# DuckDB has no live marketing.dim_product. Build the pending SCD2 table
+# first, then copy it to live once so finance facts can join (same as a
+# prior catalog publish). Later runs clone live -> pending as usual.
+function Invoke-WapBootstrapLiveDimProduct {
+    param([string]$ExecutionId = "")
+    Push-Location $DbtDir
+    try {
+        Invoke-ProjectDbt @(
+            'run', '--profiles-dir', '.', '--target', 'local',
+            '--vars', '{"wap_phase": "pending"}',
+            '--select', 'dim_product'
+        ) -ExecutionId $ExecutionId
+    }
+    finally {
+        Pop-Location
+    }
+    Invoke-ProjectPython scripts/local/bootstrap_live_dim_product.py `
+        --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
 }
 
 # ADR-009 step 3: promote the audited pending Gold marts into live schemas in
@@ -455,6 +459,9 @@ function Invoke-DbtIceberg {
     Invoke-Step "WAP clone live Gold -> pending" {
         Invoke-WapCloneLocal
     }
+    Invoke-Step "WAP first-run live dim_product (catalog before warehouse)" {
+        Invoke-WapBootstrapLiveDimProduct -ExecutionId $ExecutionId
+    }
     Push-Location $DbtDir
     try {
         # ADR-009: build Gold mart tables into the *_pending clones; publish comes
@@ -494,6 +501,9 @@ function Invoke-DbtSeeds {
     # still runs so both modes follow the identical clone/write/audit/publish path.
     Invoke-Step "WAP clone live Gold -> pending" {
         Invoke-WapCloneLocal
+    }
+    Invoke-Step "WAP first-run live dim_product (catalog before warehouse)" {
+        Invoke-WapBootstrapLiveDimProduct -ExecutionId $ExecutionId
     }
     Push-Location $DbtDir
     try {
@@ -625,7 +635,7 @@ try {
             }
         }
         "spark" {
-            Invoke-Step "Spark GraphFrames identity resolution (local PySpark)" {
+            Invoke-Step "Spark GraphFrames identity resolution (Docker Spark 3.4.1)" {
                 Invoke-SparkIdentityLocal
             }
         }
@@ -669,10 +679,10 @@ try {
                     Ensure-LocalDbtProfile
                     Push-Location $DbtDir
                     try {
-                        Invoke-ProjectDbt @(
+                        Invoke-ProjectDbt (@(
                             'test', '--profiles-dir', '.', '--target', 'local',
-                            '--vars', '{"wap_phase": "pending"}'
-                        ) -ExecutionId $execId
+                            '--vars', '{"wap_phase": "pending"}', '--exclude'
+                        ) + $WapServingModels) -ExecutionId $execId
                     }
                     finally {
                         Pop-Location
@@ -726,6 +736,8 @@ try {
                 Write-Host "Waiting 75s for silver windows / checkpoints ..." -ForegroundColor DarkGray
                 Start-Sleep -Seconds 75
                 if ($DbtSource -eq "iceberg") {
+                    & $PSCommandPath -Task pos-parquet
+                    & $PSCommandPath -Task spark
                     Invoke-Step "dbt local (Iceberg Parquet + dim seeds)" {
                         Invoke-DbtIceberg -ExecutionId $execId
                     }
@@ -738,10 +750,10 @@ try {
                     Ensure-LocalDbtProfile
                     Push-Location $DbtDir
                     try {
-                        Invoke-ProjectDbt @(
+                        Invoke-ProjectDbt (@(
                             'test', '--profiles-dir', '.', '--target', 'local',
-                            '--vars', '{"wap_phase": "pending"}'
-                        ) -ExecutionId $execId
+                            '--vars', '{"wap_phase": "pending"}', '--exclude'
+                        ) + $WapServingModels) -ExecutionId $execId
                     }
                     finally {
                         Pop-Location

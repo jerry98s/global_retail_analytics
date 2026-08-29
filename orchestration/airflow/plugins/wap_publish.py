@@ -337,6 +337,7 @@ def publish_gold(
         # Separate transaction: the swap is already durable, so failing to
         # drop the old copies must not roll the publish back.
         try:
+            _begin(conn, dialect)
             for old_fqn in old_copies:
                 _exec(conn, f"DROP TABLE IF EXISTS {old_fqn}", dialect)
             _commit(conn, dialect)

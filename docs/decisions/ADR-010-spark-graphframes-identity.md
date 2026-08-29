@@ -96,8 +96,8 @@ GraphFrames batch job. Everything downstream stays in dbt.**
   (`transformation/redshift/spectrum/silver_external_tables.sql`); unpartitioned,
   so hourly overwrites need no partition maintenance.
 - **Local DuckDB sim** reads the generated seed fixture in fixture mode; on
-  `local-testing-version` the same job runs under local PySpark against
-  `.local/iceberg`.
+  `local-testing-version` the same job runs in Docker (`infra/docker/spark`,
+  compose profile `spark`) against `.local/iceberg`.
 - **Revisit triggers from ADR-006** for *other* Spark uses (Iceberg
   maintenance, ML features) are unchanged — this ADR does not open the door
   to Spark-everything.

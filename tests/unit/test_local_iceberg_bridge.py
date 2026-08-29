@@ -56,14 +56,42 @@ class TestLocalIcebergBridge:
             assert name in src
 
     def test_run_local_stack_has_spark_identity_task(self) -> None:
-        # ADR-010: local PySpark mode runs the same GraphFrames job against
+        # ADR-010: local GraphFrames runs in the Spark Docker image against
         # .local/iceberg; the dbt task falls back to the seed fixture when no
         # Spark output exists.
         ps1 = (_REPO / "scripts/local/run_local_stack.ps1").read_text(encoding="utf-8")
         assert '"spark"' in ps1
         assert "Invoke-SparkIdentityLocal" in ps1
-        assert "identity_resolution_job.py" in ps1
+        assert "--profile spark" in ps1
+        assert "spark-identity" in ps1
         assert "'identity_resolution'" in ps1  # fixture fallback seed select
+        assert "Invoke-WapBootstrapLiveDimProduct" in ps1
+        assert "bootstrap_live_dim_product.py" in ps1
+
+    def test_compose_spark_identity_profile(self) -> None:
+        compose = (_REPO / "infra/docker/compose/docker-compose.yml").read_text(
+            encoding="utf-8"
+        )
+        assert "spark-identity:" in compose
+        assert 'profiles: ["spark"]' in compose
+        assert "../../../spark:/opt/spark-identity" in compose
+        dockerfile = (_REPO / "infra/docker/spark/Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        versions = (_REPO / "infra/docker/spark/versions.env").read_text(
+            encoding="utf-8"
+        )
+        flink_iceberg = next(
+            line.split("=", 1)[1].strip()
+            for line in (_REPO / "infra/docker/flink/versions.env")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.startswith("ICEBERG_VERSION=")
+        )
+        assert f"ICEBERG_VERSION={flink_iceberg}" in versions
+        assert f"ICEBERG_VERSION={flink_iceberg}" in dockerfile
+        assert "apache/spark:3.4.1-python3" in dockerfile
+        assert "graphframes" in dockerfile
 
     def test_run_local_stack_supports_iceberg_dbt_source(self) -> None:
         ps1 = (_REPO / "scripts/local/run_local_stack.ps1").read_text(encoding="utf-8")
@@ -71,8 +99,10 @@ class TestLocalIcebergBridge:
         assert "load_iceberg_to_duckdb.py" in ps1
         assert "generate_pos_parquet" in ps1
         assert "'dim_date', 'dim_store'" in ps1 or "dim_date dim_store" in ps1
-        all_block = ps1[ps1.find('"all"') :]
+        all_block = ps1[ps1.find('"all" {') :]
         assert all_block.find("-Task flink") < all_block.find("-Task simulate")
+        assert all_block.find("-Task pos-parquet") < all_block.find("-Task spark")
+        assert all_block.find("-Task spark") < all_block.find("Invoke-DbtIceberg")
 
     def test_pos_write_local_parquet_layout(self) -> None:
         mod = importlib.import_module("ingestion.batch.generate_pos_parquet")

@@ -30,7 +30,7 @@ shared cloud logic (dbt, Flink jobs, DAGs, contracts) only when asked.
 - Flink **1.17.1** (EMR 6.15.0 parity); Iceberg Bronze/Silver; dbt Core **1.11.***; Terraform **1.6+**.
 - Kafka topics: `inventory.events.v1`, `clickstream.events.v1` + DLQs. POS is **batch Parquet** → S3 Bronze (no POS Kafka topic).
 - Flink jobs: `inventory_bronze_job`, `clickstream_bronze_job`, `inventory_silver_job`, `iceberg_maintenance` (Airflow-owned batch maintenance).
-- Spark: `spark/identity_resolution` (GraphFrames connected components → `silver.identity_resolution`, ADR-010); dbt reads it as a source. Flink owns streaming; dbt owns Gold.
+- Spark: `spark/identity_resolution` (GraphFrames connected components → `silver.identity_resolution`, ADR-010); dbt reads it as a source. Flink owns streaming; dbt owns Gold. Local: Docker profile `spark` (`infra/docker/spark`), not a host Spark install.
 - Terraform: `bootstrap` + `platform`; dev/prod share code, differ by `envs/*`. EMR sizing is parameterized (`emr_*` vars) for low-cost dev.
 
 ## Architecture Constraints

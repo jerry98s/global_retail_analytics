@@ -132,5 +132,33 @@ services:
       - ../../../.local/iceberg:/tmp/iceberg
       - flink-checkpoints:/tmp/flink-checkpoints
 
+  # Batch-only (compose profile `spark`): not started by `up`. The local
+  # wrapper runs `docker compose --profile spark run --rm spark-identity`.
+  spark-identity:
+    profiles: ["spark"]
+    build: ../spark
+    image: retail-analytics/spark-identity:3.4.1
+    user: "0:0"
+    working_dir: /opt/spark-identity/identity_resolution
+    environment:
+      PYSPARK_PYTHON: python3
+      PYTHONPATH: /opt/graphframes-python
+    volumes:
+      - ../../../spark:/opt/spark-identity
+      - ../../../.local/iceberg:/tmp/iceberg
+      - ../../../.local/graphframes-checkpoints:/tmp/graphframes-checkpoints
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        mkdir -p /tmp/graphframes-checkpoints /tmp/iceberg
+        exec /opt/spark/bin/spark-submit \
+          --master local[*] \
+          --py-files graph_logic.py \
+          identity_resolution_job.py --local \
+          --bronze-warehouse file:///tmp/iceberg \
+          --silver-warehouse file:///tmp/iceberg \
+          --pos-parquet-path /tmp/iceberg/bronze/pos_transactions/data \
+          --checkpoint-dir /tmp/graphframes-checkpoints
+
 volumes:
   flink-checkpoints:

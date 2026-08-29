@@ -41,17 +41,14 @@ Packages resolved at submit time: `iceberg-spark-runtime-3.4_2.12:1.4.3`
 
 ## Local (laptop)
 
-On `local-testing-version`, the same job runs under local PySpark against
-`.local/iceberg`:
+On `local-testing-version`, the same job runs in the Spark 3.4.1 Docker
+image (`infra/docker/spark`, Iceberg 1.4.3 + GraphFrames 0.8.3 baked in)
+against `.local/iceberg`. No host Spark or JDK:
 
-```bash
-spark-submit \
-  --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12 \
-  spark/identity_resolution/identity_resolution_job.py --local \
-  --bronze-warehouse .local/iceberg \
-  --silver-warehouse .local/iceberg \
-  --pos-parquet-path .local/pos_parquet/
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task spark
 ```
 
-Requires `pyspark==3.4.*` and a JDK 8/11/17 on PATH. Fixture mode
-(`-DbtSource seeds`) needs no Spark at all — it reads the generated seed.
+`-Task all` (iceberg source) generates POS Parquet, runs this container, then
+dbt. Fixture mode (`-DbtSource seeds`) needs no Spark — it reads the generated
+seed.
