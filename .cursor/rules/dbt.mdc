@@ -41,9 +41,11 @@ Use adapter macros — do not call Redshift-only SQL in shared models:
 
 ## Identity → C360 (marketing)
 
-`int_identity_edges` → `int_identity_public_devices` → `int_identity_components`
-→ `int_identity_resolution` → sessions/RFM/consent → `dim_customer` /
+Spark GraphFrames job (`spark/identity_resolution/`, ADR-010) →
+`silver.identity_resolution` (Iceberg source) → `int_identity_resolution`
+(thin view) → sessions/RFM/consent → `dim_customer` /
 `fact_customer_session` / `identity_graph` → `customer_360_view` (consent-gated).
+`int_identity_public_devices` stays in dbt as an audit model.
 
 ## DAG Ownership
 

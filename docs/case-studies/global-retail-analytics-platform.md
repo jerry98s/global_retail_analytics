@@ -823,22 +823,21 @@ The platform receives different identifiers from different sources:
 
 The goal is to map raw identifiers to one stable `customer_key`.
 
-The model chain is:
+The model chain is (ADR-010: the graph runs in Spark GraphFrames; dbt keeps a
+thin view over its Iceberg output):
 
 ```text
-stg_clickstream_events + stg_pos_transactions
+bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
         |
         v
-int_identity_edges
+Spark GraphFrames job (spark/identity_resolution/)
+  edges + public-device exclusion + connected components
         |
         v
-int_identity_public_devices
+silver.identity_resolution (Iceberg)
         |
         v
-int_identity_components
-        |
-        v
-int_identity_resolution
+int_identity_resolution (thin dbt view)
         |
         v
 marketing.identity_graph
@@ -846,6 +845,8 @@ marketing.identity_graph
         v
 marketing.customer_360_view
 ```
+
+`int_identity_public_devices` remains in dbt as an audit model over staging.
 
 ### Edge Types
 

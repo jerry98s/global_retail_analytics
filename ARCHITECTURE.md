@@ -34,16 +34,17 @@ flowchart LR
     KDLQ["DLQ topics"]
   end
 
-  subgraph FLINK["Flink on EMR"]
+  subgraph FLINK["Flink + Spark on EMR"]
     FINVB["inventory_bronze_job"]
     FINVS["inventory_silver_job"]
     FCLKB["clickstream_bronze_job"]
     FMAINT["iceberg_maintenance.py<br/>batch"]
+    SPK["identity_resolution_job<br/>Spark GraphFrames (ADR-010)"]
   end
 
   subgraph LAKE["Iceberg on S3"]
     BRZ["Bronze<br/>inventory_events<br/>clickstream_events<br/>pos_transactions"]
-    SLV["Silver<br/>inventory_hourly"]
+    SLV["Silver<br/>inventory_hourly<br/>identity_resolution · identity_edges"]
   end
 
   subgraph REDSHIFT["Redshift"]
@@ -67,10 +68,12 @@ flowchart LR
   CLK --> KCLK --> FCLKB --> BRZ
   FCLKB -.invalid.-> KDLQ
   BRZ --> SPEC --> DBT --> GOLD
+  BRZ --> SPK --> SLV
   SLV --> DBT
   FMAINT --> BRZ
   FMAINT --> SLV
   D1 --> DBT
+  D2 --> SPK
   D2 --> DBT
   D3 --> FLINK
   D4 --> DBT
@@ -84,7 +87,7 @@ flowchart LR
 |---|---|---|
 | Ingestion | Decouple producers/consumers and preserve event ownership | Kafka/MSK topics and JSON schemas |
 | Bronze | Raw, replayable source history | Iceberg on S3; Spectrum external access |
-| Silver | Cleaned or operational streaming outputs | Iceberg `silver.inventory_hourly` |
+| Silver | Cleaned or operational streaming outputs | Iceberg `silver.inventory_hourly`; `silver.identity_resolution` + `identity_edges` from the Spark GraphFrames job (ADR-010) |
 | Gold | Governed business marts | Redshift tables built by dbt (`finance.*`, `marketing.*`) |
 | Summary | Reusable aggregates from one Gold fact | Redshift/DuckDB `summary.*` |
 | Serving | Consumer-specific views and dashboard access | Redshift serving views, Streamlit/App Runner |

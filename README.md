@@ -63,7 +63,7 @@ or one latency target.
 | Lakehouse | Iceberg Bronze/Silver, partition contracts, compaction / snapshot expiry |
 | Analytics engineering | dbt staging → intermediate → finance/marketing marts |
 | Dimensional modelling | Kimball facts/dims; SCD Type 2 only on `dim_product` |
-| Identity / C360 | Graph-based resolution, public-device exclusion, consent gate |
+| Identity / C360 | Spark GraphFrames connected components (ADR-010), public-device exclusion, consent gate |
 | Data quality | JSON Schema contracts, dbt tests, Great Expectations, pytest |
 | Orchestration | Six Airflow DAGs (batch, C360, Flink, SCD2, GE, Iceberg maintenance) |
 | Infrastructure | Terraform: S3, MSK, EMR, Redshift Serverless, MWAA, App Runner |
@@ -180,6 +180,7 @@ DuckDB — no Redshift credentials required.
 | [ADR-007](./docs/decisions/ADR-007-inventory-kappa.md) | Inventory kappa path |
 | [ADR-008](./docs/decisions/ADR-008-metadata-database.md) | Operational metadata DB |
 | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) | Write-Audit-Publish for Gold |
+| [ADR-010](./docs/decisions/ADR-010-spark-graphframes-identity.md) | Spark GraphFrames for identity resolution |
 
 Cost figures are planning scenarios, not observed cloud bills.
 

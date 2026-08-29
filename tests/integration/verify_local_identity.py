@@ -6,11 +6,17 @@ Requires fixture-mode seeds (not Iceberg fidelity mode)::
 
 Runs after `dbt run --target local --select +identity_graph`.
 Checks the scenarios encoded in seeds/bronze/clickstream_events.csv:
-  1. Loyalty match    : loyalty:L1001 <-> customer:L1001 via POS loyalty_value_match
-  2. Session link     : client:c-aaa  <-> customer:C2001 via clickstream session_link
-  3. Multi-hop closure: loyalty:L1001, customer:L1001, client:c-aaa, customer:C2001 all in one component
+  1. Loyalty match    : loyalty:L1001 anchors its component (method='component_anchor')
+  2. Session link     : client:c-aaa  -> method='session_linked', confidence 0.85
+  3. Multi-hop closure: loyalty:L1001, customer:L1001, client:c-aaa, customer:C2001
+     share one customer_key (verified via component_rep_node in resolution)
   4. Public device    : client:c-shared excluded from identity_graph (10 distinct customers >= threshold)
   5. Singleton client : client:c-solo in int_identity_resolution with method='device_only'
+
+Since ADR-010, edge construction and connected components run in the Spark
+GraphFrames job; the fixture-mode chain reads the generated
+seeds/silver/identity_resolution.csv. Edge/component correctness is covered
+by tests/unit/test_spark_identity_resolution.py against the same scenarios.
 """
 
 from __future__ import annotations
@@ -44,71 +50,29 @@ def main() -> int:
 
     print()
     print("=" * 80)
-    print("int_identity_edges (session_link + loyalty_value_match; c-shared excluded)")
-    print("=" * 80)
-    rows = con.execute("select src, dst, edge_type from intermediate.int_identity_edges order by edge_type, src, dst").fetchall()
-    for r in rows:
-        print(f"  {r[0]:30s} -> {r[1]:30s}  [{r[2]}]")
-    edges = {(r[0], r[1]) for r in rows}
-    # Expected edges:
-    #   session_link: client:c-aaa -> customer:L1001, client:c-aaa -> customer:C2001, client:c-bbb -> customer:L2002
-    #   loyalty_value_match: loyalty:L1001 -> customer:L1001, loyalty:L2002 -> customer:L2002
-    expected_session = {
-        ("client:c-aaa", "customer:L1001"),
-        ("client:c-aaa", "customer:C2001"),
-        ("client:c-bbb", "customer:L2002"),
-    }
-    expected_loyalty = {
-        ("loyalty:L1001", "customer:L1001"),
-        ("loyalty:L2002", "customer:L2002"),
-    }
-    found_session = {(r[0], r[1]) for r in rows if r[2] == "session_link"}
-    found_loyalty = {(r[0], r[1]) for r in rows if r[2] == "loyalty_value_match"}
-    if found_session != expected_session:
-        failures.append(f"Session-link edges mismatch. Expected {expected_session}, got {found_session}")
-    if found_loyalty != expected_loyalty:
-        failures.append(f"Loyalty-match edges mismatch. Expected {expected_loyalty}, got {found_loyalty}")
-    # c-shared should be excluded from edges (public device)
-    if any("c-shared" in (s + d) for s, d in edges):
-        failures.append("Scenario 4 FAILED: c-shared appears in int_identity_edges (should be excluded)")
-
-    print()
-    print("=" * 80)
-    print("int_identity_components (component rep per node)")
-    print("=" * 80)
-    rows = con.execute("""
-        select node, identifier_type, identifier_value, component_rep_type, component_rep_node, customer_key
-        from intermediate.int_identity_components
-        order by node
-    """).fetchall()
-    for r in rows:
-        print(f"  {r[0]:30s}  type={r[1]:12s} rep_type={r[3]:12s} rep={r[4]:30s}  ck={r[5]}")
-    # Scenario 3: loyalty:L1001, customer:L1001, client:c-aaa, customer:C2001 all share component_rep_node='loyalty:L1001'
-    rep_by_node = {r[0]: r[4] for r in rows}
-    same_component_nodes = ["loyalty:L1001", "customer:L1001", "client:c-aaa", "customer:C2001"]
-    reps = {rep_by_node.get(n) for n in same_component_nodes}
-    if len(reps) != 1 or reps != {"loyalty:L1001"}:
-        failures.append(f"Scenario 3 FAILED: expected all of {same_component_nodes} to share rep='loyalty:L1001', got reps={reps}")
-
-    # Same for L2002 component
-    same_component_l2002 = ["loyalty:L2002", "customer:L2002", "client:c-bbb"]
-    reps_l2002 = {rep_by_node.get(n) for n in same_component_l2002}
-    if len(reps_l2002) != 1 or reps_l2002 != {"loyalty:L2002"}:
-        failures.append(f"Scenario (L2002) FAILED: expected rep='loyalty:L2002', got {reps_l2002}")
-
-    print()
-    print("=" * 80)
     print("int_identity_resolution (per-identifier: confidence, method, is_public_device)")
     print("=" * 80)
     rows = con.execute("""
-        select identifier_type, identifier_value, customer_key, confidence_score, resolution_method, is_public_device
+        select identifier_type, identifier_value, customer_key, confidence_score, resolution_method, is_public_device, component_rep_node
         from intermediate.int_identity_resolution
         order by identifier_type, identifier_value
     """).fetchall()
     for r in rows:
-        print(f"  {r[0]:12s}  {r[1]:30s}  ck={r[2]:10d}  conf={r[3]}  method={r[4]:24s}  pub={r[5]}")
+        print(f"  {r[0]:12s}  {r[1]:30s}  ck={r[2]:10d}  conf={r[3]}  method={r[4]:24s}  pub={r[5]}  rep={r[6]}")
     method_by_node = {(r[0], r[1]): r[4] for r in rows}
     conf_by_node = {(r[0], r[1]): float(r[3]) for r in rows}
+    rep_by_id = {(r[0], r[1]): r[6] for r in rows}
+    key_by_id = {(r[0], r[1]): r[2] for r in rows}
+    # Scenario 3 (multi-hop): all four identifiers share rep loyalty:L1001 and one customer_key
+    multi_hop = [("loyalty_id", "L1001"), ("customer_id", "L1001"), ("client_id", "c-aaa"), ("customer_id", "C2001")]
+    reps = {rep_by_id.get(i) for i in multi_hop}
+    if reps != {"loyalty:L1001"}:
+        failures.append(f"Scenario 3 FAILED: expected rep='loyalty:L1001' for {multi_hop}, got {reps}")
+    if len({key_by_id.get(i) for i in multi_hop}) != 1:
+        failures.append(f"Scenario 3 FAILED: expected one shared customer_key for {multi_hop}")
+    reps_l2002 = {rep_by_id.get(i) for i in [("loyalty_id", "L2002"), ("customer_id", "L2002"), ("client_id", "c-bbb")]}
+    if reps_l2002 != {"loyalty:L2002"}:
+        failures.append(f"Scenario (L2002) FAILED: expected rep='loyalty:L2002', got {reps_l2002}")
     # Scenario 1: loyalty:L1001 -> method='component_anchor', confidence=1.0
     if method_by_node.get(("loyalty_id", "L1001")) != "component_anchor":
         failures.append(f"Scenario 1 FAILED: loyalty:L1001 method expected 'component_anchor', got '{method_by_node.get(('loyalty_id', 'L1001'))}'")

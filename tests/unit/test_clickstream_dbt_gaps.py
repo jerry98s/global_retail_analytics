@@ -33,10 +33,14 @@ class TestClickstreamDbtGapFixes:
         assert "conversion_value" in src
         assert "full outer join" in src.lower()
 
-    def test_identity_components_hop_var(self) -> None:
-        src = _read(_DBT / "models/intermediate/int_identity_components.sql")
-        assert "identity_component_hops" in src
-        assert "range(2, hops + 1)" in src or "range(2, hops+1)" in src
+    def test_identity_graph_runs_in_spark(self) -> None:
+        # ADR-010: edges + connected components moved to the Spark
+        # GraphFrames job; dbt keeps only the thin resolution view.
+        intermediate = _DBT / "models/intermediate"
+        assert not (intermediate / "int_identity_edges.sql").exists()
+        assert not (intermediate / "int_identity_components.sql").exists()
+        resolution = _read(intermediate / "int_identity_resolution.sql")
+        assert "source('silver', 'identity_resolution')" in resolution
 
     def test_json_path_text_macro_exists(self) -> None:
         src = _read(_DBT / "macros/json_path_text.sql")

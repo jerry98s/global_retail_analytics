@@ -2,11 +2,13 @@
 
 How raw identifiers become `customer_key` and flow into Customer 360.
 
-We use **graph-based connected components** (bounded Union-Find in SQL) plus a
+We use **graph-based connected components** (Spark GraphFrames — ADR-010) plus a
 **public-device threshold** to merge identifiers — deterministic only, no
 probabilistic linking (per ADR-003).
 
-See [ADR-003](../decisions/ADR-003-identity-graph.md) for policy.
+See [ADR-003](../decisions/ADR-003-identity-graph.md) for policy and
+[ADR-010](../decisions/ADR-010-spark-graphframes-identity.md) for the engine
+decision.
 
 ## Identifier sources
 
@@ -21,15 +23,23 @@ Inventory events carry **no** customer identifier.
 ## Model chain
 
 ```
-stg_clickstream_events + stg_pos_transactions
-  → int_identity_edges              (typed co-occurrence + cross-source equality edges)
-  → int_identity_public_devices     (client_ids linked to ≥ N distinct customers)
-  → int_identity_components         (bounded N-hop connected components — default 6; var identity_component_hops)
-  → int_identity_resolution         (per-identifier confidence + method + public_device flag)
+bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
+  → Spark GraphFrames job (spark/identity_resolution/)     [ADR-010]
+      edge construction + public-device exclusion + connected components
+      → silver.identity_resolution  (Iceberg; full overwrite per run)
+      → silver.identity_edges       (audit copy of the graph)
+  → int_identity_resolution         (thin dbt view over the silver source; adds identity_key)
   → marketing.identity_graph        (filtered: public devices excluded)
 ```
 
-## Edge types (`intermediate.int_identity_edges`)
+`intermediate.int_identity_public_devices` remains as a dbt audit model over
+staging; the Spark job is authoritative for edge exclusion.
+
+The business rules (edge types, threshold, rep priority, confidence/method,
+`customer_key` formula) live in `spark/identity_resolution/graph_logic.py` —
+the Spark job mirrors them and the dbt seed fixture is generated from them.
+
+## Edge types (`silver.identity_edges`)
 
 | Edge type | From → To | Rule |
 |-----------|-----------|------|
@@ -37,13 +47,15 @@ stg_clickstream_events + stg_pos_transactions
 | `loyalty_value_match` | `loyalty:{id}` ↔ `customer:{id}` | POS loyalty_id value equals a clickstream customer_id |
 
 Public devices (see below) are **excluded** from edges so they appear as
-isolated singletons in `int_identity_components`.
+isolated singletons in the component computation.
 
-## Connected components (`intermediate.int_identity_components`)
+## Connected components (Spark GraphFrames)
 
-Bounded N-hop transitive closure (default 6, dbt var `identity_component_hops`)
-over the symmetric edge set, plus reflexive pairs for every known identifier
-(so isolated nodes still appear).
+True connected components over the symmetric edge set via GraphFrames
+`connectedComponents` — no hop bound (the pre-ADR-010 dbt implementation used
+a bounded N-hop SQL closure, default 6, which silently failed to merge chains
+deeper than N). Every known identifier is a vertex, so isolated nodes still
+appear as singletons.
 
 Component representative = priority-ordered minimum node:
 
@@ -52,15 +64,9 @@ Component representative = priority-ordered minimum node:
 3. `client:*` (device cookie — weakest)
 
 All nodes in the same component share the representative's `customer_key`
-(deterministic MD5 hash of the rep node string).
-
-### Why bounded closure, not true Union-Find
-
-True Union-Find is iterative and not native to Redshift SQL. An N-hop closure
-(default 6) covers the practical identifier chains in this platform
-(`device → customer → loyalty → sibling_customer → sibling_device`).
-For deeper chains or >1M identifiers, schedule a full refresh or migrate to a
-Python Union-Find job (documented as a future optimization in ADR-003).
+(deterministic MD5 hash of the rep node string — identical formula in
+`graph_logic.py`, the Spark job, and dbt's `generate_customer_key` macro, so
+keys are stable across engines).
 
 ## Public devices (`intermediate.int_identity_public_devices`)
 
@@ -102,10 +108,9 @@ Public devices:
 
 ```
 bronze.clickstream_events + bronze.pos_transactions
-  → staging.*
-  → int_identity_edges + int_identity_public_devices
-  → int_identity_components
-  → int_identity_resolution
+  → Spark GraphFrames job → silver.identity_resolution (Iceberg)   [ADR-010]
+  → staging.* + int_identity_public_devices (audit)
+  → int_identity_resolution (thin view over the silver source)
   → int_session_reconstruction → fact_customer_session
   → int_rfm_scoring (omnichannel: POS via loyalty + converted clickstream sessions)
   → dim_customer (+ int_customer_consent)
@@ -119,4 +124,3 @@ bronze.clickstream_events + bronze.pos_transactions
 - Email / PII ingest (`email_hashed` column reserved; no hash pipeline yet)
 - Automated consent revocation — manual runbook: [consent-revocation.md](../runbooks/consent-revocation.md)
 - identity_graph TTL enforcement (data freshness — old relationships should expire)
-- Python Union-Find job for >1M-identifier scale
