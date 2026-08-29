@@ -8,6 +8,8 @@ files into ``local_retail.duckdb`` schemas that match dbt ``source()`` names:
   bronze.inventory_events
   bronze.pos_transactions   (from generate_pos_parquet --output-dir)
   silver.inventory_hourly
+  silver.identity_resolution  (from the Spark GraphFrames job, ADR-010 —
+                               optional; fixture mode seeds it instead)
 
 Reference dims (``finance.dim_date``, ``finance.dim_store``) stay as dbt seeds.
 
@@ -30,13 +32,14 @@ log = structlog.get_logger()
 
 _REPO = Path(__file__).resolve().parents[2]
 
-# Relative to --iceberg-dir (Iceberg data/ layout from Flink / local POS).
+# Relative to --iceberg-dir (Iceberg data/ layout from Flink / local POS / Spark).
 _TABLES: dict[str, tuple[str, str]] = {
     # logical name -> (schema, relative glob under iceberg dir)
     "clickstream_events": ("bronze", "bronze/clickstream_events/data/**/*.parquet"),
     "inventory_events": ("bronze", "bronze/inventory_events/data/**/*.parquet"),
     "pos_transactions": ("bronze", "bronze/pos_transactions/data/**/*.parquet"),
     "inventory_hourly": ("silver", "silver/inventory_hourly/data/**/*.parquet"),
+    "identity_resolution": ("silver", "silver/identity_resolution/data/**/*.parquet"),
 }
 
 
