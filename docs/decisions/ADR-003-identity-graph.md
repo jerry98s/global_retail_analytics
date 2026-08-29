@@ -30,16 +30,17 @@ Build an `identity_graph` table that maps raw identifiers → `customer_key`
 before any fact table joins. Include States 1 and 2 (deterministic only).
 Exclude State 3 pending PDPA (Malaysia) legal review of probabilistic linking.
 
-## Implementation (2026 upgrade)
+## Implementation (2026 upgrade; engine revisited by ADR-010)
 
-Identity resolution is **graph-based connected components** (bounded Union-Find
-in SQL), not just pairwise equality joins.
+Identity resolution is **graph-based connected components**, not just pairwise
+equality joins. Since ADR-010 (2026-08-29) the graph runs in a Spark
+GraphFrames batch job; dbt keeps a thin view over its Iceberg output.
 
 ```
-int_identity_edges              typed co-occurrence + cross-source equality edges
-int_identity_public_devices     client_ids linked to ≥ N distinct customers
-int_identity_components         bounded N-hop transitive closure (default 6; var identity_component_hops)
-int_identity_resolution         per-identifier confidence + method + public_device flag
+spark/identity_resolution (GraphFrames connectedComponents)
+  → silver.identity_resolution + silver.identity_edges   (Iceberg)
+int_identity_public_devices     client_ids linked to ≥ N distinct customers (dbt audit model)
+int_identity_resolution         thin dbt view over the silver source (adds identity_key)
 marketing.identity_graph        public devices excluded
 ```
 
@@ -73,20 +74,16 @@ family tablets, store iPads). It is:
   merge multiple people into one customer_key)
 - Retained in `int_identity_resolution` for audit
 
-### Why bounded closure, not true Union-Find
+### Why true connected components (post-ADR-010)
 
-True Union-Find is iterative and not native to Redshift SQL. A configurable
-N-hop closure (dbt var `identity_component_hops`, default **6**) covers the
-practical identifier chains in this platform
-(`device → customer → loyalty → sibling_customer → sibling_device`).
-Override at run time:
-
-```bash
-dbt run --select int_identity_components --vars '{"identity_component_hops": 8}'
-```
-
-For deeper chains or >1M identifiers, migrate to a Python Union-Find job
-(documented as a future optimization).
+The original dbt implementation used a configurable N-hop SQL closure
+(default **6**) because true Union-Find is not native to Redshift SQL. That
+bound was a correctness ceiling — deeper chains silently failed to merge —
+and each extra hop cost a combinatorial join. ADR-010 moved the graph to
+Spark GraphFrames `connectedComponents` on the existing EMR cluster: no hop
+bound, linear-ish scaling in edges. The business rules (rep priority,
+confidence/method, customer_key formula) are unchanged and live in
+`spark/identity_resolution/graph_logic.py`.
 
 ## Why an Identity Graph (Not a Simple Join)
 
@@ -111,8 +108,9 @@ approach extends this to multi-hop transitive links
 
 ## Consequences
 
-- Identity resolution runs before all Customer 360 dbt models
-- `int_identity_components` is the most sensitive model in the DAG
+- Identity resolution runs before all Customer 360 dbt models (Spark step
+  first in `marketing_hourly_customer_360_pipeline`, ADR-010)
+- The Spark GraphFrames job is the most sensitive step in the DAG
 - Any breach of identity_graph is a PDPA reportable incident
 - Retention policy: identity_graph records expire 2 years after last_seen_at
   (TTL enforcement still pending — see identity-resolution.md out-of-scope)

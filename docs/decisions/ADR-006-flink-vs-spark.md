@@ -1,6 +1,10 @@
 # ADR-006: Flink for streaming, defer Spark until Iceberg maintenance is needed
 
-**Status:** Accepted
+**Status:** Accepted — partially revisited by ADR-010 (2026-08-29): Spark +
+GraphFrames now runs **one batch job** (identity resolution) on the existing
+EMR cluster. Flink still owns all streaming; dbt still owns all Gold marts.
+The deferral rationale below still applies to every workload except the
+identity graph.
 **Date:** 2026-07-05
 **Author:** Data platform team
 

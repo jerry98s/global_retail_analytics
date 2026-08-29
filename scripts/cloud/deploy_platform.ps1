@@ -6,8 +6,9 @@
   Companion to scripts/cloud/run_terraform.ps1 (infra). Use run_terraform.ps1 for terraform output/plan/apply.
 
 .PARAMETER Action
-  all         - MWAA sync + Flink submit (default, run after code changes)
+  all         - MWAA sync + Flink submit + Spark code sync (default, run after code changes)
   flink       - Flink submit only (sync streaming code + EMR steps)
+  spark       - Spark identity-resolution: sync spark/ code + submit one-off EMR step
   mwaa-sync   - DAGs, dbt, GE, ingestion -> S3 only
   airflow-vars - print MWAA Variable names/values from terraform output
   status      - EMR cluster state + S3 bronze summary
@@ -27,7 +28,7 @@ param(
     [ValidateSet('dev', 'prod')]
     [string]$Env = 'dev',
 
-    [ValidateSet('all', 'flink', 'mwaa-sync', 'airflow-vars', 'status', 'verify')]
+    [ValidateSet('all', 'flink', 'spark', 'mwaa-sync', 'airflow-vars', 'status', 'verify')]
     [string]$Action = 'all',
 
     [ValidateSet('clickstream', 'inventory-bronze', 'inventory-snapshot', 'inventory', 'all')]
@@ -81,6 +82,55 @@ function Sync-Mwaa([string]$Bucket) {
     aws s3 sync (Join-Path $RepoRoot 'ingestion') "s3://$Bucket/ingestion/" --exclude "__pycache__/*"
     if ($LASTEXITCODE -ne 0) { throw "MWAA sync failed" }
     Write-Host "DAGs synced. MWAA picks up changes within ~5 minutes."
+}
+
+function Sync-SparkCode([string]$Bucket) {
+    Write-Host "==> Syncing Spark identity-resolution code to s3://$Bucket/spark/" -ForegroundColor Cyan
+    aws s3 sync (Join-Path $RepoRoot 'spark') "s3://$Bucket/spark/" --exclude "__pycache__/*" --exclude "*.pyc"
+    if ($LASTEXITCODE -ne 0) { throw "spark sync failed" }
+}
+
+function Submit-SparkIdentityResolution {
+    param([object]$Out)
+
+    $clusterId         = $Out.emr_cluster_id.value
+    $artifactsBucket   = $Out.artifacts_bucket_name.value
+    $checkpointsBucket = $Out.checkpoints_bucket_name.value
+    $bronzeWarehouse   = $Out.bronze_iceberg_warehouse.value
+    $silverWarehouse   = $Out.silver_iceberg_warehouse.value
+    $posPath           = $Out.pos_bronze_s3_path.value
+
+    if (-not $clusterId -or -not $artifactsBucket -or -not $bronzeWarehouse -or -not $silverWarehouse -or -not $posPath) {
+        throw "Missing terraform outputs for Spark submit (emr_cluster_id, artifacts bucket, warehouses, pos_bronze_s3_path)."
+    }
+
+    Sync-SparkCode $artifactsBucket
+
+    # ADR-010: one-off batch submit for no-MWAA runs. With MWAA enabled the
+    # marketing_hourly_customer_360_pipeline DAG owns hourly submission.
+    $packages = 'org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12'
+    $cmd = "aws s3 sync s3://$artifactsBucket/spark /opt/spark-identity " +
+        "&& cd /opt/spark-identity/identity_resolution " +
+        "&& spark-submit --master yarn --deploy-mode cluster --packages $packages " +
+        "--py-files graph_logic.py identity_resolution_job.py " +
+        "--bronze-warehouse $bronzeWarehouse " +
+        "--silver-warehouse $silverWarehouse " +
+        "--pos-parquet-path $posPath " +
+        "--checkpoint-dir s3://$checkpointsBucket/graphframes/"
+
+    $stepJson = @{
+        Name            = 'spark-identity-resolution'
+        ActionOnFailure = 'CONTINUE'
+        HadoopJarStep   = @{
+            Jar  = 'command-runner.jar'
+            Args = @('bash', '-lc', $cmd)
+        }
+    } | ConvertTo-Json -Depth 5 -Compress
+
+    Write-Host "==> Submitting step spark-identity-resolution" -ForegroundColor Cyan
+    aws emr add-steps --cluster-id $clusterId --steps $stepJson | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "add-steps failed for spark-identity-resolution" }
+    Write-Host "Watch: aws emr list-steps --cluster-id $clusterId --step-states RUNNING PENDING" -ForegroundColor DarkGray
 }
 
 function Submit-FlinkJobs {
@@ -302,6 +352,10 @@ switch ($Action) {
         Submit-FlinkJobs -Out $out -JobSelection $Job
     }
 
+    'spark' {
+        Submit-SparkIdentityResolution -Out $out
+    }
+
     'verify' {
         Invoke-PlatformVerify -Out $out
     }
@@ -309,12 +363,14 @@ switch ($Action) {
     'all' {
         Sync-Mwaa $artifacts
         Submit-FlinkJobs -Out $out -JobSelection $Job
+        Sync-SparkCode $out.artifacts_bucket_name.value
         Write-Host ""
         Write-Host "Next steps:" -ForegroundColor Yellow
         Write-Host "  1. .\scripts\cloud\bootstrap_redshift.ps1 -Env $Env  (if not done)"
         Write-Host "  2. .\scripts\cloud\run_msk_producers.ps1 -Env $Env -Stream both"
-        Write-Host "  3. .\scripts\cloud\deploy_platform.ps1 -Env $Env -Action verify  (post-deploy smoke checks)"
-        Write-Host "  4. .\scripts\cloud\deploy_platform.ps1 -Env $Env -Action airflow-vars  (set vars in MWAA UI)"
+        Write-Host "  3. .\scripts\cloud\deploy_platform.ps1 -Env $Env -Action spark   (identity graph refresh, or let the marketing DAG run it)"
+        Write-Host "  4. .\scripts\cloud\deploy_platform.ps1 -Env $Env -Action verify  (post-deploy smoke checks)"
+        Write-Host "  5. .\scripts\cloud\deploy_platform.ps1 -Env $Env -Action airflow-vars  (set vars in MWAA UI)"
     }
 }
 

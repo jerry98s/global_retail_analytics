@@ -1,43 +1,16 @@
 version: 2
 
 models:
-  - name: int_identity_edges
-    columns:
-      - name: src
-        tests:
-          - not_null
-      - name: dst
-        tests:
-          - not_null
-      - name: edge_type
-        tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: ['session_link', 'loyalty_value_match']
-
+  # int_identity_edges / int_identity_components were retired in ADR-010 —
+  # edge construction and connected components now run in the Spark
+  # GraphFrames job (spark/identity_resolution/), covered by
+  # tests/unit/test_spark_identity_resolution.py.
   - name: int_identity_public_devices
     columns:
       - name: client_id
         tests:
           - not_null_unique
       - name: distinct_customer_count
-        tests:
-          - not_null
-
-  - name: int_identity_components
-    columns:
-      - name: node
-        tests:
-          - not_null_unique
-      - name: identifier_type
-        tests:
-          - not_null
-          - identifier_type_accepted_values
-      - name: identifier_value
-        tests:
-          - not_null
-      - name: customer_key
         tests:
           - not_null
 

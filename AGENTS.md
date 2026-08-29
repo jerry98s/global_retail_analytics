@@ -89,11 +89,23 @@ dbt/GE, evidence capture, destroy checklist), follow
 ## Current Airflow DAGs
 
 - `warehouse_daily_batch_pipeline` — POS + **`marts.finance`**
-- `marketing_hourly_customer_360_pipeline` — **`marts.marketing`** / C360
+- `marketing_hourly_customer_360_pipeline` — Spark identity step (EMR) + **`marts.marketing`** / C360
 - `streaming_manual_flink_jobs`
 - `catalog_bihourly_product_scd2_refresh`
 - `quality_hourly_ge_checkpoint`
 - `lakehouse_daily_iceberg_maintenance`
+
+## Spark (identity resolution, ADR-010)
+
+- `spark/identity_resolution/identity_resolution_job.py` (PySpark +
+  GraphFrames) builds edges + connected components and writes
+  `silver.identity_resolution` / `silver.identity_edges` (Iceberg).
+- `spark/identity_resolution/graph_logic.py` is the rules source of truth;
+  `generate_fixture.py` regenerates the dbt seed fixture (CI `--check`).
+- dbt `int_identity_resolution` is a thin view over
+  `source('silver', 'identity_resolution')`; the old SQL edge/component
+  models are retired. WAP unchanged — Gold marts stay dbt-built.
+- Submit: marketing DAG (hourly) or `deploy_platform.ps1 -Action spark`.
 
 ## Metadata + Summary
 

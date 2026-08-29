@@ -169,15 +169,16 @@ dbt run --select +fact_customer_session --target prod --full-refresh \
 
 #### dim_customer / identity_graph
 
-These rebuild from Bronze POS + clickstream. If they dropped, the
-identity chain intermediate (`int_identity_edges`,
-`int_identity_components`, `int_identity_resolution`) likely failed to
-re-process historical edges after an `--full-refresh` race. Re-run
-with explicit selection:
+These rebuild from `silver.identity_resolution` (Spark GraphFrames output,
+ADR-010). If they dropped, first re-run the Spark job to rebuild the graph
+from Bronze POS + clickstream, then re-run the dbt chain:
+
+```powershell
+.\scripts\cloud\deploy_platform.ps1 -Env dev -Action spark   # or let the marketing DAG run it
+```
 
 ```bash
-dbt run --select int_identity_edges int_identity_public_devices \
-              int_identity_components int_identity_resolution \
+dbt run --select int_identity_public_devices int_identity_resolution \
               identity_graph dim_customer \
          --target prod --full-refresh \
          --vars '{"wap_phase": "pending"}'

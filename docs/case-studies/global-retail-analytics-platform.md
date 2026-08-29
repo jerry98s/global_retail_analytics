@@ -12,7 +12,7 @@ The platform supports:
 - Finance and marketing marts
 - Store and product performance reporting
 - Data quality governance
-- Cloud deployment on AWS
+- A cloud-deployable AWS implementation
 - Local simulation with Docker, Flink, and DuckDB
 
 The central challenge is that retail data has different shapes, ownership
@@ -786,22 +786,21 @@ The platform receives different identifiers from different sources:
 
 The goal is to map raw identifiers to one stable `customer_key`.
 
-The model chain is:
+The model chain is (ADR-010: the graph runs in Spark GraphFrames; dbt keeps a
+thin view over its Iceberg output):
 
 ```text
-stg_clickstream_events + stg_pos_transactions
+bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
         |
         v
-int_identity_edges
+Spark GraphFrames job (spark/identity_resolution/)
+  edges + public-device exclusion + connected components
         |
         v
-int_identity_public_devices
+silver.identity_resolution (Iceberg)
         |
         v
-int_identity_components
-        |
-        v
-int_identity_resolution
+int_identity_resolution (thin dbt view)
         |
         v
 marketing.identity_graph
@@ -809,6 +808,8 @@ marketing.identity_graph
         v
 marketing.customer_360_view
 ```
+
+`int_identity_public_devices` remains in dbt as an audit model over staging.
 
 ### Edge Types
 
@@ -1001,6 +1002,7 @@ marketing_hourly_customer_360_pipeline  # hourly  — identity graph -> sessions
 streaming_manual_flink_jobs        # ad-hoc / scheduled — submit Flink jobs with idempotency guard
 catalog_bihourly_product_scd2_refresh        # 0 */2 * * * — dim_product SCD2 catch-up (intra-day catalog changes)
 quality_hourly_ge_checkpoint           # 45 * * * * — GE gold_layer_daily between Flink silver writes
+lakehouse_daily_iceberg_maintenance     # daily — compact files and expire old Iceberg snapshots
 ```
 
 Each DAG carries a `doc_md` block in-file covering purpose, idempotency, and
@@ -1192,17 +1194,6 @@ Pytest covers behavior that is easier to express in Python:
   `integration_duckdb`)
 - Row-count reconciliation logic (17 unit tests against the pure
   functions in `orchestration/airflow/plugins/row_count_reconciliation.py`)
-
-### Data Warehouse Checklist Audit
-
-A formal audit against a 10-item Data Model Review Checklist and a
-6-item Idempotent Design Checklist identified 21 gaps (6 P1, 9 P2, 6 P3)
-across the 10 audited models. All 21 gaps were closed across 8 PRs; the
-status index at
-[`docs/runbooks/dw-checklist-audit.md`](../runbooks/dw-checklist-audit.md)
-maps each closed gap to the artefact that enforces or documents the fix
-(dbt test, GE suite, Flink job, Airflow task, runbook, or regression
-test).
 
 Quality is not a final step.
 
@@ -1664,13 +1655,11 @@ This project demonstrates:
 - Gold row-count reconciliation Airflow task (P2.5)
 - DLQ SQL regression tests (P1.5)
 - POS Parquet determinism + `--seed` override (P3.6)
-- pytest behavioral tests (82 unit tests + integration tests)
-- Terraform AWS deployment
-- Airflow orchestration (5 DAGs, each with `doc_md`)
+- pytest behavioral and contract tests, with dated branch baselines in the
+  [evidence ledger](../evidence/README.md)
+- Terraform-defined AWS deployment path
+- Airflow orchestration (6 DAGs, each with `doc_md`)
 - DuckDB local simulation
-- DW checklist audit — 21 gaps identified and closed across 8 PRs
-  (6 P1, 9 P2, 6 P3), status index at
-  [`docs/runbooks/dw-checklist-audit.md`](../runbooks/dw-checklist-audit.md)
 - Runbooks for backfill verification, upstream incident response,
   late-event remediation, DLQ investigation, consent revocation, and
   local data queries

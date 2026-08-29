@@ -115,14 +115,21 @@ jobs:
           marts.marketing sessions_daily_platform
           --exclude int_product_catalog dim_product customer_360_view
 
+      - name: identity fixture matches Spark graph logic (ADR-010)
+        working-directory: ${{ github.workspace }}
+        run: python spark/identity_resolution/generate_fixture.py --check
+
       - name: dbt seed
         run: dbt seed --profiles-dir . --target local
 
       - name: dbt run identity graph chain
-        run: dbt run --profiles-dir . --target local --select +identity_graph --full-refresh
+        # int_identity_public_devices is no longer upstream of identity_graph
+        # (ADR-010: Spark owns public-device exclusion); build it explicitly
+        # so verify_local_identity.py can audit it.
+        run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_public_devices --full-refresh
 
       - name: dbt test identity graph chain
-        run: dbt test --profiles-dir . --target local --select int_identity_edges int_identity_public_devices int_identity_components int_identity_resolution identity_graph
+        run: dbt test --profiles-dir . --target local --select int_identity_public_devices int_identity_resolution identity_graph
 
       - name: verify identity scenarios (loyalty match, session link, multi-hop, public device, singleton)
         working-directory: ${{ github.workspace }}

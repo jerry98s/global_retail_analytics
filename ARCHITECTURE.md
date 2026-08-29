@@ -84,6 +84,8 @@ flowchart LR
 
     C360["marketing_hourly_customer_360_pipeline<br/>hourly :00 UTC"]
 
+    SPK["identity_resolution_job<br/>Spark GraphFrames on EMR (ADR-010)"]
+
   end
 
 
@@ -92,7 +94,7 @@ flowchart LR
 
     BRZ["Bronze<br/>clickstream_events<br/>inventory_events<br/>pos_transactions"]
 
-    SLV["Silver<br/>inventory_hourly"]
+    SLV["Silver<br/>inventory_hourly<br/>identity_resolution · identity_edges"]
 
   end
 
@@ -166,6 +168,12 @@ flowchart LR
 
   BRZ --> EXT
 
+  BRZ --> SPK
+
+  SPK --> SLV
+
+  SLV --> INT
+
   EXT --> STG --> INT
 
   INT --> FIN
@@ -205,6 +213,8 @@ Retention: 90 days Standard, 1yr IA, 3yr+ Glacier via Intelligent-Tiering.
 inventory upserts). Flink writes `silver.inventory_hourly`; dbt marts rebuild
 
 inventory facts from **bronze** `inventory_events` (Spectrum) by design.
+The Spark GraphFrames job (ADR-010) writes `silver.identity_resolution` +
+`silver.identity_edges` hourly from bronze clickstream + POS.
 
 Clickstream has no separate silver table — bronze feeds dbt directly.
 
@@ -255,6 +265,8 @@ pipeline runs, freshness, and DQ history — same workgroup, not Glue. See ADR-0
 | Message bus | Kafka (MSK) | Decouples producers from all consumers |
 
 | Stream processing | Apache Flink on EMR | Stateful ops, exactly-once, watermarks |
+
+| Graph processing | Spark GraphFrames on EMR | True connected components for identity (ADR-010) |
 
 | Table format | Apache Iceberg | Engine-agnostic, schema evolution, multi-consumer |
 

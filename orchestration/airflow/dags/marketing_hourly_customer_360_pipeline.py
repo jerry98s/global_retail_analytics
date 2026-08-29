@@ -1,8 +1,15 @@
 """
 Hourly Customer 360 refresh DAG.
-Runs WAP clone live→pending → clickstream/POS staging → C360 intermediate →
-marketing marts (pending) → audits → WAP publish → C360 view refresh, on an
-hourly cadence (ADR-002 ~75min SLA).
+Runs Spark GraphFrames identity resolution (EMR) → WAP clone live→pending →
+clickstream/POS staging → C360 intermediate → marketing marts (pending) →
+audits → WAP publish → C360 view refresh, on an hourly cadence
+(ADR-002 ~75min SLA).
+
+Identity resolution (ADR-010): the Spark job
+`spark/identity_resolution/identity_resolution_job.py` rebuilds
+`silver.identity_resolution` (Iceberg) from bronze clickstream + POS before
+dbt runs; `int_identity_resolution` is a thin view over that source, so the
+rest of the C360 chain is unchanged.
 
 Write-Audit-Publish (ADR-009): live marketing/summary Gold is cloned into
 `marketing_pending` / `summary_pending`, dbt rebuilds the marts there
@@ -20,7 +27,9 @@ RFM/consent). Finance facts remain on warehouse_daily_batch_pipeline
 catalog_bihourly_product_scd2_refresh (explicit --exclude).
 Also builds `summary.sessions_daily_platform`.
 
-Enable MWAA and set the same Redshift Variables as warehouse_daily_batch_pipeline.
+Enable MWAA and set the same Redshift Variables as warehouse_daily_batch_pipeline,
+plus `emr_cluster_id`, `bronze_iceberg_warehouse`, `silver_iceberg_warehouse`,
+`checkpoints_bucket`, and `pos_bronze_s3_path` for the Spark step.
 """
 
 from datetime import datetime, timedelta
@@ -28,6 +37,8 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
+from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
+from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 
 from metadata_airflow import (
     dbt_bash_with_metadata,
@@ -50,6 +61,36 @@ SELECT_PENDING = (
 VARS_PENDING = '{"wap_phase": "pending"}'
 
 SELECT_SERVING = "customer_360_view customer_360_serving"
+
+# ADR-010: Spark + GraphFrames identity resolution on the existing EMR
+# cluster (Spark 3.4 on emr-6.15.0; Iceberg runtime matches Flink's 1.4.3).
+SPARK_PACKAGES = (
+    "org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,"
+    "graphframes:graphframes:0.8.3-spark3.4-s_2.12"
+)
+
+
+def _spark_identity_step() -> dict:
+    """EMR step: rebuild silver.identity_resolution from bronze via GraphFrames."""
+    cmd = (
+        "aws s3 sync s3://{{ var.value.artifacts_bucket }}/spark /opt/spark-identity "
+        "&& cd /opt/spark-identity/identity_resolution "
+        f"&& spark-submit --master yarn --deploy-mode cluster --packages {SPARK_PACKAGES} "
+        "--py-files graph_logic.py identity_resolution_job.py "
+        "--bronze-warehouse {{ var.value.bronze_iceberg_warehouse }} "
+        "--silver-warehouse {{ var.value.silver_iceberg_warehouse }} "
+        "--pos-parquet-path {{ var.value.pos_bronze_s3_path }} "
+        "--checkpoint-dir s3://{{ var.value.checkpoints_bucket }}/graphframes/"
+    )
+    return {
+        "Name":            "spark-identity-resolution",
+        "ActionOnFailure": "CONTINUE",
+        "HadoopJarStep": {
+            "Jar":  "command-runner.jar",
+            "Args": ["bash", "-lc", cmd],
+        },
+    }
+
 
 DEFAULT_ARGS = {
     "owner":            "data-platform",
@@ -76,6 +117,24 @@ with DAG(
     metadata_start = PythonOperator(
         task_id="metadata_start",
         python_callable=on_dag_start,
+    )
+
+    # ADR-010: refresh silver.identity_resolution (Iceberg) before dbt reads
+    # it. Batch step — the DAG waits for COMPLETED, unlike the long-running
+    # streaming Flink steps.
+    spark_identity = EmrAddStepsOperator(
+        task_id     = "spark_identity_resolution",
+        job_flow_id = "{{ var.value.emr_cluster_id }}",
+        steps       = [_spark_identity_step()],
+    )
+
+    wait_spark_identity = EmrStepSensor(
+        task_id       = "wait_spark_identity_resolution",
+        job_flow_id   = "{{ var.value.emr_cluster_id }}",
+        step_id       = "{{ task_instance.xcom_pull('spark_identity_resolution')[0] }}",
+        target_states = {"COMPLETED"},
+        poke_interval = 30,
+        timeout       = 1800,
     )
 
     # WAP step 1: clone live marketing/summary Gold into the pending schemas so
@@ -122,6 +181,8 @@ with DAG(
 
     (
         metadata_start
+        >> spark_identity
+        >> wait_spark_identity
         >> wap_clone
         >> dbt_run_pending
         >> dbt_test_pending
