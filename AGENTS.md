@@ -59,6 +59,10 @@ uv sync --group dev
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
 - `-Task quality`: `dbt test` + GE `gold_layer_local` (DuckDB) + `pytest tests/unit`.
+- Identity graph (ADR-010): `-Task spark` runs the GraphFrames job under local
+  PySpark (needs Spark 3.4 + Java on PATH) and writes
+  `.local/iceberg/silver/identity_resolution`. Without it, `-Task dbt` seeds the
+  generated fixture so the chain still builds.
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/ -q

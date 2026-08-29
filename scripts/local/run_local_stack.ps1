@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet("up", "topics", "simulate", "flink", "flink-stop", "pos-parquet", "load-duckdb", "dbt", "quality", "all")]
+    [ValidateSet("up", "topics", "simulate", "flink", "flink-stop", "pos-parquet", "spark", "load-duckdb", "dbt", "quality", "all")]
     [string]$Task = "all",
     [Parameter(Mandatory = $false)]
     [ValidateRange(100, 100000)]
@@ -310,6 +310,35 @@ function Invoke-LoadDuckdb {
         --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
 }
 
+# ADR-010: run the GraphFrames identity job under local PySpark against
+# .local/iceberg (same job code as the EMR step). Requires spark-submit on
+# PATH (Spark 3.4.x + Java). Without it, the dbt task falls back to the
+# generated identity_resolution seed fixture.
+function Invoke-SparkIdentityLocal {
+    Ensure-IcebergHostDir
+    $sparkSubmit = Get-Command spark-submit -ErrorAction SilentlyContinue
+    if (-not $sparkSubmit) {
+        throw "spark-submit not found on PATH. Install Spark 3.4.x + Java (see spark/README.md), or skip: the dbt task seeds the identity fixture instead."
+    }
+    $packages = 'org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12'
+    $warehouseUri = 'file:///' + ($IcebergHostDir -replace '\\', '/')
+    $checkpointDir = Join-Path $RepoRoot '.local\graphframes-checkpoints'
+    New-Item -ItemType Directory -Force -Path $checkpointDir | Out-Null
+    Push-Location (Join-Path $RepoRoot 'spark\identity_resolution')
+    try {
+        & spark-submit --master 'local[*]' --packages $packages `
+            --py-files graph_logic.py identity_resolution_job.py --local `
+            --bronze-warehouse $warehouseUri `
+            --silver-warehouse $warehouseUri `
+            --pos-parquet-path (Join-Path $IcebergHostDir 'bronze\pos_transactions') `
+            --checkpoint-dir $checkpointDir
+        if ($LASTEXITCODE -ne 0) { throw "spark-submit failed with exit code $LASTEXITCODE" }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 # ADR-009 canonical WAP table list, as "schema.table" for the GE audit gate.
 # Must match WAP_TABLES in orchestration/airflow/plugins/wap_publish.py —
 # tests/unit/test_gold_wap.py fails the build if the two drift apart.
@@ -402,10 +431,23 @@ function Invoke-DbtIceberg {
     try {
         Invoke-ProjectDbt @('deps', '--profiles-dir', '.', '--target', 'local') -ExecutionId $ExecutionId
         # Only reference dims - stream + POS tables already loaded from Parquet.
-        Invoke-ProjectDbt @(
-            'seed', '--profiles-dir', '.', '--target', 'local',
-            '--select', 'dim_date', 'dim_store'
-        ) -ExecutionId $ExecutionId
+        # ADR-010: if the local Spark job has produced silver.identity_resolution
+        # Parquet, the loader already mapped it; otherwise seed the generated
+        # fixture so the identity chain still builds without a local Spark.
+        $identityParquet = Join-Path $IcebergHostDir 'silver\identity_resolution'
+        if (Test-Path $identityParquet) {
+            Invoke-ProjectDbt @(
+                'seed', '--profiles-dir', '.', '--target', 'local',
+                '--select', 'dim_date', 'dim_store'
+            ) -ExecutionId $ExecutionId
+        }
+        else {
+            Write-Host "No Spark identity output found - seeding fixture identity_resolution (run -Task spark for pipeline-real data)." -ForegroundColor Yellow
+            Invoke-ProjectDbt @(
+                'seed', '--profiles-dir', '.', '--target', 'local',
+                '--select', 'dim_date', 'dim_store', 'identity_resolution'
+            ) -ExecutionId $ExecutionId
+        }
     }
     finally {
         Pop-Location
@@ -580,6 +622,11 @@ try {
             Ensure-IcebergHostDir
             Invoke-Step "Generate local POS bronze Parquet" {
                 Invoke-PosParquetLocal
+            }
+        }
+        "spark" {
+            Invoke-Step "Spark GraphFrames identity resolution (local PySpark)" {
+                Invoke-SparkIdentityLocal
             }
         }
         "load-duckdb" {

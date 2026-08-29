@@ -51,8 +51,19 @@ class TestLocalIcebergBridge:
             "inventory_events",
             "pos_transactions",
             "inventory_hourly",
+            "identity_resolution",
         ):
             assert name in src
+
+    def test_run_local_stack_has_spark_identity_task(self) -> None:
+        # ADR-010: local PySpark mode runs the same GraphFrames job against
+        # .local/iceberg; the dbt task falls back to the seed fixture when no
+        # Spark output exists.
+        ps1 = (_REPO / "scripts/local/run_local_stack.ps1").read_text(encoding="utf-8")
+        assert '"spark"' in ps1
+        assert "Invoke-SparkIdentityLocal" in ps1
+        assert "identity_resolution_job.py" in ps1
+        assert "'identity_resolution'" in ps1  # fixture fallback seed select
 
     def test_run_local_stack_supports_iceberg_dbt_source(self) -> None:
         ps1 = (_REPO / "scripts/local/run_local_stack.ps1").read_text(encoding="utf-8")
