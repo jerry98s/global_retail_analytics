@@ -165,6 +165,15 @@ class TestWapPublishHelper:
         assert ("marketing", "dim_product") not in finance
         assert ("marketing", "dim_product") in catalog
 
+    def test_laptop_cli_scopes_reuse_dag_ownership(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        assert wap_publish.WAP_SCOPES == {
+            "finance": wap_publish.FINANCE_SUMMARY_TABLES,
+            "marketing": wap_publish.MARKETING_TABLES,
+            "catalog": wap_publish.DIM_PRODUCT_TABLES,
+        }
+
     def test_redshift_clone_statements_use_like(self) -> None:
         from orchestration.airflow.plugins import wap_publish
 

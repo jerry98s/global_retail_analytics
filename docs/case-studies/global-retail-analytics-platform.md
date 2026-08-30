@@ -862,9 +862,9 @@ loyalty:{loyalty_id} <-> customer:{customer_id}
 
 ### Connected Components
 
-The project implements bounded multi-hop connected components in SQL.
-
-This approximates Union-Find with a 4-hop closure.
+The project runs true connected components in Spark GraphFrames. ADR-010
+retired the bounded dbt SQL closure, removing its hop ceiling while keeping
+the downstream dbt contract stable through `silver.identity_resolution`.
 
 Representative selection is deterministic:
 
@@ -1264,25 +1264,6 @@ Pytest covers behavior that is easier to express in Python:
   contracts
 - DAG naming, alerting, idempotency, and documentation contracts
 
-### Data Warehouse Checklist Audit
-
-A formal audit against a 10-item Data Model Review Checklist and a
-6-item Idempotent Design Checklist identified 21 gaps (6 P1, 9 P2, 6 P3)
-across the 10 audited models. All 21 gaps were closed across 8 PRs.
-
-The same audit index now also tracks the later production-hardening passes:
-
-- Data lake layout and Iceberg maintenance
-- Airflow DAG design and naming
-- Kafka reliability, monitoring, and operations
-- Flink state, checkpoint, source, and upgrade practices
-
-The status index at
-[`docs/runbooks/dw-checklist-audit.md`](../runbooks/dw-checklist-audit.md)
-maps each closed gap to the artefact that enforces or documents the fix
-(dbt test, GE suite, Flink job, Airflow task, runbook, or regression
-test).
-
 Quality is not a final step.
 
 It is part of the data contract.
@@ -1521,8 +1502,11 @@ Parquet simulator:
 
 - `tests/integration/test_dbt_idempotency.py` — runs `dbt run
   --full-refresh` then `dbt run` (incremental) on the `+identity_graph`
-  chain and asserts row counts match for all 5 identity-chain tables.
-  Marker: `integration_duckdb`. Closes P2.1 from the DW checklist audit.
+  chain and asserts row counts match for the three remaining dbt identity
+  handoff/mart relations. Marker: `integration_duckdb`.
+- `tests/integration/verify_spark_identity.py` — executes the actual PySpark +
+  GraphFrames DataFrame path and checks parity with the reference rules,
+  including blank-identifier normalization.
 - `tests/unit/test_generate_pos_parquet.py` — asserts that two runs of
   `generate_pos_parquet.py` with the same `--date` produce identical
   `transaction_id` UUIDs, line counts, and measures. Closes P3.6.
@@ -1769,14 +1753,10 @@ This project demonstrates:
 - DLQ SQL regression tests (P1.5)
 - POS Parquet determinism + `--seed` override (P3.6)
 - Kafka reliability tests and Flink state/source contract tests
-- pytest behavioral tests (203 unit tests + integration tests)
-- Terraform AWS deployment
+- pytest behavioral tests with dated results in the evidence ledger
+- Terraform-defined AWS deployment
 - Airflow orchestration (6 DAGs, each with `doc_md`)
 - DuckDB local simulation
-- DW checklist audit — 21 gaps identified and closed across 8 PRs
-  (6 P1, 9 P2, 6 P3), with later data lake, DAG, Kafka, and Flink
-  production checklists tracked in the same status index at
-  [`docs/runbooks/dw-checklist-audit.md`](../runbooks/dw-checklist-audit.md)
 - Runbooks for backfill verification, upstream incident response,
   late-event remediation, DLQ investigation, consent revocation,
   Iceberg maintenance, Kafka operations, Flink operations, DAG review,

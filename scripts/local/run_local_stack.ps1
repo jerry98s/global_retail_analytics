@@ -438,8 +438,12 @@ function Invoke-DbtIceberg {
         # ADR-010: if the local Spark job has produced silver.identity_resolution
         # Parquet, the loader already mapped it; otherwise seed the generated
         # fixture so the identity chain still builds without a local Spark.
-        $identityParquet = Join-Path $IcebergHostDir 'silver\identity_resolution'
-        if (Test-Path $identityParquet) {
+        $identityParquetDir = Join-Path $IcebergHostDir 'consumer_current\identity_resolution'
+        $identityParquet = @()
+        if (Test-Path $identityParquetDir) {
+            $identityParquet = @(Get-ChildItem -Path $identityParquetDir -Filter '*.parquet' -Recurse -File -ErrorAction SilentlyContinue)
+        }
+        if ($identityParquet.Count -gt 0) {
             Invoke-ProjectDbt @(
                 'seed', '--profiles-dir', '.', '--target', 'local',
                 '--select', 'dim_date', 'dim_store'

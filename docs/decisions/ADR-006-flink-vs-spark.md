@@ -37,9 +37,12 @@ engine* the streaming paths use, and whether a second engine is worth running.
 
 ## Decision
 
-**Flink is the streaming engine. Spark is deferred.**
+**Flink is the streaming engine. Spark is limited to the ADR-010 identity
+batch; other Spark adoption remains deferred.**
 
 - Bronze + silver streaming paths: **Flink only.** No Spark Streaming.
+- Identity connected components: **Spark GraphFrames batch** on the existing
+  EMR cluster (ADR-010).
 - Gold marts: **dbt on Redshift** — no Spark SQL alternative.
 - Ad-hoc lake queries: **Redshift Spectrum** — no Spark SQL notebooks.
 - Iceberg maintenance: defer until the lake exhibits small-file proliferation or
@@ -52,10 +55,10 @@ engine* the streaming paths use, and whether a second engine is worth running.
 
 ## Rationale
 
-1. **No current workload is Spark-shaped.** Every transformation we run today is
-   either a Kafka-to-Iceberg stream (Flink's sweet spot) or a Kimball SQL
-   transformation (dbt's sweet spot). Adding Spark would create a second engine
-   that doesn't displace either.
+1. **Only identity connected components is Spark-shaped today.** Streaming
+   ingestion remains Flink's workload and Kimball transformations remain dbt's.
+   ADR-010 accepts one narrow Spark batch rather than widening the platform to
+   Spark Streaming or Spark SQL marts.
 
 2. **Spark on EMR is cheap to add later.** The EMR cluster already exists for
    Flink. Running a Spark step is an additional `yarn` application, not a new
@@ -76,12 +79,12 @@ engine* the streaming paths use, and whether a second engine is worth running.
 
 ## Consequences
 
-- **Three Flink jobs** to maintain (clickstream bronze, inventory bronze,
-  inventory hourly silver). No Spark jobs to maintain.
-- **Same EMR cluster** runs all Flink jobs; no Spark step today.
+- **Three Flink jobs** plus **one Spark batch job** to maintain (identity
+  resolution).
+- **Same EMR cluster** runs the Flink jobs and the Spark identity step.
 - **`infra/emr-bootstrap/install_flink_connectors.sh`** pins Flink + Iceberg +
-  Kafka connector versions. When Spark is added, the bootstrap script will need
-  a parallel Spark section pinning `iceberg-spark-runtime` and Spark version.
+  Kafka connector versions. The Spark identity job pins its Iceberg and
+  GraphFrames packages separately in the submit command and local image.
 - **Iceberg maintenance is currently manual** via the Iceberg `Maintenance` API
   callable from Flink jobs. If small-file problems emerge before Spark is added,
   this ADR is revisited.
@@ -101,4 +104,5 @@ Introduce Spark when **any** of these become true:
 - A notebook-based data science workflow is requested and Spectrum SQL is
   insufficient.
 
-Until then, **Flink is enough.**
+Until another trigger is met, **the narrow identity batch is the only Spark
+exception; Flink remains enough for streaming.**

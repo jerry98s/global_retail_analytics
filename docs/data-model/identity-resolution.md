@@ -28,6 +28,7 @@ bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
       edge construction + public-device exclusion + connected components
       → silver.identity_resolution  (Iceberg; full overwrite per run)
       → silver.identity_edges       (audit copy of the graph)
+      → consumer_current/*          (replace-only Parquet for Spectrum/DuckDB)
   → int_identity_resolution         (thin dbt view over the silver source; adds identity_key)
   → marketing.identity_graph        (filtered: public devices excluded)
 ```
@@ -35,8 +36,9 @@ bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
 `intermediate.int_identity_public_devices` remains as a dbt audit model over
 staging; the Spark job is authoritative for edge exclusion.
 
-The business rules (edge types, threshold, rep priority, confidence/method,
-`customer_key` formula) live in `spark/identity_resolution/graph_logic.py` —
+The business rules (blank-ID normalization, edge types, threshold, rep
+priority, confidence/method, `customer_key` formula) live in
+`spark/identity_resolution/graph_logic.py` —
 the Spark job mirrors them and the dbt seed fixture is generated from them.
 
 ## Edge types (`silver.identity_edges`)
@@ -109,6 +111,7 @@ Public devices:
 ```
 bronze.clickstream_events + bronze.pos_transactions
   → Spark GraphFrames job → silver.identity_resolution (Iceberg)   [ADR-010]
+                           → consumer_current/identity_resolution (Parquet)
   → staging.* + int_identity_public_devices (audit)
   → int_identity_resolution (thin view over the silver source)
   → int_session_reconstruction → fact_customer_session

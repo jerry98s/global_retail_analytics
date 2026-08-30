@@ -54,6 +54,8 @@ class TestLocalIcebergBridge:
             "identity_resolution",
         ):
             assert name in src
+        assert "consumer_current/identity_resolution/**/*.parquet" in src
+        assert "silver/identity_resolution/data/**/*.parquet" not in src
 
     def test_run_local_stack_has_spark_identity_task(self) -> None:
         # ADR-010: local GraphFrames runs in the Spark Docker image against
@@ -65,6 +67,7 @@ class TestLocalIcebergBridge:
         assert "--profile spark" in ps1
         assert "spark-identity" in ps1
         assert "'identity_resolution'" in ps1  # fixture fallback seed select
+        assert "Get-ChildItem -Path $identityParquetDir -Filter '*.parquet'" in ps1
         assert "Invoke-WapBootstrapLiveDimProduct" in ps1
         assert "bootstrap_live_dim_product.py" in ps1
 

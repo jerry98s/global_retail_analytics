@@ -16,11 +16,18 @@ revisiting ADR-006.
 - Writes `silver.identity_resolution` (consumed by dbt as a source) and
   `silver.identity_edges` (audit) to the silver Iceberg warehouse. Full
   overwrite per run — recompute is cheap at identifier grain.
+- Replaces `consumer_current/identity_resolution` and
+  `consumer_current/identity_edges` plain-Parquet exports for Spectrum and the
+  local DuckDB bridge. Consumers never glob Iceberg `data/` directories, where
+  superseded snapshot files may remain.
 
-`graph_logic.py` — engine-independent source of truth for the rules (edge
+`graph_logic.py` — engine-independent source of truth for the rules (identifier
+normalization, edge
 types, public-device threshold, representative priority, confidence/method
 mapping, deterministic `customer_key` formula matching dbt's
-`generate_customer_key`). Covered by `tests/unit/test_spark_identity_resolution.py`.
+`generate_customer_key`). Covered by `tests/unit/test_spark_identity_resolution.py`;
+CI also executes the real DataFrame/GraphFrames path through
+`tests/integration/verify_spark_identity.py`.
 
 `generate_fixture.py` — regenerates
 `transformation/dbt_project/seeds/silver/identity_resolution.csv` from the

@@ -74,7 +74,10 @@ and ``serving.*`` are views over live Gold, refreshed after publish.
 
 from __future__ import annotations
 
+import argparse
+import json
 import logging
+import os
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -111,6 +114,12 @@ MARKETING_TABLES: list[tuple[str, str]] = [
 DIM_PRODUCT_TABLES: list[tuple[str, str]] = [
     ("marketing", "dim_product"),
 ]
+
+WAP_SCOPES: dict[str, list[tuple[str, str]]] = {
+    "finance": FINANCE_SUMMARY_TABLES,
+    "marketing": MARKETING_TABLES,
+    "catalog": DIM_PRODUCT_TABLES,
+}
 
 
 def _pending_schema(schema: str) -> str:
@@ -371,6 +380,49 @@ def _connect_redshift() -> Any:
     )
 
 
+def _connect_redshift_env() -> Any:
+    """Connect for the documented no-MWAA laptop workflow."""
+    import redshift_connector
+
+    required = ("RS_HOST", "RS_USER", "RS_PASSWORD")
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError(f"Missing Redshift environment variables: {', '.join(missing)}")
+    return redshift_connector.connect(
+        host=os.environ["RS_HOST"],
+        port=int(os.environ.get("RS_PORT", "5439")),
+        database=os.environ.get("RS_DATABASE", "dev"),
+        user=os.environ["RS_USER"],
+        password=os.environ["RS_PASSWORD"],
+    )
+
+
+def run_cli(phase: str, scope: str) -> dict[str, Any]:
+    """Run one WAP phase from a laptop using the canonical ownership sets."""
+    if phase not in {"clone", "publish"}:
+        raise ValueError(f"Unsupported WAP phase: {phase}")
+    if scope not in WAP_SCOPES:
+        raise ValueError(f"Unsupported WAP scope: {scope}")
+
+    conn = _connect_redshift_env()
+    try:
+        if phase == "clone":
+            return clone_live_to_pending(conn, WAP_SCOPES[scope], dialect="redshift")
+        return publish_gold(conn, WAP_SCOPES[scope], dialect="redshift")
+    finally:
+        conn.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Clone or publish a Redshift Gold WAP ownership set"
+    )
+    parser.add_argument("phase", choices=("clone", "publish"))
+    parser.add_argument("scope", choices=tuple(WAP_SCOPES))
+    args = parser.parse_args()
+    print(json.dumps(run_cli(args.phase, args.scope), sort_keys=True))
+
+
 def _airflow_entrypoint(
     tables: list[tuple[str, str]],
     phase: str,
@@ -449,3 +501,7 @@ def publish_marketing_task(**context: Any) -> dict[str, Any]:
 
 def publish_dim_product_task(**context: Any) -> dict[str, Any]:
     return _airflow_entrypoint(DIM_PRODUCT_TABLES, "publish", **context)
+
+
+if __name__ == "__main__":
+    main()

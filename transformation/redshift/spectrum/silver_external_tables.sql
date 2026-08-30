@@ -42,7 +42,9 @@ SELECT COUNT(*) AS inventory_hourly_rows FROM silver.inventory_hourly;
 -- ---------------------------------------------------------------------------
 -- silver.identity_resolution + silver.identity_edges (ADR-010)
 -- Written by the Spark GraphFrames job (spark/identity_resolution/) as
--- Iceberg tables; Spectrum reads the current snapshot's Parquet data files.
+-- Iceberg tables plus dedicated current-run Parquet exports. Spectrum must not
+-- scan an Iceberg table's data/ directory: superseded snapshot files may remain
+-- there after replace/compaction and would be returned as duplicate stale rows.
 -- dbt reads identity_resolution via source('silver', 'identity_resolution')
 -- (int_identity_resolution view). Re-run this DDL only if the schema changes;
 -- plain data refreshes need no Spectrum action (unpartitioned table).
@@ -60,7 +62,7 @@ CREATE EXTERNAL TABLE silver.identity_resolution (
     computed_at         timestamp
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/silver/identity_resolution/data/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_resolution/';
 
 DROP TABLE IF EXISTS silver.identity_edges;
 CREATE EXTERNAL TABLE silver.identity_edges (
@@ -70,6 +72,6 @@ CREATE EXTERNAL TABLE silver.identity_edges (
     last_observed_at    timestamp
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/silver/identity_edges/data/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_edges/';
 
 SELECT COUNT(*) AS identity_resolution_rows FROM silver.identity_resolution;

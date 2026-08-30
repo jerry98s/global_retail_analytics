@@ -8,17 +8,27 @@ right order; run a sibling directly only when you need its full flag set.
 
 | Script | Purpose |
 |--------|---------|
-| **`run_cloud_stack.ps1`** | **Wrapper** — one `-Task` for the whole cloud lifecycle: `apply` / `bootstrap` / `deploy` / `producers` / `verify` / `status` / `all`. Default `-Env dev`; `-Task all` runs apply -> bootstrap -> deploy -> producers -> verify (auto-approves terraform). |
+| **`run_cloud_stack.ps1`** | **Wrapper** — cloud lifecycle tasks: `apply` / `bootstrap` / `deploy` / `producers` / `spark` / `verify` / `status` / `all`. `-Task all` is infrastructure + streaming smoke only; the Gold E2E remains the guided runbook. |
 | `run_terraform.ps1` | Terraform — bootstrap + platform apply/plan/destroy/**output** |
 | `bootstrap_redshift.ps1` | Generate combined Redshift DDL + seeds + Spectrum SQL (+ optional metadata DB) |
 | `deploy_platform.ps1` | Post-apply — sync MWAA, submit Flink, Airflow vars, status, **verify** (smoke checks) |
 | `run_msk_producers.ps1` | Publish clickstream/inventory to MSK via EMR step (MSK IAM) |
 
+For the no-MWAA cloud proof run, the canonical WAP plugin also exposes a
+laptop CLI:
+
+```text
+python orchestration/airflow/plugins/wap_publish.py <clone|publish> <catalog|finance|marketing>
+```
+
+It uses `RS_*` environment variables and the same per-DAG ownership sets as
+Airflow; see `docs/runbooks/dev-cloud-test-run.md`.
+
 ## `scripts/local/` — local-dev helpers
 
 | Script | Purpose |
 |--------|---------|
-| **`run_local_stack.ps1`** | **Wrapper** — local Docker stack: `up` / `topics` / `simulate` / `flink` / `flink-stop` / `pos-parquet` / `load-duckdb` / `dbt` / `quality` / `all`. Default `-DbtSource iceberg` reuses Flink Parquet for dbt; `-DbtSource seeds` uses CSV fixtures. Uses repo **`.venv`** (create with `uv sync --group dev`). |
+| **`run_local_stack.ps1`** | **Wrapper** — local Docker stack: `up` / `topics` / `simulate` / `flink` / `flink-stop` / `pos-parquet` / `spark` / `load-duckdb` / `dbt` / `quality` / `all`. Default `-DbtSource iceberg` reuses Flink/Spark Parquet for dbt; `-DbtSource seeds` uses CSV fixtures. Uses repo **`.venv`** (create with `uv sync --group dev`). |
 | `load_iceberg_to_duckdb.py` | Sub-script invoked by `run_local_stack -Task load-duckdb` (and `-Task dbt` in iceberg mode). Materializes Flink Iceberg Parquet + POS Parquet into `local_retail.duckdb` as `bronze.*` / `silver.*` tables matching dbt `source()` names. |
 | `run_ge_local.py` | Sub-script invoked by `run_local_stack -Task quality`. Runs the GE `gold_layer_local` checkpoint against DuckDB (Pandas-batch port of the cloud Redshift checkpoint) + records the run via `metadata_observer`. |
 
@@ -46,10 +56,11 @@ uv sync --group dev          # creates/updates .venv from pyproject.toml
 Preferred — one wrapper:
 
 ```powershell
-.\scripts\cloud\run_cloud_stack.ps1 -Task all                 # full fresh deploy (dev)
+.\scripts\cloud\run_cloud_stack.ps1 -Task all                 # infra + streaming smoke (dev)
 .\scripts\cloud\run_cloud_stack.ps1 -Task apply -Env prod -AutoApprove
 .\scripts\cloud\run_cloud_stack.ps1 -Task deploy              # after code changes
 .\scripts\cloud\run_cloud_stack.ps1 -Task producers -Stream both -DurationSeconds 120
+.\scripts\cloud\run_cloud_stack.ps1 -Task spark               # after POS lands; waits for completion
 .\scripts\cloud\run_cloud_stack.ps1 -Task verify              # post-deploy smoke checks
 ```
 
@@ -64,10 +75,10 @@ Equivalent manual sequence (when you need per-script flags):
 
 .\scripts\cloud\deploy_platform.ps1 -Env dev
 .\scripts\cloud\run_msk_producers.ps1 -Env dev -Stream both -DurationSeconds 120
+.\scripts\cloud\deploy_platform.ps1 -Env dev -Action spark
 .\scripts\cloud\deploy_platform.ps1 -Env dev -Action verify
 
-# Full cloud E2E checklist lives in docs/REDSHIFT.md (deploy + dbt + Airflow)
-# and docs/ENVIRONMENTS.md (env-vs-per-env matrix, promotion path).
+# Full cloud E2E checklist: docs/runbooks/dev-cloud-test-run.md on main.
 ```
 
 ## Local (typical flow)
@@ -77,9 +88,11 @@ Equivalent manual sequence (when you need per-script flags):
 .\scripts\local\run_local_stack.ps1 -Task topics
 .\scripts\local\run_local_stack.ps1 -Task flink      # before simulate (latest-offset)
 .\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task pos-parquet
+.\scripts\local\run_local_stack.ps1 -Task spark      # GraphFrames identity; writes current-run export
 .\scripts\local\run_local_stack.ps1 -Task dbt        # Iceberg -> DuckDB + dim seeds
 .\scripts\local\run_local_stack.ps1 -Task quality    # dbt test + GE gold_layer_local + pytest
-.\scripts\local\run_local_stack.ps1 -Task all        # up -> topics -> flink -> simulate -> dbt -> quality
+.\scripts\local\run_local_stack.ps1 -Task all        # includes POS + Spark before dbt
 ```
 
 See `infra/docker/README.md` for the local Docker layout and ad-hoc

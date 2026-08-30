@@ -8,8 +8,8 @@ files into ``local_retail.duckdb`` schemas that match dbt ``source()`` names:
   bronze.inventory_events
   bronze.pos_transactions   (from generate_pos_parquet --output-dir)
   silver.inventory_hourly
-  silver.identity_resolution  (from the Spark GraphFrames job, ADR-010 —
-                               optional; fixture mode seeds it instead)
+  silver.identity_resolution  (from the Spark GraphFrames current-run export,
+                               ADR-010 — optional; fixture mode seeds it instead)
 
 Reference dims (``finance.dim_date``, ``finance.dim_store``) stay as dbt seeds.
 
@@ -39,7 +39,13 @@ _TABLES: dict[str, tuple[str, str]] = {
     "inventory_events": ("bronze", "bronze/inventory_events/data/**/*.parquet"),
     "pos_transactions": ("bronze", "bronze/pos_transactions/data/**/*.parquet"),
     "inventory_hourly": ("silver", "silver/inventory_hourly/data/**/*.parquet"),
-    "identity_resolution": ("silver", "silver/identity_resolution/data/**/*.parquet"),
+    # Do not glob silver/identity_resolution/data: it is an Iceberg table and
+    # may retain files from superseded snapshots. Spark replaces this dedicated
+    # plain-Parquet export on every successful identity run.
+    "identity_resolution": (
+        "silver",
+        "consumer_current/identity_resolution/**/*.parquet",
+    ),
 }
 
 
