@@ -77,6 +77,42 @@ class TestEdges:
         pairs.append(("c-x", "C-10", "2026-07-01 10:10:00"))
         assert gl.find_public_devices(pairs, threshold=10) == {"c-x"}
 
+    def test_blank_and_whitespace_identifiers_are_not_nodes(self) -> None:
+        clickstream = [
+            {
+                "client_id": " client-1 ",
+                "customer_id": " ",
+                "event_time": "2026-08-30T00:00:00Z",
+            },
+            {
+                "client_id": " client-2 ",
+                "customer_id": " customer-2 ",
+                "event_time": "2026-08-30T00:00:01Z",
+            },
+            {
+                "client_id": "",
+                "customer_id": "customer-3",
+                "event_time": "2026-08-30T00:00:02Z",
+            },
+        ]
+        pos = [{"loyalty_id": " "}, {"loyalty_id": " customer-2 "}]
+
+        edges, rows, _ = gl.resolve_identity_graph(clickstream, pos)
+        nodes = {
+            f"{row.identifier_type}:{row.identifier_value}"
+            for row in rows
+        }
+
+        assert "customer_id:" not in nodes
+        assert "client_id:" not in nodes
+        assert "loyalty_id:" not in nodes
+        assert "client_id:client-1" in nodes
+        assert "client_id:client-2" in nodes
+        assert "customer_id:customer-2" in nodes
+        assert "loyalty_id:customer-2" in nodes
+        assert all(edge.src not in {"client:", "customer:", "loyalty:"} for edge in edges)
+        assert all(edge.dst not in {"client:", "customer:", "loyalty:"} for edge in edges)
+
 
 class TestResolution:
     def _row(self, rows: list[gl.ResolutionRow], type_: str, value: str) -> gl.ResolutionRow:
@@ -148,3 +184,11 @@ class TestDbtHandoffContract:
         assert seed.exists()
         header = seed.read_text(encoding="utf-8").splitlines()[0]
         assert "identifier_type" in header and "customer_key" in header
+
+    def test_spectrum_reads_current_export_not_iceberg_data_glob(self) -> None:
+        ddl = (
+            _REPO / "transformation/redshift/spectrum/silver_external_tables.sql"
+        ).read_text(encoding="utf-8")
+        assert "consumer_current/identity_resolution/" in ddl
+        assert "consumer_current/identity_edges/" in ddl
+        assert "silver/identity_resolution/data/" not in ddl

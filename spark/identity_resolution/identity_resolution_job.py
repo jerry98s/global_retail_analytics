@@ -40,31 +40,55 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
+from urllib.parse import urlparse
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
-from graph_logic import (
-    CONFIDENCE_ANCHOR,
-    CONFIDENCE_CUSTOMER_STANDALONE,
-    CONFIDENCE_DEVICE_ONLY,
-    CONFIDENCE_LOYALTY_MATCH,
-    CONFIDENCE_PUBLIC_DEVICE,
-    CONFIDENCE_SESSION_LINKED,
-    DEFAULT_PUBLIC_DEVICE_THRESHOLD,
-    EDGE_LOYALTY_VALUE_MATCH,
-    EDGE_SESSION_LINK,
-    METHOD_COMPONENT_ANCHOR,
-    METHOD_CUSTOMER_STANDALONE,
-    METHOD_DEVICE_ONLY,
-    METHOD_LOYALTY_MATCH,
-    METHOD_LOYALTY_MEMBER,
-    METHOD_PUBLIC_DEVICE_EXCLUDED,
-    METHOD_SESSION_LINKED,
-    PREFIX_CLIENT,
-    PREFIX_CUSTOMER,
-    PREFIX_LOYALTY,
-)
+try:  # package import in tests; script import under spark-submit
+    from .graph_logic import (
+        CONFIDENCE_ANCHOR,
+        CONFIDENCE_CUSTOMER_STANDALONE,
+        CONFIDENCE_DEVICE_ONLY,
+        CONFIDENCE_LOYALTY_MATCH,
+        CONFIDENCE_PUBLIC_DEVICE,
+        CONFIDENCE_SESSION_LINKED,
+        DEFAULT_PUBLIC_DEVICE_THRESHOLD,
+        EDGE_LOYALTY_VALUE_MATCH,
+        EDGE_SESSION_LINK,
+        METHOD_COMPONENT_ANCHOR,
+        METHOD_CUSTOMER_STANDALONE,
+        METHOD_DEVICE_ONLY,
+        METHOD_LOYALTY_MATCH,
+        METHOD_LOYALTY_MEMBER,
+        METHOD_PUBLIC_DEVICE_EXCLUDED,
+        METHOD_SESSION_LINKED,
+        PREFIX_CLIENT,
+        PREFIX_CUSTOMER,
+        PREFIX_LOYALTY,
+    )
+except ImportError:  # pragma: no cover - spark-submit script mode
+    from graph_logic import (
+        CONFIDENCE_ANCHOR,
+        CONFIDENCE_CUSTOMER_STANDALONE,
+        CONFIDENCE_DEVICE_ONLY,
+        CONFIDENCE_LOYALTY_MATCH,
+        CONFIDENCE_PUBLIC_DEVICE,
+        CONFIDENCE_SESSION_LINKED,
+        DEFAULT_PUBLIC_DEVICE_THRESHOLD,
+        EDGE_LOYALTY_VALUE_MATCH,
+        EDGE_SESSION_LINK,
+        METHOD_COMPONENT_ANCHOR,
+        METHOD_CUSTOMER_STANDALONE,
+        METHOD_DEVICE_ONLY,
+        METHOD_LOYALTY_MATCH,
+        METHOD_LOYALTY_MEMBER,
+        METHOD_PUBLIC_DEVICE_EXCLUDED,
+        METHOD_SESSION_LINKED,
+        PREFIX_CLIENT,
+        PREFIX_CUSTOMER,
+        PREFIX_LOYALTY,
+    )
 
 BRONZE_CATALOG = "iceberg_bronze"
 SILVER_CATALOG = "iceberg_silver"
@@ -82,6 +106,14 @@ def _parse_args() -> argparse.Namespace:
                         help="POS batch Parquet path (plain Parquet, not Iceberg)")
     parser.add_argument("--checkpoint-dir", default="/tmp/graphframes-checkpoints",
                         help="GraphFrames checkpoint dir (S3 on EMR, local path otherwise)")
+    parser.add_argument(
+        "--consumer-parquet-root",
+        default=None,
+        help=(
+            "Snapshot-safe plain-Parquet export root used by Spectrum/DuckDB. "
+            "Defaults to <silver-warehouse>/consumer_current."
+        ),
+    )
     parser.add_argument("--public-device-threshold", type=int,
                         default=DEFAULT_PUBLIC_DEVICE_THRESHOLD)
     parser.add_argument("--master", default=None,
@@ -111,16 +143,33 @@ def _build_session(args: argparse.Namespace) -> SparkSession:
     return spark
 
 
+def _clean_identifier(column_name: str):
+    """Spark expression matching graph_logic.normalize_identifier."""
+    value = F.trim(F.col(column_name).cast("string"))
+    return F.when(F.length(value) > 0, value)
+
+
+def normalized_clickstream(clickstream: DataFrame) -> DataFrame:
+    return clickstream.select(
+        _clean_identifier("client_id").alias("client_id"),
+        _clean_identifier("customer_id").alias("customer_id"),
+        F.col("event_time"),
+    )
+
+
+def normalized_loyalty_ids(pos: DataFrame) -> DataFrame:
+    return (
+        pos.select(_clean_identifier("loyalty_id").alias("loyalty_id"))
+        .filter(F.col("loyalty_id").isNotNull())
+        .distinct()
+    )
+
+
 def build_edges(clickstream: DataFrame, pos: DataFrame, threshold: int) -> tuple[DataFrame, DataFrame]:
     """Return (edges, public_devices) DataFrames mirroring graph_logic.build_edges."""
     pairs = (
-        clickstream
+        normalized_clickstream(clickstream)
         .filter(F.col("client_id").isNotNull() & F.col("customer_id").isNotNull())
-        .select(
-            F.col("client_id").cast("string"),
-            F.col("customer_id").cast("string"),
-            F.col("event_time"),
-        )
     )
 
     public_devices = (
@@ -143,11 +192,7 @@ def build_edges(clickstream: DataFrame, pos: DataFrame, threshold: int) -> tuple
     )
 
     customer_last_seen = pairs.groupBy("customer_id").agg(F.max("event_time").alias("last_seen_at"))
-    loyalty_ids = (
-        pos.filter(F.col("loyalty_id").isNotNull())
-        .select(F.col("loyalty_id").cast("string"))
-        .distinct()
-    )
+    loyalty_ids = normalized_loyalty_ids(pos)
     loyalty_edges = (
         loyalty_ids.join(customer_last_seen, loyalty_ids["loyalty_id"] == customer_last_seen["customer_id"])
         .select(
@@ -159,6 +204,50 @@ def build_edges(clickstream: DataFrame, pos: DataFrame, threshold: int) -> tuple
     )
 
     return session_edges.unionByName(loyalty_edges), public_devices
+
+
+def build_vertices(clickstream: DataFrame, pos: DataFrame) -> DataFrame:
+    """Build the normalized, non-empty graph vertex set."""
+    clean_clickstream = normalized_clickstream(clickstream)
+    loyalty_nodes = normalized_loyalty_ids(pos).select(
+        F.concat(F.lit(PREFIX_LOYALTY), F.col("loyalty_id")).alias("node")
+    )
+    customer_nodes = (
+        clean_clickstream.filter(F.col("customer_id").isNotNull())
+        .select(F.concat(F.lit(PREFIX_CUSTOMER), F.col("customer_id")).alias("node"))
+        .distinct()
+    )
+    client_nodes = (
+        clean_clickstream.filter(F.col("client_id").isNotNull())
+        .select(F.concat(F.lit(PREFIX_CLIENT), F.col("client_id")).alias("node"))
+        .distinct()
+    )
+    return loyalty_nodes.unionByName(customer_nodes).unionByName(client_nodes).distinct()
+
+
+def _consumer_root(args: argparse.Namespace) -> str:
+    root = args.consumer_parquet_root or (
+        args.silver_warehouse.rstrip("/") + "/consumer_current"
+    )
+    parsed = urlparse(root)
+    if parsed.scheme and parsed.scheme not in {"file", "s3", "s3a"}:
+        raise ValueError(f"Unsupported consumer Parquet URI scheme: {parsed.scheme}")
+    return root.rstrip("/")
+
+
+def write_consumer_exports(
+    resolution: DataFrame,
+    edges: DataFrame,
+    root: str,
+) -> None:
+    """Replace plain-Parquet exports consumed outside the Iceberg catalog.
+
+    Spectrum and the local DuckDB bridge cannot safely glob an Iceberg table's
+    ``data/`` directory because files from superseded snapshots may remain.
+    These dedicated overwrite locations contain only the latest completed run.
+    """
+    resolution.write.mode("overwrite").parquet(f"{root}/identity_resolution")
+    edges.write.mode("overwrite").parquet(f"{root}/identity_edges")
 
 
 def assign_resolution(
@@ -276,28 +365,14 @@ def main() -> None:
 
     edges, public_devices = build_edges(clickstream, pos, args.public_device_threshold)
 
-    loyalty_nodes = (
-        pos.filter(F.col("loyalty_id").isNotNull())
-        .select(F.concat(F.lit(PREFIX_LOYALTY), F.col("loyalty_id").cast("string")).alias("node"))
-        .distinct()
-    )
-    customer_nodes = (
-        clickstream.filter(F.col("customer_id").isNotNull())
-        .select(F.concat(F.lit(PREFIX_CUSTOMER), F.col("customer_id").cast("string")).alias("node"))
-        .distinct()
-    )
-    client_nodes = (
-        clickstream.filter(F.col("client_id").isNotNull())
-        .select(F.concat(F.lit(PREFIX_CLIENT), F.col("client_id").cast("string")).alias("node"))
-        .distinct()
-    )
-    vertices = loyalty_nodes.unionByName(customer_nodes).unionByName(client_nodes)
+    vertices = build_vertices(clickstream, pos)
 
     resolution = assign_resolution(spark, vertices, edges, public_devices)
 
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {SILVER_CATALOG}.silver")
     resolution.writeTo(OUTPUT_TABLE).using("iceberg").createOrReplace()
     edges.writeTo(EDGES_TABLE).using("iceberg").createOrReplace()
+    write_consumer_exports(resolution, edges, _consumer_root(args))
 
     spark.stop()
 

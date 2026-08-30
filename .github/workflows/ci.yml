@@ -52,11 +52,37 @@ jobs:
         run: pip install ruff==0.6.9
 
       - name: ruff check
-        run: ruff check ingestion streaming scripts quality orchestration tests
+        run: ruff check ingestion streaming scripts quality orchestration spark tests
 
       - name: compile-all (syntax errors fail fast)
         run: |
-          python -m compileall -q ingestion streaming scripts quality orchestration
+          python -m compileall -q ingestion streaming scripts quality orchestration spark
+
+  spark-identity:
+    name: Spark GraphFrames identity parity
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: install Spark
+        run: pip install "pyspark==3.4.1"
+
+      - name: execute DataFrame + GraphFrames parity smoke test
+        run: >
+          spark-submit --master local[2]
+          --packages graphframes:graphframes:0.8.3-spark3.4-s_2.12
+          tests/integration/verify_spark_identity.py
 
   unit-tests:
     name: pytest unit (offline)

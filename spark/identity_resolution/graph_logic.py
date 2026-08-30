@@ -64,6 +64,19 @@ DEFAULT_PUBLIC_DEVICE_THRESHOLD = 10
 CUSTOMER_KEY_MODULUS = 100_000_000
 
 
+def normalize_identifier(value: object) -> Optional[str]:
+    """Return a trimmed, non-empty identifier or ``None``.
+
+    Empty strings are permitted by older clickstream envelopes and must not
+    become shared graph nodes such as ``customer:``.  The Spark implementation
+    applies the same rule before constructing edges and vertices.
+    """
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def customer_key(canonical_node: str) -> int:
     """Deterministic key in [1, 1e8) — identical to dbt generate_customer_key."""
     digest_prefix = hashlib.md5(canonical_node.encode("utf-8")).hexdigest()[:8]
@@ -268,17 +281,34 @@ def resolve_identity_graph(
     ``clickstream_rows`` need client_id/customer_id/event_time keys;
     ``pos_rows`` need loyalty_id. Returns (edges, resolution, public_devices).
     """
-    pairs = [
-        (row["client_id"], row["customer_id"], row["event_time"])
-        for row in clickstream_rows
-        if row.get("client_id") and row.get("customer_id")
+    clickstream = list(clickstream_rows)
+    pos = list(pos_rows)
+
+    pairs = []
+    for row in clickstream:
+        client_id = normalize_identifier(row.get("client_id"))
+        customer_id = normalize_identifier(row.get("customer_id"))
+        if client_id and customer_id:
+            pairs.append((client_id, customer_id, row["event_time"]))
+
+    loyalty_ids = [
+        loyalty_id
+        for row in pos
+        if (loyalty_id := normalize_identifier(row.get("loyalty_id")))
     ]
-    loyalty_ids = [row["loyalty_id"] for row in pos_rows if row.get("loyalty_id")]
 
     edges, public_devices = build_edges(pairs, loyalty_ids, threshold)
 
     nodes = {PREFIX_LOYALTY + loyalty_id for loyalty_id in loyalty_ids}
-    nodes |= {PREFIX_CUSTOMER + row["customer_id"] for row in clickstream_rows if row.get("customer_id")}
-    nodes |= {PREFIX_CLIENT + row["client_id"] for row in clickstream_rows if row.get("client_id")}
+    nodes |= {
+        PREFIX_CUSTOMER + customer_id
+        for row in clickstream
+        if (customer_id := normalize_identifier(row.get("customer_id")))
+    }
+    nodes |= {
+        PREFIX_CLIENT + client_id
+        for row in clickstream
+        if (client_id := normalize_identifier(row.get("client_id")))
+    }
 
     return edges, assign_resolution(nodes, edges, public_devices), public_devices

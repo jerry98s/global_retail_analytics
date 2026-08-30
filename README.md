@@ -11,7 +11,7 @@ A runnable data-engineering portfolio project: real-time inventory and
 clickstream ingestion, governed finance and Customer 360 marts, and a local
 Docker/DuckDB path that does not require an AWS account.
 
-**Stack:** Kafka · Flink · Iceberg · Redshift · dbt · Airflow · Great
+**Stack:** Kafka · Flink · Spark GraphFrames · Iceberg · Redshift · dbt · Airflow · Great
 Expectations · Terraform · Streamlit
 
 ## Verified end-to-end
@@ -25,7 +25,7 @@ From the latest full local run (2026-08-01, fresh volumes — raw evidence in
 | Batch | 1,480 POS line items → 1,480 `finance.fact_sales` rows (exact 1:1) |
 | Transformation | **22/22 dbt models built · 134/134 dbt tests pass** |
 | Data quality | **11/11 Great Expectations suites pass · 264/264 unit tests pass** in the full run |
-| Identity / C360 | 123k identity edges resolved (loyalty match, session link, component anchor) → consent-gated Customer 360 serving view |
+| Identity / C360 | 123k identity edges → consent-gated Customer 360 in the pre-ADR-010 run; the current Spark replacement is verified separately and still needs a fresh full-stack evidence run |
 
 | | |
 |:---:|:---:|
@@ -81,6 +81,8 @@ flowchart LR
   FLINK --> BRONZE
   FLINK --> SILVER["Iceberg Silver"]
   FLINK -. invalid .-> DLQ["DLQ topics"]
+  BRONZE --> SPARK["Spark GraphFrames identity"]
+  SPARK --> SILVER
   BRONZE --> SPECTRUM["Redshift Spectrum"]
   SILVER --> DBT["dbt transformations"]
   SPECTRUM --> DBT
@@ -130,6 +132,8 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task topics
 .\scripts\local\run_local_stack.ps1 -Task flink
 .\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task pos-parquet
+.\scripts\local\run_local_stack.ps1 -Task spark
 .\scripts\local\run_local_stack.ps1 -Task dbt          # -DbtSource iceberg (default)
 .\scripts\local\run_local_stack.ps1 -Task quality
 ```
@@ -155,6 +159,7 @@ DuckDB — no Redshift credentials required.
 |---|---|
 | `ingestion/` | Schemas, Kafka topics/producers, POS Parquet generator |
 | `streaming/` | Flink jobs + YAML config |
+| `spark/` | GraphFrames identity-resolution job + deterministic reference rules |
 | `transformation/` | dbt project + Redshift DDL / Spectrum / serving views |
 | `orchestration/` | Airflow DAGs + plugins |
 | `quality/` | Great Expectations suites + pytest DQ integration tests |
@@ -210,8 +215,10 @@ cd ..\..\..
 ```
 
 ```powershell
-# Cloud (AWS account required) - one wrapper, -Task all = full fresh deploy (dev)
+# Cloud infrastructure + streaming smoke (AWS account required).
+# This does not execute Redshift SQL, POS, Spark, dbt, or GE.
 .\scripts\cloud\run_cloud_stack.ps1 -Task all
+.\scripts\cloud\run_cloud_stack.ps1 -Task spark          # after POS lands
 .\scripts\cloud\run_cloud_stack.ps1 -Task deploy          # after code changes
 .\scripts\cloud\run_cloud_stack.ps1 -Task verify          # post-deploy smoke checks
 ```
@@ -226,6 +233,10 @@ cd ..\..\..
 ```
 
 </details>
+
+For the complete Bronze → Silver → Gold proof—including POS, Spark identity,
+Redshift SQL, dbt, GE, evidence capture, and teardown—follow
+`docs/runbooks/dev-cloud-test-run.md` on `main`.
 
 ### Cost and teardown
 
@@ -284,11 +295,10 @@ AWS production deployment or a measured 10k events/s load test.
 5. Open the Streamlit dashboard and Flink checkpoint view.
 6. Close with recovery procedures, cost assumptions, and known limits.
 
-Current verification baselines are deliberately separated: the latest full
-local E2E run (2026-08-01) includes 264 unit tests, while the newer offline
-regression runs (2026-08-16) pass 291 tests on `main` and 306 tests on
-`local-testing-version`. See [docs/evidence](./docs/evidence/README.md) for the
-dated evidence ledger.
+Verification is deliberately split between dated full E2E evidence and current
+offline regression checks. See [docs/evidence](./docs/evidence/README.md) for
+the exact commands, results, and limitations; the latest full local E2E run
+predates the Spark identity cutover and is not presented as proof of that step.
 
 ## License
 

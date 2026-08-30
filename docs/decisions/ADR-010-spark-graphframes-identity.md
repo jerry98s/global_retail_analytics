@@ -51,6 +51,9 @@ GraphFrames batch job. Everything downstream stays in dbt.**
     run** (recompute is cheap at identifier grain; matches the old
     `delete+insert` semantics).
   - `silver.identity_edges` — audit copy of the graph edges.
+- Non-Iceberg consumers read dedicated `consumer_current/*` Parquet exports
+  replaced by the same Spark run. They never scan the Iceberg `data/`
+  directory because superseded snapshot/compaction files may remain there.
 - dbt handoff: `int_identity_resolution` becomes a **thin view** over
   `source('silver', 'identity_resolution')` that only adds the surrogate
   `identity_key`. `int_identity_edges` and `int_identity_components` are
@@ -61,7 +64,8 @@ GraphFrames batch job. Everything downstream stays in dbt.**
   EMR step and waits for COMPLETED before the WAP clone. One-off submission
   (no-MWAA dev runs): `deploy_platform.ps1 -Action spark`.
 - Rules live once: `spark/identity_resolution/graph_logic.py` holds the edge
-  types, public-device threshold, rep priority, confidence/method mapping,
+  types, blank-ID normalization, public-device threshold, rep priority,
+  confidence/method mapping,
   and the `customer_key` formula (byte-identical to dbt's
   `generate_customer_key` — md5, first 8 hex chars, base 16, mod 1e8, +1 —
   so keys are stable across the cutover). The Spark job mirrors it in
@@ -92,7 +96,7 @@ GraphFrames batch job. Everything downstream stays in dbt.**
   scenarios) plus the CI fixture-drift check. The DuckDB identity chain in CI
   now verifies the *handoff* (seed → view → mart), not the graph algorithm.
 - **Redshift Spectrum** registers `silver.identity_resolution` /
-  `silver.identity_edges` as external Parquet tables
+  `silver.identity_edges` over the dedicated current-run Parquet exports
   (`transformation/redshift/spectrum/silver_external_tables.sql`); unpartitioned,
   so hourly overwrites need no partition maintenance.
 - **Local DuckDB sim** reads the generated seed fixture in fixture mode; on

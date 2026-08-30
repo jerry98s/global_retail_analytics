@@ -21,12 +21,20 @@ Environment: Windows, Python 3.11, local project virtual environment.
 | 2026-08-16 | `main`: Ruff, Python bytecode compilation, Docker Compose config, dbt full compile | Passed |
 | 2026-08-16 | `local-testing-version`: `python -m pytest tests/unit -q` | 306 passed in 3.21s (isolated branch snapshot) |
 | 2026-08-16 | `local-testing-version`: Ruff, Python bytecode compilation, Docker Compose config, dbt full compile | Passed (isolated branch snapshot) |
+| 2026-08-30 | `main`: `python -m pytest tests/unit -q` | 307 passed in 5.18s |
+| 2026-08-30 | `main`: `python -m pytest tests/unit -q -m unit` | 284 passed, 23 deselected in 4.17s |
+| 2026-08-30 | `main`: Ruff, Python bytecode compilation, Docker Compose config, PowerShell parse, dbt full + WAP pending compiles, identity fixture drift, internal Markdown links | Passed |
 
 Re-run these commands after any material change and update the table only from
 captured output.
 
 These rows are not interchangeable: the 2026-08-01 entry is a full local E2E
-run, while the 2026-08-16 entries are offline regression checks on each branch.
+run, while the later entries are offline regression checks on each branch.
+The 2026-08-01 E2E predates ADR-010's Spark/GraphFrames cutover. A real
+DataFrame + GraphFrames parity and replace-only consumer-export smoke test is
+now in CI (`tests/integration/verify_spark_identity.py`), but no successful
+post-cutover full E2E is claimed here yet; Docker Desktop was unavailable
+during the 2026-08-30 verification session.
 
 ## End-to-end acceptance checklist
 

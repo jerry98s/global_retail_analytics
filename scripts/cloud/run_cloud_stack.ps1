@@ -11,10 +11,11 @@
     deploy_platform.ps1     -> MWAA sync + Flink submit (+ verify + status)
     run_msk_producers.ps1   -> publish test events to MSK via EMR step
 
-  Default -Env dev. -Task all runs the full sequence end-to-end
-  (apply -> bootstrap -> deploy -> producers -> verify) and auto-approves
-  terraform apply so it is non-interactive. Individual -Task values run just
-  that stage.
+  Default -Env dev. -Task all runs an infrastructure + streaming smoke sequence
+  (apply -> generate bootstrap SQL -> deploy -> producers -> verify) and
+  auto-approves terraform apply. It is intentionally NOT a Bronze-to-Gold E2E
+  run: Redshift SQL execution, POS upload, Spark identity, dbt, and GE follow the
+  guided docs/runbooks/dev-cloud-test-run.md procedure.
 
   This wrapper only orchestrates the sibling scripts; it holds no logic of its
   own. Run a sibling directly when you need its full flag set (e.g.
@@ -25,9 +26,10 @@
   bootstrap  - bootstrap_redshift -IncludeSilver -IncludeMetadata
   deploy     - deploy_platform (MWAA sync + Flink submit)
   producers  - run_msk_producers -Stream <Stream> -DurationSeconds <n>
+  spark      - submit Spark GraphFrames identity step and wait for completion
   verify     - deploy_platform -Action verify (post-deploy smoke checks)
   status     - deploy_platform -Action status
-  all        - apply -> bootstrap -> deploy -> producers -> verify (auto-approve)
+  all        - infrastructure + streaming smoke only (auto-approve)
 
 .PARAMETER Env
   dev (default) | prod
@@ -53,7 +55,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet("apply", "bootstrap", "deploy", "producers", "verify", "status", "all")]
+    [ValidateSet("apply", "bootstrap", "deploy", "producers", "spark", "verify", "status", "all")]
     [string]$Task = "all",
 
     [ValidateSet("dev", "prod")]
@@ -116,6 +118,12 @@ function Invoke-Producers {
     Assert-Exit "run_msk_producers"
 }
 
+function Invoke-Spark {
+    Write-Stage "Spark GraphFrames identity resolution"
+    & $Deploy -Env $Env -Action spark
+    Assert-Exit "deploy_platform spark"
+}
+
 function Invoke-Verify {
     Write-Stage "Post-deploy smoke checks"
     & $Deploy -Env $Env -Action verify
@@ -135,6 +143,7 @@ try {
         "bootstrap" { Invoke-Bootstrap }
         "deploy"    { Invoke-Deploy }
         "producers" { Invoke-Producers }
+        "spark"     { Invoke-Spark }
         "verify"    { Invoke-Verify }
         "status"    { Invoke-Status }
         "all" {
@@ -143,6 +152,9 @@ try {
             Invoke-Deploy
             Invoke-Producers
             Invoke-Verify
+            Write-Host ""
+            Write-Host "Streaming smoke complete; Gold/C360 is not built by -Task all." -ForegroundColor Yellow
+            Write-Host "Follow docs/runbooks/dev-cloud-test-run.md for POS, Spark, Redshift SQL, dbt, GE, and teardown." -ForegroundColor Yellow
         }
     }
     Write-Host ""

@@ -47,6 +47,8 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task topics
 .\scripts\local\run_local_stack.ps1 -Task flink
 .\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task pos-parquet
+.\scripts\local\run_local_stack.ps1 -Task spark
 .\scripts\local\run_local_stack.ps1 -Task dbt
 ```
 
@@ -65,8 +67,9 @@ uv sync --group dev
 ### Cloud Platform — `main` (and cloud work on that branch)
 
 ```powershell
-# Wrapper (default -Env dev; -Task all = apply -> bootstrap -> deploy -> producers -> verify)
+# Wrapper -Task all is infrastructure + streaming smoke, not Gold E2E.
 .\scripts\cloud\run_cloud_stack.ps1 -Task all
+.\scripts\cloud\run_cloud_stack.ps1 -Task spark
 .\scripts\cloud\run_cloud_stack.ps1 -Task apply -Env prod -AutoApprove
 .\scripts\cloud\run_cloud_stack.ps1 -Task deploy
 .\scripts\cloud\run_cloud_stack.ps1 -Task verify

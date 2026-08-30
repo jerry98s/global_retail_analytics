@@ -157,7 +157,9 @@ def run() -> None:
         AND event_type IN ({event_type_list})
         AND event_ts IS NOT NULL
         AND session_id IS NOT NULL
+        AND TRIM(session_id) <> ''
         AND client_id IS NOT NULL
+        AND TRIM(client_id) <> ''
         AND platform IN ({platform_list})
         AND REGEXP_EXTRACT(app_version, '^[0-9]+\\.[0-9]+\\.[0-9]+$', 0) IS NOT NULL
         AND REGEXP_EXTRACT(schema_version, '^[0-9]+\\.[0-9]+\\.[0-9]+$', 0) IS NOT NULL
@@ -300,8 +302,8 @@ def run() -> None:
         WHEN event_id IS NULL THEN 'missing_event_id'
         WHEN event_type NOT IN ({event_type_list}) THEN 'invalid_event_type'
         WHEN event_ts IS NULL THEN 'invalid_event_time'
-        WHEN session_id IS NULL THEN 'missing_session_id'
-        WHEN client_id IS NULL THEN 'missing_client_id'
+        WHEN session_id IS NULL OR TRIM(session_id) = '' THEN 'missing_session_id'
+        WHEN client_id IS NULL OR TRIM(client_id) = '' THEN 'missing_client_id'
         WHEN platform NOT IN ({platform_list}) THEN 'invalid_platform'
         WHEN REGEXP_EXTRACT(app_version, '^[0-9]+\\.[0-9]+\\.[0-9]+$', 0) IS NULL THEN 'invalid_app_version'
         WHEN REGEXP_EXTRACT(schema_version, '^[0-9]+\\.[0-9]+\\.[0-9]+$', 0) IS NULL THEN 'invalid_schema_version'

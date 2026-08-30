@@ -825,9 +825,9 @@ loyalty:{loyalty_id} <-> customer:{customer_id}
 
 ### Connected Components
 
-The project implements bounded multi-hop connected components in SQL.
-
-This approximates Union-Find with a 4-hop closure.
+The project runs true connected components in Spark GraphFrames. ADR-010
+retired the bounded dbt SQL closure, removing its hop ceiling while keeping
+the downstream dbt contract stable through `silver.identity_resolution`.
 
 Representative selection is deterministic:
 
@@ -1194,6 +1194,10 @@ Pytest covers behavior that is easier to express in Python:
   `integration_duckdb`)
 - Row-count reconciliation logic (17 unit tests against the pure
   functions in `orchestration/airflow/plugins/row_count_reconciliation.py`)
+- Kafka producer and Flink source reliability defaults
+- Flink state backend, checkpoint, source-idleness, and partition-discovery
+  contracts
+- DAG naming, alerting, idempotency, and documentation contracts
 
 Quality is not a final step.
 
@@ -1425,8 +1429,11 @@ Parquet simulator:
 
 - `tests/integration/test_dbt_idempotency.py` — runs `dbt run
   --full-refresh` then `dbt run` (incremental) on the `+identity_graph`
-  chain and asserts row counts match for all 5 identity-chain tables.
-  Marker: `integration_duckdb`. Closes P2.1 from the DW checklist audit.
+  chain and asserts row counts match for the three remaining dbt identity
+  handoff/mart relations. Marker: `integration_duckdb`.
+- `tests/integration/verify_spark_identity.py` — executes the actual PySpark +
+  GraphFrames DataFrame path and checks parity with the reference rules,
+  including blank-identifier normalization.
 - `tests/unit/test_generate_pos_parquet.py` — asserts that two runs of
   `generate_pos_parquet.py` with the same `--date` produce identical
   `transaction_id` UUIDs, line counts, and measures. Closes P3.6.
@@ -1658,6 +1665,7 @@ This project demonstrates:
 - pytest behavioral and contract tests, with dated branch baselines in the
   [evidence ledger](../evidence/README.md)
 - Terraform-defined AWS deployment path
+- Kafka reliability tests and Flink state/source contract tests
 - Airflow orchestration (6 DAGs, each with `doc_md`)
 - DuckDB local simulation
 - Runbooks for backfill verification, upstream incident response,

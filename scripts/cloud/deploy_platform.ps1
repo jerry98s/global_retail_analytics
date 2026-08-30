@@ -128,9 +128,30 @@ function Submit-SparkIdentityResolution {
     } | ConvertTo-Json -Depth 5 -Compress
 
     Write-Host "==> Submitting step spark-identity-resolution" -ForegroundColor Cyan
-    aws emr add-steps --cluster-id $clusterId --steps $stepJson | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "add-steps failed for spark-identity-resolution" }
-    Write-Host "Watch: aws emr list-steps --cluster-id $clusterId --step-states RUNNING PENDING" -ForegroundColor DarkGray
+    $response = aws emr add-steps --cluster-id $clusterId --steps $stepJson --region $Region --output json | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $response.StepIds) {
+        throw "add-steps failed for spark-identity-resolution"
+    }
+    $stepId = [string]$response.StepIds[0]
+    Write-Host "Submitted EMR step: $stepId" -ForegroundColor DarkGray
+
+    $deadline = (Get-Date).AddMinutes(45)
+    do {
+        Start-Sleep -Seconds 30
+        $state = aws emr describe-step --cluster-id $clusterId --step-id $stepId `
+            --region $Region --query 'Step.Status.State' --output text
+        if ($LASTEXITCODE -ne 0) { throw "describe-step failed for $stepId" }
+        Write-Host "  Spark identity step $stepId : $state" -ForegroundColor DarkGray
+        if ($state -eq 'COMPLETED') {
+            Write-Host "Spark identity resolution completed." -ForegroundColor Green
+            return
+        }
+        if ($state -in @('FAILED', 'CANCELLED', 'INTERRUPTED')) {
+            throw "Spark identity step $stepId ended in state $state"
+        }
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Timed out after 45 minutes waiting for Spark identity step $stepId"
 }
 
 function Submit-FlinkJobs {

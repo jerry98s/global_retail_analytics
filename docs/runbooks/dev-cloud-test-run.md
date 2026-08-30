@@ -8,7 +8,7 @@ gates; dbt and Great Expectations run from your laptop against Redshift.
 Expected cost: a few dollars if destroyed the same day. The 100 RPU-hour
 Redshift cap and the $50 AWS Budget (bootstrap stack) are the safety nets.
 
-> **Rule zero:** the run is not finished until step 11 (destroy) is done.
+> **Rule zero:** the run is not finished until step 12 (destroy) is done.
 > MSK Serverless and EMR bill continuously while they exist.
 
 ## Prerequisites
@@ -18,6 +18,7 @@ Redshift cap and the $50 AWS Budget (bootstrap stack) are the safety nets.
 | AWS CLI configured with admin-ish permissions | `aws sts get-caller-identity` |
 | Terraform >= 1.6 | `terraform version` |
 | Project venv | `uv sync --group dev` |
+| Cloud CLI venv | `uv venv .venv-cloud --python 3.11` then `uv pip install --python .venv-cloud\Scripts\python.exe dbt-redshift==1.8.1 redshift-connector==2.1.4 great-expectations==0.18.21` |
 | On `main` branch, clean tree | `git status` |
 | EMR default roles exist in the account | `aws iam get-role --role-name EMR_DefaultRole` and `EMR_EC2_DefaultRole` (create via `aws emr create-default-roles` if missing) |
 
@@ -99,7 +100,21 @@ $env:POS_BRONZE_S3_PATH = "<pos_bronze_s3_path from terraform output>"
 .\.venv\Scripts\python.exe ingestion/batch/generate_pos_parquet.py --transaction-count 1000
 ```
 
-## Step 6 — Redshift DDL + Spectrum
+## Step 6 — Spark GraphFrames identity
+
+POS must exist before this step. The command submits the real GraphFrames job
+and blocks until the EMR step reaches `COMPLETED`; a failed or timed-out step
+returns a non-zero exit instead of allowing stale identity data downstream.
+
+```powershell
+.\scripts\cloud\run_cloud_stack.ps1 -Task spark -Env dev
+```
+
+The job writes Iceberg `silver.identity_resolution` / `identity_edges` plus
+replace-only `consumer_current/*` Parquet exports. Spectrum reads the exports,
+never a raw Iceberg `data/` directory containing superseded snapshots.
+
+## Step 7 — Redshift DDL + Spectrum
 
 ```powershell
 .\scripts\cloud\bootstrap_redshift.ps1 -Env dev -IncludeSilver -IncludeMetadata
@@ -113,7 +128,16 @@ in Redshift Query Editor v2, in order:
 2. `target/redshift_metadata_create_dev.sql` — on database `dev`
 3. `target/redshift_metadata_schema_dev.sql` — after switching to database `metadata`
 
-## Step 7 — dbt from the laptop
+Back on database `dev`, register the POS partition for the date generated in
+step 5 (Spectrum does not discover Hive partitions automatically):
+
+```sql
+ALTER TABLE bronze.pos_transactions
+ADD IF NOT EXISTS PARTITION (dt='YYYY-MM-DD')
+LOCATION 's3://<bronze-bucket>/iceberg/bronze/pos_transactions/data/dt=YYYY-MM-DD/';
+```
+
+## Step 8 — dbt + Write-Audit-Publish from the laptop
 
 ```powershell
 $env:RS_HOST     = "<redshift_endpoint>"   # host only, no port
@@ -122,33 +146,77 @@ $env:RS_USER     = "rs_admin"
 $env:RS_PASSWORD = "<redshift_admin_password>"
 $env:RS_DATABASE = "dev"
 
-cd transformation\dbt_project
-copy profiles.yml.example profiles.yml   # only if profiles.yml does not exist
-..\..\..\.venv\Scripts\dbt.exe deps
-..\..\..\.venv\Scripts\dbt.exe seed --target dev
-..\..\..\.venv\Scripts\dbt.exe run  --target dev
-..\..\..\.venv\Scripts\dbt.exe test --target dev
-cd ..\..
+$Dbt = (Resolve-Path .venv-cloud\Scripts\dbt.exe)
+Push-Location transformation\dbt_project
+if (-not (Test-Path profiles.yml)) { Copy-Item profiles.yml.example profiles.yml }
+& $Dbt deps
+& $Dbt seed --target dev --select dim_date dim_store
+& $Dbt run --target dev --select staging intermediate
+Pop-Location
 ```
 
-`dbt seed` loads `dim_date` and `dim_store`; `dbt run` builds staging →
-intermediate (identity edges, sessions, RFM) → marts (facts, dims,
-`identity_graph`, `customer_360_view`, summary rollups) from the Spectrum
-bronze tables.
+Do not run every mart directly into live schemas. The commands below reuse the
+same ownership lists and clone/publish implementation as the Airflow DAGs.
+Each set is cloned, built under `wap_phase=pending`, tested, audited by Great
+Expectations, and only then published. On a first run the DDL-created empty live
+tables provide the clone shape.
 
-## Step 8 — Great Expectations checkpoint
+```powershell
+$Wap = "orchestration/airflow/plugins/wap_publish.py"
+$Ge = "scripts/common/run_ge_checkpoint.py"
+$GeRoot = "quality/great_expectations"
+$env:RS_SQLALCHEMY_URL = "redshift+psycopg2://rs_admin:<password>@<redshift_endpoint>:5439/dev"
+
+# Catalog owner: marketing.dim_product only.
+.\.venv-cloud\Scripts\python.exe $Wap clone catalog
+Push-Location transformation\dbt_project
+& $Dbt run --target dev --select dim_product --vars '{"wap_phase":"pending"}'
+& $Dbt test --target dev --select dim_product --vars '{"wap_phase":"pending"}'
+Pop-Location
+.\.venv-cloud\Scripts\python.exe $Ge --ge-root $GeRoot --checkpoint gold_layer_daily --pending-tables marketing.dim_product
+.\.venv-cloud\Scripts\python.exe $Wap publish catalog
+
+# Finance owner plus its summary rollups.
+.\.venv-cloud\Scripts\python.exe $Wap clone finance
+Push-Location transformation\dbt_project
+& $Dbt run --target dev --select marts.finance sales_daily_store inventory_daily_product_store --vars '{"wap_phase":"pending"}'
+& $Dbt test --target dev --select staging intermediate marts.finance sales_daily_store inventory_daily_product_store --vars '{"wap_phase":"pending"}'
+Pop-Location
+.\.venv-cloud\Scripts\python.exe $Ge --ge-root $GeRoot --checkpoint gold_layer_daily --pending-tables finance.fact_sales,finance.fact_inventory_snapshot,summary.sales_daily_store,summary.inventory_daily_product_store
+.\.venv-cloud\Scripts\python.exe $Wap publish finance
+
+# Marketing owner plus sessions summary; dim_product remains catalog-owned.
+.\.venv-cloud\Scripts\python.exe $Wap clone marketing
+Push-Location transformation\dbt_project
+& $Dbt run --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
+& $Dbt test --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
+Pop-Location
+.\.venv-cloud\Scripts\python.exe $Ge --ge-root $GeRoot --checkpoint gold_layer_daily --pending-tables marketing.dim_customer,marketing.fact_customer_session,marketing.identity_graph,summary.sessions_daily_platform
+.\.venv-cloud\Scripts\python.exe $Wap publish marketing
+
+# Views resolve the freshly published live tables.
+Push-Location transformation\dbt_project
+& $Dbt run --target dev --select customer_360_view customer_360_serving
+Pop-Location
+```
+
+`int_identity_resolution` is a thin view over the Spark-built Silver source;
+dbt owns sessions, RFM, consent, Finance/Marketing Gold, and summary rollups.
+If any test or GE command fails, stop: do not issue that set's `publish` command.
+
+## Step 9 — Great Expectations live monitor
 
 ```powershell
 $env:RS_SQLALCHEMY_URL = "redshift+psycopg2://rs_admin:<password>@<redshift_endpoint>:5439/dev"
 cd quality\great_expectations
-..\..\..\.venv\Scripts\great_expectations.exe checkpoint run gold_layer_daily
+..\..\.venv-cloud\Scripts\great_expectations.exe checkpoint run gold_layer_daily
 cd ..\..
 ```
 
 All 11 suites should validate against Redshift (Gold marts + last-24h bronze
 windows).
 
-## Step 9 — Verify + capture evidence
+## Step 10 — Verify + capture evidence
 
 ```powershell
 .\scripts\cloud\deploy_platform.ps1 -Env dev -Action verify
@@ -159,7 +227,8 @@ Smoke checks: EMR state, S3 bronze object counts, Redshift row counts
 
 Suggested evidence captures (add to `docs/evidence/screenshots/`):
 
-- EMR console: cluster RUNNING/WAITING with the three Flink steps
+- EMR console: cluster RUNNING/WAITING with the three Flink steps and the
+  completed Spark identity step
 - Redshift Query Editor: row counts across bronze/staging/gold
 - `dbt test` and GE checkpoint terminal output
 - Optional local dashboard against Redshift: `streamlit run dashboard/app.py`
@@ -167,16 +236,16 @@ Suggested evidence captures (add to `docs/evidence/screenshots/`):
 
 > Crop or avoid anything showing account IDs, endpoints, or secrets.
 
-## Step 10 — Optional: Streamlit locally against Redshift
+## Step 11 — Optional: Streamlit locally against Redshift
 
 ```powershell
 $env:DASHBOARD_MODE = "redshift"
 .\.venv\Scripts\streamlit.exe run dashboard/app.py
 ```
 
-Same `RS_*` env vars as step 7; the app reads Gold/serving tables directly.
+Same `RS_*` env vars as step 8; the app reads Gold/serving tables directly.
 
-## Step 11 — Destroy (the money-saving step)
+## Step 12 — Destroy (the money-saving step)
 
 ```powershell
 .\scripts\cloud\run_terraform.ps1 -Stack platform -Env dev -Action destroy
