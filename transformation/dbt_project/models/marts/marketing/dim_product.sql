@@ -14,7 +14,11 @@
 
   - Source attributes: int_product_catalog (POS-weighted)
   - Closes prior version (effective_to, is_current=false) when record_hash changes
-  - Inserts new current row with effective_from = catalog effective_from on change
+  - Inserts new current row on change with effective_from = catalog
+    last_seen_date (when the new attribute state was observed). Never reuse the
+    catalog's effective_from for a changed product: it equals the existing
+    version's effective_from, and product_key (product_id + effective_from)
+    would collide. Brand-new products keep effective_from = earliest activity.
 */
 
 with source_products as (
@@ -30,7 +34,7 @@ existing as (
 changed_products as (
     select
         s.product_id,
-        s.effective_from as new_effective_from,
+        s.last_seen_date as new_effective_from,
         s.sku,
         s.product_name,
         s.brand,
@@ -78,7 +82,7 @@ unchanged_history as (
 
 new_and_updated_current as (
     select
-        {{ generate_product_key('s.product_id', 's.effective_from') }} as product_key,
+        {{ generate_product_key('s.product_id', 's.version_effective_from') }} as product_key,
         s.product_id,
         s.sku,
         s.product_name,
@@ -87,16 +91,27 @@ new_and_updated_current as (
         s.category_l2,
         s.unit_cost,
         s.supplier_id,
-        s.effective_from,
+        s.version_effective_from as effective_from,
         cast(null as date) as effective_to,
         true as is_current,
         s.record_hash
-    from source_products s
-    left join existing e
-      on s.product_id = e.product_id
-     and e.is_current = true
-     and s.record_hash = e.record_hash
-    where e.product_key is null
+    from (
+        select
+            sp.*,
+            case
+                when ec.product_id is not null then sp.last_seen_date
+                else sp.effective_from
+            end as version_effective_from
+        from source_products sp
+        left join existing ec
+          on sp.product_id = ec.product_id
+         and ec.is_current = true
+        left join existing e
+          on sp.product_id = e.product_id
+         and e.is_current = true
+         and sp.record_hash = e.record_hash
+        where e.product_key is null
+    ) s
 )
 
 select * from closed_versions

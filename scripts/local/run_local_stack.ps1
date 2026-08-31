@@ -367,8 +367,9 @@ finally:
 # Catalog DAG publishes dim_product before the warehouse DAG reads it via
 # wap_live_ref. Local `-Task dbt` builds both in one process, so a cold
 # DuckDB has no live marketing.dim_product. Build the pending SCD2 table
-# first, then copy it to live once so finance facts can join (same as a
-# prior catalog publish). Later runs clone live -> pending as usual.
+# first (parents included: on a cold DuckDB the staging/intermediate views do
+# not exist yet), then copy it to live once so finance facts can join (same
+# as a prior catalog publish). Later runs clone live -> pending as usual.
 function Invoke-WapBootstrapLiveDimProduct {
     param([string]$ExecutionId = "")
     Push-Location $DbtDir
@@ -376,7 +377,7 @@ function Invoke-WapBootstrapLiveDimProduct {
         Invoke-ProjectDbt @(
             'run', '--profiles-dir', '.', '--target', 'local',
             '--vars', '{"wap_phase": "pending"}',
-            '--select', 'dim_product'
+            '--select', '+dim_product'
         ) -ExecutionId $ExecutionId
     }
     finally {

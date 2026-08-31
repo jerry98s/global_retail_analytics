@@ -70,6 +70,9 @@ class TestLocalIcebergBridge:
         assert "Get-ChildItem -Path $identityParquetDir -Filter '*.parquet'" in ps1
         assert "Invoke-WapBootstrapLiveDimProduct" in ps1
         assert "bootstrap_live_dim_product.py" in ps1
+        # Cold DuckDB: dim_product parents (staging views, int_product_catalog)
+        # do not exist yet, so the bootstrap must build them too.
+        assert "'+dim_product'" in ps1
 
     def test_compose_spark_identity_profile(self) -> None:
         compose = (_REPO / "infra/docker/compose/docker-compose.yml").read_text(

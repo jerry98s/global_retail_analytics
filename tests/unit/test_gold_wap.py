@@ -113,6 +113,16 @@ class TestIncrementalSelfRefsUseThis:
         src = _read(_DBT / "models/marts/marketing/dim_product.sql")
         assert "wap_live_ref" not in src
 
+    def test_dim_product_changed_versions_use_last_seen_date(self) -> None:
+        # product_key = hash(product_id + effective_from). If a changed
+        # product's new version reused the catalog's effective_from (earliest
+        # activity), it would collide with the existing version's key — the
+        # 2026-08-31 pending-audit failure (938 duplicate product_key rows).
+        src = _read(_DBT / "models/marts/marketing/dim_product.sql")
+        assert "s.last_seen_date as new_effective_from" in src
+        assert "s.effective_from as new_effective_from" not in src
+        assert "when ec.product_id is not null then sp.last_seen_date" in src
+
 
 class TestGoldDistSortPreserved:
     @pytest.mark.parametrize("model,dist,sort", [
