@@ -22,8 +22,9 @@ operational procedures.
 
 A production-style retail data platform with three sources (POS batch,
 inventory stream, clickstream stream). Cloud path: Kafka/MSK → Flink → Iceberg
-→ Redshift/dbt → Airflow/MWAA, plus GE, Terraform, and Streamlit. Local path
-simulates the lake with Docker Kafka/Flink and DuckDB.
+→ Redshift/dbt → Airflow/MWAA, plus Spark GraphFrames identity resolution
+(ADR-010), GE, Terraform, and Streamlit. Local path simulates the lake with
+Docker Kafka/Flink/Spark and DuckDB.
 
 ## Branches
 
@@ -83,6 +84,14 @@ uv sync --group dev
 
 Never run raw Terraform from a stack directory.
 
+No-MWAA WAP clone/publish from a laptop (same ownership sets as the DAGs):
+
+```powershell
+$env:RS_HOST=...; $env:RS_USER=...; $env:RS_PASSWORD=...   # RS_PORT/RS_DATABASE optional
+.\.venv\Scripts\python.exe orchestration\airflow\plugins\wap_publish.py clone marketing
+.\.venv\Scripts\python.exe orchestration\airflow\plugins\wap_publish.py publish marketing
+```
+
 For a guided lowest-cost cloud end-to-end run (MWAA/dashboard off, laptop-driven
 dbt/GE, evidence capture, destroy checklist), follow
 `docs/runbooks/dev-cloud-test-run.md`. EMR sizing is parameterized via
@@ -102,9 +111,14 @@ dbt/GE, evidence capture, destroy checklist), follow
 
 - `spark/identity_resolution/identity_resolution_job.py` (PySpark +
   GraphFrames) builds edges + connected components and writes
-  `silver.identity_resolution` / `silver.identity_edges` (Iceberg).
+  `silver.identity_resolution` / `silver.identity_edges` (Iceberg), plus
+  replace-only `consumer_current/*` plain-Parquet exports for Spectrum and the
+  local DuckDB bridge (never glob Iceberg `data/` dirs — superseded snapshot
+  files can linger). Blank identifiers are normalized away before graph build.
 - `spark/identity_resolution/graph_logic.py` is the rules source of truth;
   `generate_fixture.py` regenerates the dbt seed fixture (CI `--check`).
+  CI also runs the real DataFrame/GraphFrames path via
+  `tests/integration/verify_spark_identity.py`.
 - dbt `int_identity_resolution` is a thin view over
   `source('silver', 'identity_resolution')`; the old SQL edge/component
   models are retired. WAP unchanged — Gold marts stay dbt-built.

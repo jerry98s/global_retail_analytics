@@ -1,5 +1,5 @@
 ---
-description: Python standards for ingestion, streaming, quality, orchestration
+description: Python standards for ingestion, streaming, spark, quality, orchestration
 globs: "**/*.py"
 alwaysApply: false
 ---
@@ -27,6 +27,14 @@ alwaysApply: false
 - POS local Parquet: `python -m ingestion.batch.generate_pos_parquet --output-dir ...`.
 - POS cloud upload: `generate_pos_parquet.py --output-s3 s3://<bronze>/iceberg/bronze/pos_transactions/` (boto3 lazy-imported).
 - Unit tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/ -q`.
+
+## Spark Jobs (`spark/`)
+
+- Rules live once in `graph_logic.py`; `identity_resolution_job.py` mirrors them
+  in DataFrame ops and supports both package import (tests) and script import
+  (spark-submit `--py-files graph_logic.py`) via the try/except import.
+- Parity smoke: `tests/integration/verify_spark_identity.py` (spark-submit, CI).
+  Do not add Spark Streaming or Spark SQL marts without revisiting ADR-006.
 
 ## Tests
 

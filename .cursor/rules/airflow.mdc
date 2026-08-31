@@ -13,7 +13,7 @@ DAGs: `orchestration/airflow/dags/`. Plugins: `orchestration/airflow/plugins/`.
 | DAG | Owns |
 |---|---|
 | `warehouse_daily_batch_pipeline` | POS Parquet, staging/intermediate, **`marts.finance`**, ANALYZE, GE |
-| `marketing_hourly_customer_360_pipeline` | staging/intermediate + **`marts.marketing`** (identity, sessions, RFM, C360) |
+| `marketing_hourly_customer_360_pipeline` | EMR Spark identity step (GraphFrames, ADR-010) → WAP clone → staging/intermediate + **`marts.marketing`** (sessions, RFM, C360) |
 | `streaming_manual_flink_jobs` | EMR Flink submit + duplicate-run guard |
 | `catalog_bihourly_product_scd2_refresh` | `dim_product` SCD2 |
 | `quality_hourly_ge_checkpoint` | Hourly GE `gold_layer_daily` |
@@ -30,6 +30,9 @@ Gold marts are clone → write → audit → publish. A failing audit leaves liv
   `run_ge_checkpoint.py --pending-tables schema.table,...` (GE), then publishes.
 - Table list lives in `plugins/wap_publish.py` (`WAP_TABLES` + disjoint per-DAG
   subsets). `dim_product` is catalog-only. `dim_date`/`dim_store` excluded.
+- No-MWAA laptop runs: `python plugins/wap_publish.py <clone|publish>
+  <finance|marketing|catalog>` — `WAP_SCOPES` reuses the same ownership sets;
+  connects via `RS_*` env vars, never hardcoded credentials.
 - `quality_hourly_ge_checkpoint` stays on live (monitors published Gold).
 
 ## Conventions
