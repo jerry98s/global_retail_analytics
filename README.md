@@ -103,11 +103,13 @@ Works on either branch. Prefer the project venv:
 ```powershell
 uv sync --group dev
 .\.venv\Scripts\python.exe -m pytest tests/unit/ -q -m unit
-.\.venv\Scripts\python.exe -m ruff check ingestion streaming scripts quality orchestration
+.\.venv\Scripts\python.exe -m ruff check ingestion streaming scripts quality orchestration spark tests
 ```
 
-CI also runs Terraform fmt/validate, DuckDB identity-chain dbt +
-`verify_local_identity.py`, and compose config checks — see
+CI also runs Terraform fmt/validate, a Spark GraphFrames parity smoke test
+(real `spark-submit` against the reference rules), the identity seed-fixture
+drift check, DuckDB identity-chain dbt + `verify_local_identity.py`, and
+compose config checks — see
 [`.github/workflows/ci.yml`](./.github/workflows/ci.yml).
 
 ### Full local platform (`local-testing-version`)
@@ -260,6 +262,7 @@ credentials, account IDs, or VPC IDs.
 | Topic | Where |
 |---|---|
 | Iceberg Parquet queries | [local-data-queries.md](./docs/runbooks/local-data-queries.md), notebook `01_data_walkthrough` (on `local-testing-version`) |
+| Spark identity (GraphFrames) | `.\scripts\local\run_local_stack.ps1 -Task spark` → Iceberg `silver.identity_resolution` + replace-only `consumer_current/` export for the DuckDB bridge |
 | Identity scenarios (seeds) | `.\scripts\local\run_local_stack.ps1 -Task dbt -DbtSource seeds` then `python tests/integration/verify_local_identity.py` |
 | Flink ops | [flink-operations.md](./docs/runbooks/flink-operations.md) |
 | Evidence / benchmarks | [docs/evidence/README.md](./docs/evidence/README.md) |

@@ -47,7 +47,7 @@ State keys: `platform/dev/terraform.tfstate`, `platform/prod/terraform.tfstate`.
 Top-level entry point: `scripts/cloud/run_cloud_stack.ps1` (wraps the four cloud scripts behind one `-Task` switch). For infra-only operations, the direct entry point is `scripts/cloud/run_terraform.ps1`.
 
 ```powershell
-.\scripts\cloud\run_cloud_stack.ps1 -Task <apply|bootstrap|deploy|producers|verify|status|all> -Env <dev|prod>
+.\scripts\cloud\run_cloud_stack.ps1 -Task <apply|bootstrap|deploy|producers|spark|verify|status|all> -Env <dev|prod>
 .\scripts\cloud\run_terraform.ps1 -Stack <bootstrap|platform> -Env <dev|prod> -Action <init|plan|apply|destroy|output>
 ```
 
@@ -91,6 +91,8 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task topics
 .\scripts\local\run_local_stack.ps1 -Task flink      # before simulate (latest-offset)
 .\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task pos-parquet
+.\scripts\local\run_local_stack.ps1 -Task spark      # GraphFrames identity (ADR-010); Docker profile spark
 .\scripts\local\run_local_stack.ps1 -Task dbt        # -DbtSource iceberg (default)
 .\scripts\local\run_local_stack.ps1 -Task quality    # dbt test + GE gold_layer_local + pytest
 docker compose -f infra/docker/compose/docker-compose.yml -f infra/docker/compose/docker-compose.dashboard.yml up -d dashboard

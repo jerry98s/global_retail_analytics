@@ -30,7 +30,7 @@ shared cloud logic (dbt, Flink jobs, DAGs, contracts) only when asked.
 - Flink **1.17.1** (EMR 6.15.0 parity); Iceberg Bronze/Silver; dbt Core **1.11.***; Terraform **1.6+**.
 - Kafka topics: `inventory.events.v1`, `clickstream.events.v1` + DLQs. POS is **batch Parquet** → S3 Bronze (no POS Kafka topic).
 - Flink jobs: `inventory_bronze_job`, `clickstream_bronze_job`, `inventory_silver_job`, `iceberg_maintenance` (Airflow-owned batch maintenance).
-- Spark: `spark/identity_resolution` (GraphFrames connected components → `silver.identity_resolution`, ADR-010); dbt reads it as a source. Flink owns streaming; dbt owns Gold. Local: Docker profile `spark` (`infra/docker/spark`), not a host Spark install.
+- Spark: `spark/identity_resolution` (GraphFrames connected components → `silver.identity_resolution` + `identity_edges`, ADR-010); dbt reads it as a source. Flink owns streaming; dbt owns Gold. Spark 3.4 (EMR 6.15 parity), Iceberg runtime 1.4.3, GraphFrames 0.8.3-spark3.4-s_2.12. Non-Iceberg consumers (Spectrum, DuckDB bridge) read replace-only `consumer_current/*` Parquet exports — never glob Iceberg `data/` dirs. Local: Docker profile `spark` (`infra/docker/spark`), not a host Spark install.
 - Terraform: `bootstrap` + `platform`; dev/prod share code, differ by `envs/*`. EMR sizing is parameterized (`emr_*` vars) for low-cost dev.
 
 ## Architecture Constraints
@@ -42,8 +42,8 @@ shared cloud logic (dbt, Flink jobs, DAGs, contracts) only when asked.
 
 ## Operating Rules
 
-- Cloud: `scripts/cloud/run_cloud_stack.ps1` (wrapper) → `run_terraform.ps1`, `deploy_platform.ps1` — never raw `terraform` in a stack dir.
-- Cloud E2E at minimal cost: `docs/runbooks/dev-cloud-test-run.md` (MWAA/dashboard off, laptop-driven dbt/GE, destroy checklist).
+- Cloud: `scripts/cloud/run_cloud_stack.ps1` (wrapper: `apply`/`bootstrap`/`deploy`/`producers`/`spark`/`verify`/`status`/`all`) → `run_terraform.ps1`, `deploy_platform.ps1` — never raw `terraform` in a stack dir. `-Task all` is infra + streaming smoke only, not Gold E2E.
+- Cloud E2E at minimal cost: `docs/runbooks/dev-cloud-test-run.md` (MWAA/dashboard off, laptop-driven dbt/GE, destroy checklist). No-MWAA WAP clone/publish: `python orchestration/airflow/plugins/wap_publish.py <clone|publish> <finance|marketing|catalog>` with `RS_*` env vars.
 - Local: `scripts/local/run_local_stack.ps1` (uses `.venv`). Compose under `infra/docker/compose/`.
 - Default local dbt `-DbtSource iceberg`: Flink Parquet in `.local/iceberg` + POS `--output-dir`; seed only `dim_date`/`dim_store`. Use `-DbtSource seeds` for CSV identity fixtures.
 - Kafka host: `127.0.0.1:9092`; Flink UI: `http://localhost:8082`. Start **Flink before simulate** (`latest-offset`).
