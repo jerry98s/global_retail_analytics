@@ -17,21 +17,24 @@ Expectations · Terraform · Streamlit
 
 ## Verified end-to-end
 
-From the latest full local run (2026-08-01, fresh volumes — raw evidence in
+From the latest full local run (2026-08-31, fresh volumes — raw evidence in
 [docs/evidence](./docs/evidence/README.md)):
 
 | Stage | Result |
 |---|---|
-| Streaming ingestion | 90,000 clickstream events emitted → **90,000/90,000 landed in Iceberg Bronze** (0 lost, 0 duplicates, 0 DLQ) · 9,000 inventory events landed (injected retry-duplicates aside) |
-| Batch | 1,480 POS line items → 1,480 `finance.fact_sales` rows (exact 1:1) |
-| Transformation | **22/22 dbt models built · 134/134 dbt tests pass** |
-| Data quality | **11/11 Great Expectations suites pass · 264/264 unit tests pass** in the full run |
-| Identity / C360 | 123k identity edges → consent-gated Customer 360 in the pre-ADR-010 run; the current Spark replacement is verified separately and still needs a fresh full-stack evidence run |
+| Streaming ingestion | 40,990 clickstream + 9,001 inventory events → **landed in Iceberg Bronze** (0 lost, 0 DLQ) |
+| Batch | 1,453 POS line items → 1,453 `finance.fact_sales` rows (exact 1:1) |
+| Spark identity | GraphFrames connected components (Docker Spark) → **19,633 identifier→identity rows** in `silver.identity_resolution` |
+| Transformation | **18/18 dbt models built** via Write-Audit-Publish (pending → audit → publish) · **122/122 dbt tests pass** |
+| Data quality | **11/11 Great Expectations checks pass · 325/325 unit tests pass** (153/153 recorded DQ results) |
+| Identity / C360 | Consent-gated Customer 360: **3,431 rows** in `customer_360_view` / `customer_360_serving` |
 
 | | |
 |:---:|:---:|
 | ![Flink job RUNNING with completed checkpoint history](docs/evidence/screenshots/02-flink-checkpoints.png) | ![Streamlit dashboard over 90,000 streamed clickstream events](docs/evidence/screenshots/01-dashboard-overview.png) |
 | ![DuckDB queries over Iceberg Bronze/Silver Parquet](docs/evidence/screenshots/03-iceberg-query.png) | ![dbt lineage graph with identity_graph highlighted](docs/evidence/screenshots/04-dbt-lineage.png) |
+
+Screenshots captured from the earlier 2026-08-01 run (pre-ADR-010).
 
 ## Branches
 
@@ -300,7 +303,7 @@ AWS production deployment or a measured 10k events/s load test.
 Verification is deliberately split between dated full E2E evidence and current
 offline regression checks. See [docs/evidence](./docs/evidence/README.md) for
 the exact commands, results, and limitations; the latest full local E2E run
-predates the Spark identity cutover and is not presented as proof of that step.
+(2026-08-31) includes the Spark GraphFrames identity step (ADR-010) end to end.
 
 ## License
 
