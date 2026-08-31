@@ -59,7 +59,7 @@ models:
       - name: supplier_id
         description: "Supplier identifier; currently always UNKNOWN."
       - name: effective_from
-        description: "SCD2 validity start (date). Equals earliest POS transaction date or earliest inventory event date."
+        description: "SCD2 validity start (date). First version: earliest POS transaction date or earliest inventory event date. Later versions: catalog last_seen_date when the attribute change was observed."
         tests: [not_null]
       - name: effective_to
         description: "SCD2 validity end (date). NULL for the current version; non-NULL for closed (historical) versions."

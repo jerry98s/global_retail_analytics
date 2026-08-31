@@ -24,17 +24,18 @@ Environment: Windows, Python 3.11, local project virtual environment.
 | 2026-08-30 | `main`: `python -m pytest tests/unit -q` | 307 passed in 5.18s |
 | 2026-08-30 | `main`: `python -m pytest tests/unit -q -m unit` | 284 passed, 23 deselected in 4.17s |
 | 2026-08-30 | `main`: Ruff, Python bytecode compilation, Docker Compose config, PowerShell parse, dbt full + WAP pending compiles, identity fixture drift, internal Markdown links | Passed |
+| 2026-08-31 | `local-testing-version`: full local E2E (`run_local_stack.ps1 -Task all`, fully wiped Docker volumes + DuckDB + `.local/iceberg`) | `local_e2e` pipeline_run SUCCESS (~33 min): 40,990 clickstream + 9,001 inventory events → Iceberg Bronze (0 DLQ); 1,453 POS lines → 1,453 `finance.fact_sales` (exact 1:1); Spark GraphFrames identity job (Docker) → 19,633 rows in `silver.identity_resolution` (device_only 7,795 / session_linked 6,246 / customer_id_standalone 4,196 / component_anchor 954 / loyalty_match 442); dbt 18/18 models built via WAP pending → audit → publish; 122/122 dbt tests pass; 11/11 GE checks pass; 153/153 recorded DQ results `pass`; consent-gated `customer_360_view` / `customer_360_serving` = 3,431 rows; `marketing.dim_product` 500/500 current, 0 duplicate keys |
+| 2026-08-31 | `local-testing-version`: `python -m pytest tests/unit -q` | 325 passed in 5.40s |
 
 Re-run these commands after any material change and update the table only from
 captured output.
 
 These rows are not interchangeable: the 2026-08-01 entry is a full local E2E
-run, while the later entries are offline regression checks on each branch.
-The 2026-08-01 E2E predates ADR-010's Spark/GraphFrames cutover. A real
-DataFrame + GraphFrames parity and replace-only consumer-export smoke test is
-now in CI (`tests/integration/verify_spark_identity.py`), but no successful
-post-cutover full E2E is claimed here yet; Docker Desktop was unavailable
-during the 2026-08-30 verification session.
+run that predates ADR-010's Spark/GraphFrames cutover, while the 2026-08-31
+entry is the first full local E2E that includes the Spark identity step end to
+end (Kafka/Flink Bronze → Spark GraphFrames Silver → dbt/DuckDB Gold with WAP
+→ GE). The remaining dated entries are offline regression checks on each
+branch.
 
 ## End-to-end acceptance checklist
 
