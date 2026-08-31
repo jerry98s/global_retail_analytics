@@ -1,7 +1,8 @@
-![Python 3.11](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![dbt Core](https://img.shields.io/badge/dbt-Core_1.11-FF694B?logo=dbt&logoColor=white)
 ![Apache Flink](https://img.shields.io/badge/Apache_Flink-1.17-E6526F?logo=apacheflink&logoColor=white)
-![Apache Iceberg](https://img.shields.io/badge/Apache_Iceberg-lakehouse-1F4E79)
+![Apache Spark](https://img.shields.io/badge/Apache_Spark-3.4_GraphFrames-E25A1C?logo=apachespark&logoColor=white)
+![Apache Iceberg](https://img.shields.io/badge/Apache_Iceberg-1.4.3-1F4E79)
 ![Terraform](https://img.shields.io/badge/Terraform-1.6%2B-7B42BC?logo=terraform&logoColor=white)
 [![ci](https://github.com/jerry98s/global_retail_analytics/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jerry98s/global_retail_analytics/actions/workflows/ci.yml)
 
@@ -89,6 +90,7 @@ flowchart LR
   DBT --> GOLD["Finance + Marketing Gold marts"]
   GOLD --> DASH["Streamlit / BI"]
   AIRFLOW["Airflow / MWAA"] -. orchestrates .-> FLINK
+  AIRFLOW -. orchestrates .-> SPARK
   AIRFLOW -. orchestrates .-> DBT
 ```
 
@@ -143,7 +145,7 @@ uv sync --group dev
 | Mode | Flag | What dbt reads |
 |---|---|---|
 | Fidelity (default) | `-DbtSource iceberg` | Flink Parquet under `.local/iceberg` + local POS Parquet; seeds only `dim_date` / `dim_store` |
-| Fixture (CI identity) | `-DbtSource seeds` | Curated CSV under `seeds/bronze` (clickstream + pos identity scenarios) + `seeds/finance` reference dims |
+| Fixture (CI identity) | `-DbtSource seeds` | Curated CSV under `seeds/bronze` (clickstream + pos identity scenarios) + `seeds/finance` reference dims + generated `seeds/silver/identity_resolution` (Spark fixture, CI drift-checked) |
 
 ```powershell
 docker compose -f infra/docker/compose/docker-compose.yml `
@@ -167,9 +169,10 @@ DuckDB — no Redshift credentials required.
 | `quality/` | Great Expectations suites + pytest DQ integration tests |
 | `tests/` | Offline unit + DuckDB integration tests |
 | `metadata/` | Governed object + metric catalog (YAML) for `metadata.meta.*` |
-| `infra/` | Docker Compose, Flink image, Terraform, EMR bootstrap |
+| `infra/` | Docker Compose, Flink + Spark images, Terraform, EMR bootstrap |
 | `scripts/local/` | Local stack runner (Iceberg→DuckDB loader and GE runner live on `local-testing-version`) |
 | `scripts/cloud/` | Terraform wrapper, deploy, Redshift bootstrap, MSK producers |
+| `scripts/common/` | Shared helpers (`metadata_observer.py`, fail-open run metadata) |
 | `dashboard/` | Streamlit (local Iceberg or Redshift) |
 | `docs/` | Architecture, ADRs, data model, runbooks, evidence |
 | `notebooks/` | Analysis notebooks (`.ipynb` only) |
