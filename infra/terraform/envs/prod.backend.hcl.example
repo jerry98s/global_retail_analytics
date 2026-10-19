@@ -1,0 +1,17 @@
+# Backend args for `terraform init` in the platform stack (prod).
+#
+# Copy to prod.backend.hcl (git-ignored) and set your own state bucket:
+#   cd infra\terraform\envs
+#   copy prod.backend.hcl.example prod.backend.hcl
+#
+# The bucket must be globally unique and must match `state_bucket_name` in the
+# bootstrap stack (infra/terraform/bootstrap). A common convention is to suffix
+# the project name with your AWS account ID, e.g. retail-platform-tfstate-123456789012.
+# Create it first: .\scripts\cloud\run_terraform.ps1 -Stack bootstrap -Action apply
+#
+# Then: .\scripts\cloud\run_terraform.ps1 -Stack platform -Env prod -Action init
+bucket         = "retail-platform-tfstate-REPLACE_ME"
+key            = "platform/prod/terraform.tfstate"
+region         = "ap-southeast-1"
+encrypt        = true
+dynamodb_table = "retail-platform-terraform-locks"

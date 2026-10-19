@@ -1,0 +1,15 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+#
+# Required — no defaults:
+#   state_bucket_name must be GLOBALLY unique across all of S3. Convention is to
+#   suffix the project name with your AWS account ID. It must match `bucket` in
+#   every infra/terraform/envs/<env>.backend.hcl.
+state_bucket_name  = "retail-platform-tfstate-123456789012" # <- your account ID
+budget_alert_email = "you@example.com"
+
+# Optional overrides (defaults shown):
+# aws_region         = "ap-southeast-1"
+# project_name       = "retail-platform"
+# team_name          = "data-platform"
+# lock_table_name    = "retail-platform-terraform-locks"
+# monthly_budget_usd = "50"

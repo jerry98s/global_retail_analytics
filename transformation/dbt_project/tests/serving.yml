@@ -1,0 +1,12 @@
+version: 2
+
+models:
+  - name: customer_360_serving
+    description: >
+      Thin serving wrapper over marketing.customer_360_view. Consent-gated;
+      BI/dashboard contract for serving.customer_360_serving. dim_product_current
+      remains hand-written Redshift DDL (not dbt-managed).
+    columns:
+      - name: customer_key
+        description: "Surrogate customer key (consented customers only)."
+        tests: [not_null]

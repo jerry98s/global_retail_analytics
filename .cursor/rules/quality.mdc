@@ -1,0 +1,32 @@
+---
+description: Great Expectations checkpoints, datasources, and run commands
+globs: "quality/**"
+alwaysApply: false
+---
+
+# Data quality
+
+No Soda project. Great Expectations **0.18.21** (`pyproject.toml`).
+Config root: `quality/great_expectations/`.
+
+Do not run `great_expectations checkpoint run`. GE 0.18 cannot override
+`runtime_parameters.query` or interpolate env vars inside checkpoint SQL.
+`scripts/common/run_ge_checkpoint.py` and `scripts/local/run_ge_local.py` load
+the YAML and call `context.get_validator`.
+
+## Checkpoints
+
+| Checkpoint | Engine | When |
+|---|---|---|
+| `gold_layer_local` | DuckDB, Pandas batches | `python scripts/local/run_ge_local.py` |
+| `gold_layer_daily` | Redshift datasource `redshift_gold` (`RS_SQLALCHEMY_URL`) | `python scripts/common/run_ge_checkpoint.py --ge-root quality/great_expectations --checkpoint gold_layer_daily` |
+
+`gold_layer_local` uses the same suites as `gold_layer_daily` except
+`dim_date_local` (one seed year, not the 2020–2030 cloud calendar). Local SQL
+must stay DuckDB-portable: no `TO_CHAR` or `DATEADD`.
+
+## Traps
+
+- Do not execute the local checkpoint through datasource `duckdb_local`. GE 0.18 SqlAlchemy + duckdb-engine raises `MetricResolutionError`. The local runner loads each query into a Pandas batch.
+- WAP audits pass `--pending-tables schema.table,...` for the owning DAG only. A blanket `*_pending` suffix audits tables that DAG did not build.
+- `quality/great_expectations/uncommitted/` is validation output. Do not commit it.

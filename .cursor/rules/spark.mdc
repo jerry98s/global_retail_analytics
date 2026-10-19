@@ -1,0 +1,32 @@
+---
+description: Spark identity job, fixture check, and local submit
+globs: "spark/**"
+alwaysApply: false
+---
+
+# Spark identity
+
+One job under `spark/identity_resolution/`. No Spark Streaming and no Spark SQL marts (ADR-006). Flink owns streams; dbt owns Gold.
+
+## What it writes
+
+- `graph_logic.py` is the rules source. `identity_resolution_job.py` mirrors it in DataFrames.
+- `event_contract.py` and `canonical_events.py` promote Bronze `*_records` to `silver.*_events`, `*_quarantine`, and `*_duplicates`. The job fails if input rows do not equal those three counts.
+- Iceberg `silver.identity_resolution` and `silver.identity_edges`, plus replace-only `consumer_current/*` Parquet. Spectrum and the DuckDB bridge read that export. Never glob Iceberg `data/` dirs.
+
+## Commands
+
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task spark
+.\.venv\Scripts\python.exe spark\identity_resolution\generate_fixture.py --check
+.\.venv\Scripts\python.exe tests\integration\verify_spark_identity.py
+```
+
+Local submit is Docker Compose profile `spark` (`infra/docker/spark`), not a host Spark install. Cloud submit (`deploy_platform.ps1` or the marketing DAG) is `spark-submit --py-files graph_logic.py,canonical_events.py,event_contract.py identity_resolution_job.py`.
+
+## Traps
+
+- Do not hand-edit `transformation/dbt_project/seeds/silver/identity_resolution.csv`. Regenerate it with `generate_fixture.py`. CI runs `--check`.
+- Tests import the package; spark-submit imports the scripts. Keep the `try/except` import.
+- GraphFrames checkpoints go to gitignored `.local/graphframes-checkpoints`.
+- Pins: Spark 3.4.1 (EMR 6.15 parity), Iceberg runtime 1.4.3, GraphFrames 0.8.3-spark3.4-s_2.12.

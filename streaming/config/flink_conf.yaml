@@ -1,0 +1,50 @@
+# Flink runtime config for the streaming jobs.
+#
+# Values starting with "${ENV_VAR}" are substituted at job-start time by
+# `_load_simple_yaml` (see clickstream_bronze_job.py). For prod, set:
+#
+#   KAFKA_BOOTSTRAP_SERVERS = MSK SASL_SSL bootstrap brokers (from
+#                             `terraform output kafka_bootstrap_brokers_sasl_iam`)
+#   ICEBERG_BRONZE_WAREHOUSE = s3://<bucket>-bronze/iceberg  (not .../iceberg/bronze)
+#   ICEBERG_SILVER_WAREHOUSE = s3://<bucket>-silver/iceberg  (same — namespace is Iceberg DB)
+#   Local docker-compose: file:///tmp/iceberg for both
+#
+# Defaults below are the local docker-compose values so the same file works
+# in both environments.
+kafka_bootstrap_servers: ${KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:9092}
+kafka_security_protocol: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+kafka_sasl_mechanism:    ${KAFKA_SASL_MECHANISM:-AWS_MSK_IAM}
+inventory_topic:         inventory.events.v1
+clickstream_topic:       clickstream.events.v1
+clickstream_dlq_topic:   dlq.clickstream.schema_violations
+clickstream_business_dlq_topic: dlq.clickstream.business_violations
+inventory_dlq_topic:     dlq.inventory.schema_violations
+consumer_group_inventory:   flink-inventory-snapshot-v1
+consumer_group_inventory_bronze: flink-inventory-bronze-v1
+consumer_group_clickstream: flink-clickstream-bronze-v1
+parallelism: 4
+# F-SRC from the Flink production checklist (2026-07-05): per-topic
+# parallelism targets matching the Kafka partition count. The Flink
+# Kafka source assigns partitions to subtasks round-robin; setting
+# parallelism above partition count leaves subtasks permanently idle,
+# setting it below under-utilises partitions. The defaults below are
+# the cloud (MSK Serverless) values matching
+# ingestion/kafka/topics.py:PARTITIONS_BY_TOPIC. Local docker-compose
+# overrides these to 1 via the env-var substitution below — running 12
+# parallel subtasks on a 1-taskmanager docker cluster just thrashes.
+inventory_parallelism: ${INVENTORY_PARALLELISM:-1}
+clickstream_parallelism: ${CLICKSTREAM_PARALLELISM:-1}
+# Local docker-compose tuning: 1 taskmanager with 20 slots lets all 3 Flink jobs
+# (clickstream bronze, inventory bronze, inventory snapshot) run side-by-side.
+# Cloud (EMR) ignores these — parallelism comes from core instance group.
+#
+# Watermark delays (P3.2 asymmetry — see docs/runbooks/dw-checklist-audit.md):
+# bronze is intentionally tight (30s) to keep the Iceberg table small; silver
+# is wider (60s) because hourly aggregation can absorb more lateness. Producers
+# may emit up to ~300s late; events beyond the watermark are dropped.
+inventory_bronze_watermark_delay_seconds: ${INVENTORY_BRONZE_WATERMARK_DELAY_SECONDS:-30}
+inventory_silver_watermark_delay_seconds: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-60}
+iceberg_catalog_name:    iceberg_catalog
+iceberg_catalog_type:    hadoop
+iceberg_warehouse_bronze: ${ICEBERG_BRONZE_WAREHOUSE:-s3://retail-platform-dev-bronze/iceberg}
+iceberg_warehouse_silver: ${ICEBERG_SILVER_WAREHOUSE:-s3://retail-platform-dev-silver/iceberg}

@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+minversion = "7.0"
+# Bare `pytest` runs the fast, offline unit suite.
+# The dbt/DuckDB idempotency suite is opt-in:
+# `pytest tests/integration -m integration_duckdb` (needs `pip install dbt-duckdb`).
+testpaths = ["tests/unit"]
+addopts = "--strict-markers"
+markers = [
+    "unit: fast, offline unit test with no external services or network",
+    "integration_duckdb: requires dbt-duckdb installed; runs the local DuckDB sim (tests/integration)",
+]

@@ -1,0 +1,40 @@
+# Flink state backend + SQL runtime config (F-STATE from the Flink
+# production checklist applied 2026-07-05).
+#
+# These settings apply to all three streaming Flink jobs
+# (inventory_bronze_job, clickstream_bronze_job, inventory_silver_job).
+# The maintenance batch job (iceberg_maintenance.py) ignores them —
+# batch jobs have no long-running state.
+#
+# State backend: rocksdb (vs the default hashmap).
+#   - hashmap is faster but JVM-heap-bound — OOMs at ~10GB state.
+#   - rocksdb stores state off-heap on disk; supports TB-scale state.
+#   - The cost is ~10-20% throughput vs hashmap, which is acceptable for
+#     this platform's volumes (inventory + clickstream together peak at
+#     ~12k events/sec).
+#
+# Incremental checkpoints: true (only meaningful with rocksdb).
+#   - Full checkpoints re-snapshot the entire rocksdb SST file tree —
+#     minutes for a multi-GB state.
+#   - Incremental checkpoints upload only the changed SST files since the
+#     last checkpoint — seconds. Required for any job with >1GB state.
+#
+# State TTL: 7 days.
+#   - Mandatory for the inventory_silver_job's dedup self-join
+#     (ROW_NUMBER OVER (PARTITION BY event_id ORDER BY event_time)) —
+#     without TTL, the dedup state grows by ~1 row per event_id forever.
+#   - 7d is conservative; events older than 7d are essentially impossible
+#     to re-emit by upstream (the producer simulates up to 300s late).
+#
+# Source idle timeout: 1 minute.
+#   - If a Kafka partition stops emitting (e.g. one store goes offline),
+#     the source's watermark for that partition stalls, which stalls the
+#     whole pipeline's watermark. table.exec.source.idle-timeout marks
+#     a source idle after no records for this duration, letting the
+#     watermark advance from the other partitions.
+#
+# See docs/runbooks/flink-operations.md for the full operational contract.
+state_backend: rocksdb
+state_backend_incremental: true
+state_ttl: 7 d
+source_idle_timeout: 1 min

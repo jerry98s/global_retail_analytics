@@ -1,0 +1,123 @@
+name: gold_layer_daily
+config_version: 1.0
+class_name: Checkpoint
+run_name_template: gold_layer_daily_%Y%m%d
+validations:
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: fact_sales_sample
+      runtime_parameters:
+        query: >
+          SELECT transaction_id, line_item_number, date_key, product_key, store_key
+          FROM finance.fact_sales
+          WHERE date_key >= CAST(TO_CHAR(CURRENT_DATE - 7, 'YYYYMMDD') AS INTEGER)
+    expectation_suite_name: fact_sales
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: dim_product_scd2_sample
+      runtime_parameters:
+        query: >
+          SELECT product_key, product_id, effective_from, effective_to,
+                 is_current, record_hash
+          FROM marketing.dim_product
+    expectation_suite_name: dim_product_scd2
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: identity_graph_sample
+      runtime_parameters:
+        query: >
+          SELECT customer_key, identifier_type, identifier_value, confidence_score,
+                 is_active, is_public_device
+          FROM marketing.identity_graph
+          WHERE is_active = TRUE
+    expectation_suite_name: identity_graph
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: fact_customer_session_sample
+      runtime_parameters:
+        query: >
+          SELECT session_id, session_date_key, customer_key, converted
+          FROM marketing.fact_customer_session
+          WHERE session_date_key >= CAST(TO_CHAR(CURRENT_DATE - 7, 'YYYYMMDD') AS INTEGER)
+    expectation_suite_name: fact_customer_session
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: dim_date_full
+      runtime_parameters:
+        query: >
+          SELECT date_key, full_date, day_of_week, month_number, quarter,
+                 fiscal_year, is_weekend, is_public_holiday
+          FROM finance.dim_date
+    expectation_suite_name: dim_date
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: dim_store_full
+      runtime_parameters:
+        query: >
+          SELECT store_key, store_id, store_name, store_type, city,
+                 country_code, region, is_active
+          FROM finance.dim_store
+    expectation_suite_name: dim_store
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: fact_inventory_snapshot_sample
+      runtime_parameters:
+        query: >
+          SELECT snapshot_date_key, snapshot_hour, product_key, store_key,
+                 quantity_on_hand, quantity_available, is_estimated
+          FROM finance.fact_inventory_snapshot
+          WHERE snapshot_date_key >= CAST(TO_CHAR(CURRENT_DATE - 7, 'YYYYMMDD') AS INTEGER)
+    expectation_suite_name: fact_inventory_snapshot
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: dim_customer_full
+      runtime_parameters:
+        query: >
+          SELECT customer_key, loyalty_id, email_hashed, loyalty_tier,
+                 rfm_segment, churn_risk_score, total_lifetime_value,
+                 marketing_consent, analytics_consent, last_updated_at
+          FROM marketing.dim_customer
+    expectation_suite_name: dim_customer
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: customer_360_view_sample
+      runtime_parameters:
+        query: >
+          SELECT customer_key, loyalty_id, loyalty_tier, rfm_segment,
+                 churn_risk_score, total_lifetime_value,
+                 session_id, session_date_key, session_duration_seconds,
+                 page_view_count, product_view_count, add_to_cart_count,
+                 converted, order_id, platform
+          FROM marketing.customer_360_view
+    expectation_suite_name: customer_360_view
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: inventory_bronze_sample
+      runtime_parameters:
+        query: >
+          SELECT event_id, event_time, store_id, product_id, qty_delta,
+                 event_type, scanner_id, is_late, schema_version
+          FROM bronze.inventory_events
+          WHERE event_time >= DATEADD('day', -1, CURRENT_DATE)
+    expectation_suite_name: inventory_bronze
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: clickstream_bronze_sample
+      runtime_parameters:
+        query: >
+          SELECT event_id, event_time, event_type, session_id, client_id,
+                 platform, schema_version, event_date
+          FROM bronze.clickstream_events
+          WHERE event_time >= DATEADD('day', -1, CURRENT_DATE)
+    expectation_suite_name: clickstream_bronze

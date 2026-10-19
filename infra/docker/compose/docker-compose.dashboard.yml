@@ -1,0 +1,22 @@
+# Optional local dashboard, layered on top of the main stack.
+#
+#   docker compose -f infra/docker/compose/docker-compose.yml \
+#                  -f infra/docker/compose/docker-compose.dashboard.yml up -d dashboard
+#
+# It mounts the shared `flink-iceberg` volume read-only and runs in local mode,
+# so it reads the same Parquet the Flink jobs produce. Open http://localhost:8501
+services:
+  dashboard:
+    build:
+      context: ../../dashboard
+    environment:
+      DASHBOARD_MODE: local
+      LOCAL_ICEBERG_DIR: /tmp/iceberg
+    ports:
+      - "8501:8501"
+    volumes:
+      - flink-iceberg:/tmp/iceberg:ro
+
+volumes:
+  flink-iceberg:
+    external: false

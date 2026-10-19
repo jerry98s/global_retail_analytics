@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://retail-platform/schemas/clickstream-checkout-properties/v1.0.0",
+  "title": "Checkout Properties",
+  "type": "object",
+  "required": ["order_id", "cart_value"],
+  "properties": {
+    "order_id": {
+      "type": "string",
+      "pattern": "^ORDER-[A-Z0-9]{12}$"
+    },
+    "cart_value": {
+      "type": "number",
+      "minimum": 0
+    },
+    "payment_method": {
+      "type": "string",
+      "enum": ["card", "ewallet", "bank_transfer", "cash_on_delivery"]
+    },
+    "coupon_code": {
+      "type": ["string", "null"]
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,44 @@
+---
+description: dbt profile, targets, DuckDB traps, and model conventions
+globs: "transformation/dbt_project/**"
+alwaysApply: false
+---
+
+# dbt
+
+Project and profile: `global_retail_analytics` in `transformation/dbt_project/`.
+Copy `profiles.yml.example` to gitignored `profiles.yml`.
+
+## Commands
+
+Run from the project directory. The profile default target is `dev`; local work must pass `--target local`.
+
+```powershell
+cd transformation\dbt_project
+..\.venv\Scripts\dbt.exe deps --profiles-dir . --target local
+..\.venv\Scripts\dbt.exe build --profiles-dir . --target local --vars "{\"wap_phase\": \"pending\"}" --select <model>
+```
+
+| Target | Engine | Connection |
+|---|---|---|
+| `local` | DuckDB | file `local_retail.duckdb` |
+| `dev` | Redshift | `RS_HOST` / `RS_USER` / `RS_PASSWORD`; `RS_DATABASE` default `dev` |
+| `prod` | Redshift | same; `RS_DATABASE` default `prod` |
+
+`RS_PORT` default `5439`, `RS_SCHEMA` default `staging`, `sslmode=require`.
+
+## Traps
+
+- `DUCKDB_PATH` may move the file; the filename must stay `local_retail.duckdb` (views bind that catalog).
+- Gold tables write only after the live→`*_pending` clone, with `wap_phase=pending`. Incrementals anchor on `{{ this }}`. Cross-DAG Gold reads use `{{ wap_live_ref('model') }}`.
+- Do not hand-edit CI-checked seeds: `seeds/reference/*.csv` (`python -m ingestion.batch.generate_product_master`) and `seeds/silver/identity_resolution.csv` (`python spark/identity_resolution/generate_fixture.py`).
+- Iceberg mode seeds `dim_date`, `dim_store`, `product_master`, `inventory_opening_balance` only. Seeds mode is the identity CSV fixtures.
+
+## Layers and grains
+
+- `staging/`: `source()` cleanup only. `intermediate/`: business logic, no raw `source()`.
+- `marts/`: no Bronze/Silver `source()`. A mart may `ref()` staging when the source grain is the fact (POS lines).
+- Grains: `fact_sales` `(transaction_id, line_item_number)`; `fact_inventory_snapshot` `(snapshot_date_key, snapshot_hour, product_key, store_key)`; `fact_customer_session` `session_id`.
+- Shared SQL uses `datediff_unit`, `dateadd_unit`, `json_path_text`, `date_key_from_date`, `date_from_date_key`, `record_hash_sha256`, `generate_product_key`, `generate_customer_key`, `generate_surrogate_key`.
+- YAML descriptions and column tests. Incrementals need `unique_key`, strategy, `on_schema_change`. Gold `dist`/`sort` match `transformation/redshift/ddl/`. `+bind: false`. `dim_date` / `dim_store` are never WAP-published.
+- Identity source is `silver.identity_resolution`; `int_identity_resolution` is a thin view. Spark owns the graph.
