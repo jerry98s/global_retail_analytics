@@ -1,0 +1,15 @@
+event_id,event_type,event_time,session_id,client_id,customer_id,platform,app_version,properties,schema_version,event_date
+ev-001,login,2026-07-01 10:00:00,s-001,c-aaa,L1001,web,1.0.0,"{""marketing_consent"":""true"",""analytics_consent"":""true""}",1.2.0,2026-07-01
+ev-002,page_view,2026-07-01 11:00:00,s-002,c-aaa,C2001,web,1.0.0,"{}",1.2.0,2026-07-01
+ev-003,page_view,2026-07-01 12:00:00,s-003,c-solo,,web,1.0.0,"{}",1.2.0,2026-07-01
+ev-004,page_view,2026-07-01 13:00:00,s-004,c-shared,C-pub-01,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-005,page_view,2026-07-01 13:05:00,s-005,c-shared,C-pub-02,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-006,page_view,2026-07-01 13:10:00,s-006,c-shared,C-pub-03,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-007,page_view,2026-07-01 13:15:00,s-007,c-shared,C-pub-04,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-008,page_view,2026-07-01 13:20:00,s-008,c-shared,C-pub-05,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-009,page_view,2026-07-01 13:25:00,s-009,c-shared,C-pub-06,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-010,page_view,2026-07-01 13:30:00,s-010,c-shared,C-pub-07,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-011,page_view,2026-07-01 13:35:00,s-011,c-shared,C-pub-08,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-012,page_view,2026-07-01 13:40:00,s-012,c-shared,C-pub-09,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-013,page_view,2026-07-01 13:45:00,s-013,c-shared,C-pub-10,web,1.0.0,"{""marketing_consent"":""false"",""analytics_consent"":""false""}",1.2.0,2026-07-01
+ev-014,login,2026-07-01 14:00:00,s-014,c-bbb,L2002,ios,1.0.0,"{""marketing_consent"":""true"",""analytics_consent"":""true""}",1.2.0,2026-07-01

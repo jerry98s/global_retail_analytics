@@ -1,0 +1,36 @@
+version: 2
+
+seeds:
+  - name: product_master
+    description: "Product catalog reference data (one row per product_id). Source of dim_product SCD2 attributes. Generated from ingestion/kafka/sim_entities.py PRODUCT_CATALOG."
+    columns:
+      - name: product_id
+        description: "Natural product id."
+        tests: [not_null_unique]
+      - name: brand
+        tests: [not_null]
+      - name: category_l1
+        tests: [not_null]
+      - name: category_l2
+        tests: [not_null]
+      - name: supplier_id
+        tests: [not_null]
+      - name: list_price
+        description: "Shelf price before discount. The POS generator prices line items from it."
+        tests: [not_null]
+      - name: unit_cost
+        description: "Purchase cost per unit; always below list_price."
+        tests: [not_null]
+
+  - name: inventory_opening_balance
+    description: "Shelf count per product/store before the first streamed inventory movement. fact_inventory_snapshot adds it to the running sum of stream deltas. Generated from ingestion/kafka/sim_entities.py OPENING_STOCK."
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [product_id, store_id]
+    columns:
+      - name: product_id
+        tests: [not_null]
+      - name: store_id
+        tests: [not_null]
+      - name: opening_qty
+        tests: [not_null]

@@ -1,0 +1,179 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, local-testing-version, showcase]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: python lint + syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install ruff
+        run: pip install ruff==0.6.9
+
+      - name: ruff check
+        run: ruff check ingestion streaming scripts quality orchestration spark tests
+
+      - name: compile-all (syntax errors fail fast)
+        run: |
+          python -m compileall -q ingestion streaming scripts quality orchestration spark
+
+  spark-identity:
+    name: Spark GraphFrames identity parity
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: install Spark
+        run: pip install "pyspark==3.4.1"
+
+      - name: execute DataFrame + GraphFrames parity smoke test
+        run: >
+          spark-submit --master local[2]
+          --packages graphframes:graphframes:0.8.3-spark3.4-s_2.12
+          tests/integration/verify_spark_identity.py
+
+      - name: replay raw Bronze and reconcile canonical Silver
+        run: >
+          spark-submit --master local[2]
+          --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3
+          tests/integration/verify_bronze_replay.py --iceberg
+
+  unit-tests:
+    name: pytest unit (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: pytest unit suite
+        # pyyaml: test_metadata_observer imports yaml to parse metadata/catalog.
+        # duckdb: the metadata-writer tests exercise real DuckDB writes (embedded,
+        # no creds). Everything else third-party is stubbed by tests/unit/conftest.py.
+        # pyarrow: local-testing-version bridge tests import generate_pos_parquet
+        # (module-level pyarrow import) during collection, even when deselected.
+        run: pip install pytest==8.4.1 pyyaml==6.0.2 "duckdb>=1.5,<2.0" "pyarrow>=15,<23" && pytest tests/unit/ -v --tb=short -m unit
+
+  dbt-duckdb:
+    name: dbt identity chain on DuckDB (no cloud creds)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: transformation/dbt_project
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install dbt-duckdb + duckdb
+        run: pip install "dbt-core==1.11.*" "dbt-duckdb>=1.10,<2.0" "duckdb>=1.5,<2.0"
+
+      - name: create local dbt profile
+        run: cp profiles.yml.example profiles.yml
+
+      - name: dbt deps
+        run: dbt deps --profiles-dir . --target local
+
+      - name: dbt compile full project
+        run: dbt compile --no-partial-parse --profiles-dir . --target local
+
+      - name: dbt compile pending finance and catalog
+        run: >
+          dbt compile --no-partial-parse --profiles-dir . --target local
+          --vars '{"wap_phase": "pending"}'
+          --select path:models/marts/finance path:models/marts/summary dim_product
+
+      - name: dbt compile pending marketing
+        run: >
+          dbt compile --no-partial-parse --profiles-dir . --target local
+          --vars '{"wap_phase": "pending"}'
+          --select stg_clickstream_events stg_pos_transactions intermediate
+          marts.marketing sessions_daily_platform
+          --exclude int_product_catalog dim_product customer_360_view
+
+      - name: identity fixture matches Spark graph logic (ADR-010)
+        working-directory: ${{ github.workspace }}
+        run: python spark/identity_resolution/generate_fixture.py --check
+
+      - name: reference seeds match simulator entities
+        working-directory: ${{ github.workspace }}
+        run: python -m ingestion.batch.generate_product_master --check
+
+      - name: dbt seed
+        run: dbt seed --profiles-dir . --target local
+
+      - name: dbt run identity graph chain
+        # int_identity_public_devices is no longer upstream of identity_graph
+        # (ADR-010: Spark owns public-device exclusion); build it explicitly
+        # so verify_local_identity.py can audit it.
+        run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_public_devices --full-refresh
+
+      - name: dbt test identity graph chain
+        run: dbt test --profiles-dir . --target local --select int_identity_public_devices int_identity_resolution identity_graph
+
+      - name: verify identity scenarios (loyalty match, session link, multi-hop, public device, singleton)
+        working-directory: ${{ github.workspace }}
+        run: python tests/integration/verify_local_identity.py
+
+      - name: dbt incremental idempotency (P2.1)
+        working-directory: ${{ github.workspace }}
+        run: |
+          pip install pytest==8.4.1
+          pytest tests/integration/test_dbt_idempotency.py -v -m integration_duckdb
+
+  shell:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: ./scripts
+          severity: warning
+        env:
+          SHELLCHECK_OPTS: -e SC2086 -e SC2046
+
+  yaml:
+    name: yaml + compose sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: docker compose config validates
+        run: docker compose -f infra/docker/compose/docker-compose.yml config --quiet
+
+      - name: airflow DAGs compile
+        run: python -m compileall -q orchestration/airflow/dags

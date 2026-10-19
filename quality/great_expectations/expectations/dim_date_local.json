@@ -1,0 +1,70 @@
+{
+  "expectation_suite_name": "dim_date_local",
+  "meta": {
+    "description": "Local DuckDB dim_date checks. Cloud uses dim_date.json against the full 2020-2030 calendar (~3650+ rows). Local seeds one year (e.g. 2026) without fiscal_year."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "date_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_unique",
+      "kwargs": { "column": "date_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "full_date" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "date_key",
+        "min_value": 20200101,
+        "max_value": 20301231
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "day_of_week",
+        "value_set": [0, 1, 2, 3, 4, 5, 6]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "month_number",
+        "value_set": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "quarter",
+        "value_set": [1, 2, 3, 4]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "is_weekend",
+        "value_set": [true, false]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "is_public_holiday",
+        "value_set": [true, false]
+      }
+    },
+    {
+      "expectation_type": "expect_table_row_count_to_be_between",
+      "kwargs": {
+        "min_value": 365,
+        "max_value": 366
+      }
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # Two listeners: one for clients on the host (localhost:9092) and one
+      # for clients inside the docker network (kafka:29092). Flink containers
+      # use the in-network listener.
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      # Use 127.0.0.1 (not "localhost") so Windows + Docker clients stay on
+      # IPv4; "localhost" often resolves to ::1 first and the advertised
+      # host metadata then fails ApiVersion with librdkafka.
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://127.0.0.1:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-broker-api-versions --bootstrap-server 127.0.0.1:9092" ]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    # Host 18081 avoids clashing with other tools (IDE, other stacks) that bind 8081.
+    ports:
+      - "18081:8081"
+
+  flink-jobmanager:
+    build: ../flink
+    image: retail-analytics/flink:1.17.1
+    # Local named volumes are root-owned on first mount on Docker Desktop for
+    # Windows; chmod -R 777 does not propagate to the mountpoint. chown'ing to
+    # flink:flink before the entrypoint drops privileges lets the JobManager
+    # process (uid=flink) write checkpoints, savepoints, and Iceberg data.
+    user: "0:0"
+    command:
+      - bash
+      - -lc
+      - |
+        mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chown -R flink:flink /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chmod -R 777 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        exec /docker-entrypoint.sh jobmanager
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8082:8081"   # Flink Web UI; schema registry UI: localhost:18081
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: 0.0.0.0
+        rest.bind-address: 0.0.0.0
+        state.backend: rocksdb
+        execution.checkpointing.interval: 10000
+        execution.checkpointing.mode: EXACTLY_ONCE
+        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink-checkpoints}
+        state.savepoints.dir: ${FLINK_SAVEPOINT_DIR:-file:///tmp/flink-savepoints}
+        flink.hadoop.fs.s3a.endpoint: ${S3A_ENDPOINT:-s3.ap-southeast-1.amazonaws.com}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      BRONZE_SOURCE_SYSTEM: ${BRONZE_SOURCE_SYSTEM:-retail-local-v1}
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      ICEBERG_BRONZE_WAREHOUSE: ${ICEBERG_BRONZE_WAREHOUSE:-file:///tmp/iceberg}
+      ICEBERG_SILVER_WAREHOUSE: ${ICEBERG_SILVER_WAREHOUSE:-file:///tmp/iceberg}
+      # Local short sims: 1-minute tumble so silver closes without waiting for
+      # the wall-clock hour. Cloud/EMR leave this unset (job default = 1 HOUR).
+      INVENTORY_SILVER_WINDOW: ${INVENTORY_SILVER_WINDOW:-INTERVAL '1' MINUTE}
+      # Local: 60s cloud watermark never closes 1-min windows during a ~60–90s
+      # sim (need event_time past window_end + delay). Keep cloud default 60.
+      INVENTORY_SILVER_WATERMARK_DELAY_SECONDS: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-5}
+    volumes:
+      - ../../../streaming:/opt/streaming
+      # Host bind-mount so dbt/DuckDB can reuse Flink Iceberg Parquet without
+      # docker cp. Path is repo-root .local/iceberg (see scripts/local/).
+      - ../../../.local/iceberg:/tmp/iceberg
+      - flink-checkpoints:/tmp/flink-checkpoints
+
+  flink-taskmanager:
+    build: ../flink
+    image: retail-analytics/flink:1.17.1
+    # Match JobManager user so both processes can write checkpoint/savepoint
+    # and Iceberg files into the shared local Docker volumes.
+    user: "0:0"
+    command:
+      - bash
+      - -lc
+      - |
+        mkdir -p /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chown -R flink:flink /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        chmod -R 777 /tmp/flink-checkpoints /tmp/flink-savepoints /tmp/iceberg
+        exec /docker-entrypoint.sh taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 20
+        state.backend: rocksdb
+        state.checkpoints.dir: ${FLINK_CHECKPOINT_DIR:-file:///tmp/flink-checkpoints}
+        state.savepoints.dir: ${FLINK_SAVEPOINT_DIR:-file:///tmp/flink-savepoints}
+        flink.hadoop.fs.s3a.endpoint: ${S3A_ENDPOINT:-s3.ap-southeast-1.amazonaws.com}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      BRONZE_SOURCE_SYSTEM: ${BRONZE_SOURCE_SYSTEM:-retail-local-v1}
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      ICEBERG_BRONZE_WAREHOUSE: ${ICEBERG_BRONZE_WAREHOUSE:-file:///tmp/iceberg}
+      ICEBERG_SILVER_WAREHOUSE: ${ICEBERG_SILVER_WAREHOUSE:-file:///tmp/iceberg}
+      INVENTORY_SILVER_WINDOW: ${INVENTORY_SILVER_WINDOW:-INTERVAL '1' MINUTE}
+      INVENTORY_SILVER_WATERMARK_DELAY_SECONDS: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-5}
+    volumes:
+      - ../../../streaming:/opt/streaming
+      - ../../../.local/iceberg:/tmp/iceberg
+      - flink-checkpoints:/tmp/flink-checkpoints
+
+  # Batch-only (compose profile `spark`): not started by `up`. The local
+  # wrapper runs `docker compose --profile spark run --rm spark-identity`.
+  spark-identity:
+    profiles: ["spark"]
+    build: ../spark
+    image: retail-analytics/spark-identity:3.4.1
+    user: "0:0"
+    working_dir: /opt/spark-identity/identity_resolution
+    environment:
+      PYSPARK_PYTHON: python3
+      PYTHONPATH: /opt/graphframes-python
+    volumes:
+      - ../../../spark:/opt/spark-identity
+      - ../../../.local/iceberg:/tmp/iceberg
+      - ../../../.local/graphframes-checkpoints:/tmp/graphframes-checkpoints
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - |
+        mkdir -p /tmp/graphframes-checkpoints /tmp/iceberg
+        exec /opt/spark/bin/spark-submit \
+          --master local[*] \
+          --py-files graph_logic.py,canonical_events.py,event_contract.py \
+          identity_resolution_job.py --local \
+          --bronze-warehouse file:///tmp/iceberg \
+          --silver-warehouse file:///tmp/iceberg \
+          --pos-parquet-path /tmp/iceberg/bronze/pos_transactions/data \
+          --checkpoint-dir /tmp/graphframes-checkpoints
+
+volumes:
+  flink-checkpoints:

@@ -1,0 +1,71 @@
+{
+  "expectation_suite_name": "customer_360_view",
+  "meta": {
+    "description": "Consent-gated Customer 360 view (dim_customer LEFT JOIN fact_customer_session). Closes P2.8 from docs/runbooks/dw-checklist-audit.md. Grain: (customer_key, session_id) — session_id is NULL for customers with no recorded sessions (composite unique test pinned in dim_customer.yml). Every row must satisfy marketing_consent = true (the view's WHERE clause enforces this; the expectation guards against a future WHERE-clause regression)."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "customer_key" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "loyalty_tier" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "rfm_segment" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "churn_risk_score" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "total_lifetime_value" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "loyalty_tier",
+        "value_set": ["platinum", "gold", "standard"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "rfm_segment",
+        "value_set": ["champions", "loyal", "at_risk", "general"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "churn_risk_score",
+        "min_value": 0.0,
+        "max_value": 1.0
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_between",
+      "kwargs": {
+        "column": "total_lifetime_value",
+        "min_value": 0
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "converted",
+        "value_set": [true, false]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "platform",
+        "value_set": ["web", "ios", "android", "unknown"]
+      }
+    }
+  ]
+}

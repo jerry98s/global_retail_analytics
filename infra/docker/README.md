@@ -1,0 +1,54 @@
+# Docker artifacts
+
+Local Docker images for Kafka, Flink, and Spark.
+
+## Layout
+
+| Path | Purpose |
+|------|---------|
+| `compose/docker-compose.yml` | Local dev stack: Zookeeper + Kafka + schema-registry + Flink JobManager/TaskManager. Iceberg warehouse bind-mounted at repo `.local/iceberg` → `/tmp/iceberg` (dbt reuses these Parquet files). Profile `spark` adds a one-shot `spark-identity` service (not started by `up`). |
+| `compose/docker-compose.dashboard.yml` | Optional overlay: Streamlit dashboard reading the same host Iceberg dir. |
+| `flink/Dockerfile` | Local Flink 1.17.1 image, pinned to match EMR 6.15.0. Installs Iceberg + Kafka + Hadoop-AWS + AWS SDK connector JARs. |
+| `spark/Dockerfile` | Local Spark 3.4.1 image for the GraphFrames identity job (ADR-010). Iceberg 1.4.3 + GraphFrames 0.8.3 JARs baked in. |
+| `flink/versions.env` | Source of truth for the Iceberg, Kafka, Hadoop-AWS, and AWS SDK pins. The Dockerfile must match it (`tests/unit/test_flink_connector_versions.py`). |
+| `../../dashboard/Dockerfile` | Streamlit app image (co-located with the app, not under this dir — standard practice). |
+
+## Running the local stack
+
+The preferred entry point is the wrapper script, which resolves the compose
+file path itself so you can invoke it from any cwd:
+
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task up
+.\scripts\local\run_local_stack.ps1 -Task topics
+.\scripts\local\run_local_stack.ps1 -Task flink
+.\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task dbt
+```
+
+Ad-hoc `docker compose` calls need the `-f` flag since the compose files
+no longer live at the repo root:
+
+```powershell
+docker compose -f infra/docker/compose/docker-compose.yml up -d
+docker compose -f infra/docker/compose/docker-compose.yml -f infra/docker/compose/docker-compose.dashboard.yml up -d dashboard
+docker compose -f infra/docker/compose/docker-compose.yml exec flink-taskmanager ls -R /tmp/iceberg/
+```
+
+## Why a `versions.env` file
+
+`flink/Dockerfile` pins Iceberg, Kafka, Hadoop-AWS, and the AWS SDK.
+`flink/versions.env` is the source of truth.
+`tests/unit/test_flink_connector_versions.py` fails if the Dockerfile drifts.
+
+When bumping a version:
+
+1. Edit `flink/versions.env`.
+2. Update the matching `ENV <NAME>=<value>` line in `flink/Dockerfile`.
+3. Run `python -m pytest tests/unit/test_flink_connector_versions.py -v`.
+
+Intentionally-different pins (not in `versions.env`):
+
+- `aws-msk-iam-auth-1.1.9` — EMR-only; local Kafka uses PLAINTEXT.
+- `commons-logging-1.2` and the `flink-s3-fs-hadoop` plugin — Docker-only;
+  EMR ships Hadoop natively.

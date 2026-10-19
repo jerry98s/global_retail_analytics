@@ -1,0 +1,65 @@
+{
+  "expectation_suite_name": "inventory_bronze",
+  "meta": {
+    "description": "Canonical Silver inventory quality checks (legacy suite name). Raw Bronze retains every delivery. Spark validates and deduplicates into silver.inventory_events; the independent inventory_hourly fast path retains its own watermark (ADR-011)."
+  },
+  "expectations": [
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_time" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "store_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "product_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "qty_delta" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "event_type" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "scanner_id" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "is_late" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_not_be_null",
+      "kwargs": { "column": "schema_version" }
+    },
+    {
+      "expectation_type": "expect_column_values_to_match_regex",
+      "kwargs": {
+        "column": "schema_version",
+        "regex": "^\\d+\\.\\d+\\.\\d+$"
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "event_type",
+        "value_set": ["sale_deduction", "receipt", "adjustment", "transfer"]
+      }
+    },
+    {
+      "expectation_type": "expect_column_values_to_be_in_set",
+      "kwargs": {
+        "column": "is_late",
+        "value_set": [true, false]
+      }
+    }
+  ]
+}

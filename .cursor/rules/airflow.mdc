@@ -1,0 +1,49 @@
+---
+description: Airflow DAG conventions for batch, streaming, quality, maintenance
+globs: "orchestration/**"
+alwaysApply: false
+---
+
+# Airflow
+
+DAGs: `orchestration/airflow/dags/`. Plugins: `orchestration/airflow/plugins/`.
+
+## Current DAGs
+
+| DAG | Owns |
+|---|---|
+| `warehouse_daily_batch_pipeline` | POS Parquet, staging/intermediate, **`marts.finance`**, ANALYZE, GE |
+| `marketing_hourly_customer_360_pipeline` | EMR Spark identity step (GraphFrames, ADR-010) → WAP clone → staging/intermediate + **`marts.marketing`** (sessions, RFM, C360) |
+| `streaming_manual_flink_jobs` | EMR Flink submit + duplicate-run guard |
+| `catalog_bihourly_product_scd2_refresh` | `dim_product` SCD2 |
+| `quality_hourly_ge_checkpoint` | Hourly GE `gold_layer_daily` |
+| `lakehouse_daily_iceberg_maintenance` | Iceberg compaction / snapshot expiry |
+
+Do not dual-build `marts.marketing` on the daily warehouse DAG.
+
+## Write-Audit-Publish (ADR-009)
+
+Gold marts are clone → write → audit → publish. A failing audit leaves live intact.
+
+- Each owning DAG clones its live tables into `*_pending`, runs dbt with
+  `wap_phase=pending`, audits via `pending_tables` (reconcile) +
+  `run_ge_checkpoint.py --pending-tables schema.table,...` (GE), then publishes.
+- Table list lives in `plugins/wap_publish.py` (`WAP_TABLES` + disjoint per-DAG
+  subsets). `dim_product` is catalog-only. `dim_date`/`dim_store` excluded.
+- No-MWAA laptop runs: `python plugins/wap_publish.py <clone|publish>
+  <finance|marketing|catalog>` — `WAP_SCOPES` reuses the same ownership sets;
+  connects via `RS_*` env vars, never hardcoded credentials.
+- `quality_hourly_ge_checkpoint` stays on live (monitors published Gold).
+
+## Conventions
+
+- Filename/DAG ID: `{domain}_{frequency}_{description}`.
+- `doc_md`, `catchup=False`, retries, `email_on_failure=True`.
+- Infra endpoints via Airflow Variables — no hardcoded ARNs/passwords/endpoints.
+- Never template a secret into a command: Jinja renders `{{ var.value.* }}` into
+  the stored command, the Rendered Template tab, and task logs. Bash tasks wrap
+  with `dbt_bash_with_metadata` / `ge_bash_with_metadata`, which export
+  `RS_SECRET_ARN` and fetch the password in the task shell; Python tasks call
+  `metadata_airflow.redshift_password()`. Enforced by `tests/unit/test_dag_contract.py`.
+- Prefer task factories (`_dbt_step`, `_flink_step`).
+- Idempotency: no duplicate Flink submits; partition-safe POS; dbt `delete+insert` uniqueness.

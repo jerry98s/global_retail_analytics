@@ -1,0 +1,75 @@
+# Metric definitions for metadata.meta.metric_catalog.
+# Collector upserts by metric_name (idempotent).
+
+metrics:
+  - metric_name: net_revenue_daily_store
+    description: Sum of net revenue by store and calendar day
+    source_relation: summary.sales_daily_store
+    expression: SUM(net_revenue)
+    grain: (date_key, store_key)
+    unit: currency
+    owner: analytics-engineering
+    is_active: true
+
+  - metric_name: gross_margin_daily_store
+    description: Sum of gross margin by store and calendar day
+    source_relation: summary.sales_daily_store
+    expression: SUM(gross_margin)
+    grain: (date_key, store_key)
+    unit: currency
+    owner: analytics-engineering
+    is_active: true
+
+  - metric_name: units_sold_daily_store
+    description: Sum of units sold by store and calendar day
+    source_relation: summary.sales_daily_store
+    expression: SUM(units_sold)
+    grain: (date_key, store_key)
+    unit: units
+    owner: analytics-engineering
+    is_active: true
+
+  - metric_name: ending_on_hand_daily
+    description: Ending on-hand quantity at product/store/day grain
+    source_relation: summary.inventory_daily_product_store
+    expression: ending_on_hand_qty
+    grain: (snapshot_date_key, product_key, store_key)
+    unit: units
+    owner: analytics-engineering
+    is_active: true
+
+  - metric_name: stockout_hours_daily
+    description: Count of hours with available qty <= 0
+    source_relation: summary.inventory_daily_product_store
+    expression: stockout_hour_count
+    grain: (snapshot_date_key, product_key, store_key)
+    unit: hours
+    owner: analytics-engineering
+    is_active: true
+
+  - metric_name: session_conversion_rate_daily_platform
+    description: Sessions with conversion divided by total sessions
+    source_relation: summary.sessions_daily_platform
+    expression: converted_sessions::float / NULLIF(session_count, 0)
+    grain: (session_date_key, platform)
+    unit: ratio
+    owner: analytics-engineering
+    is_active: true
+
+  - metric_name: pipeline_success_rate
+    description: Share of finished pipeline runs with status SUCCESS
+    source_relation: meta.pipeline_run
+    expression: COUNT(*) FILTER (WHERE status = 'SUCCESS') / NULLIF(COUNT(*), 0)
+    grain: (pipeline_name, environment, day)
+    unit: ratio
+    owner: data-platform
+    is_active: true
+
+  - metric_name: table_freshness_breach_count
+    description: Count of freshness observations with sla_status = breach
+    source_relation: meta.table_freshness
+    expression: COUNT(*) FILTER (WHERE sla_status = 'breach')
+    grain: (measured_at day)
+    unit: count
+    owner: data-platform
+    is_active: true
