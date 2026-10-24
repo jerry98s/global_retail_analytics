@@ -95,8 +95,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: install dbt-duckdb + duckdb
-        run: pip install "dbt-core==1.11.*" "dbt-duckdb>=1.10,<2.0" "duckdb>=1.5,<2.0"
+      - name: install dbt-duckdb + duckdb + MetricFlow
+        run: >
+          pip install "dbt-core==1.11.*" "dbt-duckdb>=1.10,<2.0" "duckdb>=1.5,<2.0"
+          "dbt-metricflow[dbt-duckdb]==0.15.0" "metricflow==0.213.0"
 
       - name: create local dbt profile
         run: cp profiles.yml.example profiles.yml
@@ -106,6 +108,12 @@ jobs:
 
       - name: dbt compile full project
         run: dbt compile --no-partial-parse --profiles-dir . --target local
+
+      # Must run before the pending compiles below: they overwrite
+      # target/semantic_manifest.json with *_pending relations.
+      - name: dashboard SQL matches the semantic layer (ADR-013)
+        working-directory: ${{ github.workspace }}
+        run: python scripts/common/generate_semantic_queries.py --check
 
       - name: dbt compile pending finance and catalog
         run: >

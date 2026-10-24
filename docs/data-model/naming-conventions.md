@@ -39,8 +39,9 @@ POS is a **batch exception**: grain is line items, not events, so the name stays
 |-------------|---------------|----------------|
 | `inventory.events.v1` | `silver.inventory_hourly` | `iceberg/silver/inventory_hourly/data/` |
 
-`finance.fact_inventory_snapshot` reads from **silver** `inventory_hourly`
-(kappa architecture — see [ADR-007](../decisions/ADR-007-inventory-kappa.md)).
+`finance.fact_inventory_snapshot` reads `int_inventory_hourly`: **silver**
+`inventory_events` for hours Spark has covered, **silver** `inventory_hourly`
+after that (see [ADR-012](../decisions/ADR-012-inventory-lambda.md)).
 Bronze `inventory_events` is the audit/replay layer; no Gold model reads it
 directly. Silver is exposed in Redshift via Spectrum
 (`the Silver Spectrum DDL on main`).

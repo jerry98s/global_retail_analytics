@@ -30,10 +30,11 @@ Bronze vs silver parallel safety (P1.6):
   `inventory_silver_job` — both read Kafka directly with separate
   consumer groups and write to independent Iceberg tables
   (`bronze.inventory_events` and `silver.inventory_hourly`).
-  After the kappa conversion (ADR-007), `fact_inventory_snapshot`
-  reads from silver, so bronze is purely the audit/replay layer;
-  a delayed bronze job does not block the gold mart. Sequential
-  submission would add coupling without correctness benefit.
+  `fact_inventory_snapshot` takes hours Spark has covered from the
+  Bronze ledger and later hours from silver (ADR-012), so a delayed
+  bronze job only keeps more hours on the Flink numbers; it does not
+  block the gold mart. Sequential submission would add coupling
+  without correctness benefit.
 """
 
 from __future__ import annotations

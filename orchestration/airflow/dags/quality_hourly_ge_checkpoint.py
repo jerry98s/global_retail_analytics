@@ -18,25 +18,17 @@ from metadata_airflow import (
 DAG_DOC_MD = """
 ## quality_hourly_ge_checkpoint
 
-Runs the `gold_layer_daily` Great Expectations checkpoint hourly at :45
+Runs the `silver_events_daily` Great Expectations checkpoint hourly at :45
 (off-peak between Flink silver writes at :00 and the daily batch at 02:00).
 
 ### Purpose
-Re-validates Gold mart data quality on a cadence faster than the daily dbt
-build, so downstream BI / Customer 360 dashboards catch issues (PK drift,
-null marketing_consent, range violations on churn_risk_score, etc.) within
-an hour rather than at the next daily run.
+Checks the canonical Silver event contract between the hourly and daily
+builds, so a producer or Spark promotion regression shows up within an hour.
+Gold tables change only through a WAP publish, which each owning DAG gates
+with dbt tests; GE does not re-check them.
 
 ### Checkpoint
-`quality/great_expectations/checkpoints/gold_layer_daily.yml` covers:
-- `finance.fact_inventory_snapshot` (PK uniqueness, quantity ranges,
-  `is_estimated` accepted_values)
-- `finance.fact_sales` (line-item PK, revenue consistency, no-fact-to-fact)
-- `marketing.dim_customer` (PK, consent flags, RFM/loyalty domain checks)
-- `marketing.dim_product` (SCD2 invariants, valid_to >= valid_from)
-- `marketing.fact_customer_session` (session PK, conversion flags)
-- `marketing.identity_graph` (active edges, public-device exclusion)
-- `marketing.customer_360_view` (derived columns, churn_risk_score range)
+`quality/great_expectations/checkpoints/silver_events_daily.yml` covers:
 - `silver.inventory_events` (last 24h, event_type domain)
 - `silver.clickstream_events` (last 24h, event_type / platform / schema_version)
 
@@ -49,15 +41,12 @@ safe; a second run will not double-write anywhere.
 - A failed expectation emits a `ValidationException`. The BashOperator
   exits non-zero, the task is marked `failed`, and (in MWAA) an email is
   sent to the `data-platform` AlertEmail SNS subscription.
-- The warehouse_daily_batch_pipeline DAG's `ge_checkpoint` task runs the same
-  checkpoint after the dbt build — failures here likely indicate an
-  upstream Silver/Iceberg regression, not a dbt build issue.
 - For investigation: GE validation results are written to
   `s3://retail-platform-<env>-ge-results/<run_id>/` (configured in
   `great_expectations.yml`).
 
 ### Related
-- `quality/great_expectations/checkpoints/gold_layer_daily.yml`
+- `quality/great_expectations/checkpoints/silver_events_daily.yml`
 - `quality/great_expectations/expectations/*.json`
 - `docs/runbooks/data-quality-failures.md`
 """
@@ -83,12 +72,14 @@ with DAG(
         task_id="metadata_start",
         python_callable=on_dag_start,
     )
-    run_gold_checkpoint = BashOperator(
-        task_id="run_gold_layer_checkpoint",
+    run_silver_checkpoint = BashOperator(
+        task_id="run_silver_events_checkpoint",
+        # The GE CLI cannot run runtime-query checkpoints; use the shared runner.
         bash_command=ge_bash_with_metadata(
+            "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/quality/great_expectations /tmp/great_expectations && "
             "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts && "
-            "cd /opt/airflow && "
-            "great_expectations checkpoint run gold_layer_daily"
+            "python /tmp/scripts/common/run_ge_checkpoint.py "
+            "--ge-root /tmp/great_expectations --checkpoint silver_events_daily"
         ),
     )
-    metadata_start >> run_gold_checkpoint
+    metadata_start >> run_silver_checkpoint

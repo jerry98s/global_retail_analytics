@@ -321,21 +321,6 @@ function Invoke-SparkIdentityLocal {
     Invoke-CheckedCommand "docker compose -f $MainCompose --profile spark run --rm --build --no-deps spark-identity"
 }
 
-# ADR-009 canonical WAP table list, as "schema.table" for the GE audit gate.
-# Must match WAP_TABLES in orchestration/airflow/plugins/wap_publish.py —
-# tests/unit/test_gold_wap.py fails the build if the two drift apart.
-$WapTableList = @(
-    'finance.fact_sales',
-    'finance.fact_inventory_snapshot',
-    'marketing.dim_customer',
-    'marketing.dim_product',
-    'marketing.fact_customer_session',
-    'marketing.identity_graph',
-    'summary.sales_daily_store',
-    'summary.inventory_daily_product_store',
-    'summary.sessions_daily_platform'
-) -join ','
-
 # Views over Gold. Never WAP-published (only tables are), so they are built after
 # the swap, against the freshly published live tables.
 $WapServingModels = @('customer_360_view', 'customer_360_serving')
@@ -679,20 +664,12 @@ try {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Running Great Expectations audit gate (pending, DuckDB)" {
-                    Invoke-ProjectPython scripts/local/run_ge_local.py `
-                        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
-                        --execution-id $execId `
-                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb') `
-                        --pending-tables $WapTableList
-                }
                 Invoke-Step "WAP publish pending Gold -> live" {
                     Invoke-WapPublishLocal
                 }
-                # Mirrors the cloud quality_hourly_ge_checkpoint DAG: after the
-                # swap, validate live Gold plus the suites the gated run skips
-                # (Bronze windows, reference dims, customer_360_view).
-                Invoke-Step "Running Great Expectations live monitor (DuckDB)" {
+                # Mirrors the cloud quality_hourly_ge_checkpoint DAG: Silver
+                # event contract checks. Gold is gated by the dbt tests above.
+                Invoke-Step "Running Great Expectations Silver event checks (DuckDB)" {
                     Invoke-ProjectPython scripts/local/run_ge_local.py `
                         --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
                         --execution-id $execId `
@@ -750,20 +727,12 @@ try {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Running Great Expectations audit gate (pending, DuckDB)" {
-                    Invoke-ProjectPython scripts/local/run_ge_local.py `
-                        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
-                        --execution-id $execId `
-                        --metadata-duckdb (Join-Path $DbtDir 'local_metadata.duckdb') `
-                        --pending-tables $WapTableList
-                }
                 Invoke-Step "WAP publish pending Gold -> live" {
                     Invoke-WapPublishLocal
                 }
-                # Mirrors the cloud quality_hourly_ge_checkpoint DAG: after the
-                # swap, validate live Gold plus the suites the gated run skips
-                # (Bronze windows, reference dims, customer_360_view).
-                Invoke-Step "Running Great Expectations live monitor (DuckDB)" {
+                # Mirrors the cloud quality_hourly_ge_checkpoint DAG: Silver
+                # event contract checks. Gold is gated by the dbt tests above.
+                Invoke-Step "Running Great Expectations Silver event checks (DuckDB)" {
                     Invoke-ProjectPython scripts/local/run_ge_local.py `
                         --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
                         --execution-id $execId `

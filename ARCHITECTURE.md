@@ -122,7 +122,7 @@ flowchart LR
 
   subgraph ORCH["Orchestration — MWAA"]
 
-    DAG["warehouse_daily_batch_pipeline<br/>POS → dbt finance → GE"]
+    DAG["warehouse_daily_batch_pipeline<br/>POS → dbt finance → WAP publish"]
 
   end
 
@@ -210,9 +210,10 @@ Retention: 90 days Standard, 1yr IA, 3yr+ Glacier via Intelligent-Tiering.
 
 **Silver:** Cleaned, deduplicated, schema-enforced. Iceberg on S3 (MoR for
 
-inventory upserts). Flink writes `silver.inventory_hourly`; dbt marts rebuild
-
-inventory facts from **bronze** `inventory_events` (Spectrum) by design.
+inventory upserts). Flink writes `silver.inventory_hourly`; Spark rebuilds
+`silver.inventory_events` from the Bronze ledger. `fact_inventory_snapshot`
+uses Spark's events for hours Spark has covered and Flink's hours after that
+(ADR-012).
 The Spark GraphFrames job (ADR-010) writes `silver.identity_resolution` +
 `silver.identity_edges` hourly from bronze clickstream + POS.
 
@@ -225,7 +226,7 @@ Clickstream has no separate silver table — bronze feeds dbt directly.
 via Spectrum over S3). Finance on **daily** batch; Customer 360 on **hourly** batch.
 Gold marts ship with Write-Audit-Publish ([ADR-009](docs/decisions/ADR-009-write-audit-publish.md)):
 live Gold is cloned into `finance_pending` / `marketing_pending` /
-`summary_pending`, dbt rebuilds tables there, dbt tests + GE audit the pending
+`summary_pending`, dbt rebuilds tables there, dbt tests audit the pending
 copies, and an atomic rename promotes the DAG-owned set to live only on success.
 `marketing.dim_product` is catalog-owned; warehouse facts join the live table.
 A failing run never touches the tables consumers read.
@@ -240,7 +241,15 @@ fact (no fact-to-fact joins). See `docs/data-model/platform-layers.md`.
 
 **Serving:** App Runner dashboard reads **Gold** tables on Redshift (and local
 
-Iceberg in dev). A dedicated Redis sub-5s path is **deferred** (see ADR-002).
+DuckDB or Iceberg in dev). A dedicated Redis sub-5s path is **deferred** (see ADR-002).
+
+
+
+**Semantic layer:** dbt Semantic Layer (MetricFlow) over the `summary.*` tables.
+
+The dashboard runs SQL MetricFlow compiled per dialect, so metrics are defined
+
+once. On-hand is semi-additive and reads the dense `summary.inventory_position_daily`. See ADR-013.
 
 
 
@@ -276,7 +285,7 @@ pipeline runs, freshness, and DQ history — same workgroup, not Glue. See ADR-0
 
 | Orchestration | Airflow (MWAA) | Daily finance + hourly marketing DAGs |
 
-| Quality | GE + pytest | Column-level (GE) + set-level SCD2 (pytest) |
+| Quality | dbt tests + GE + pytest | Gold gate (dbt tests), Silver event contract (GE), code contracts (pytest) |
 
 | IaC | Terraform | Reproducible infra, maps to existing team skills |
 

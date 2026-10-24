@@ -92,6 +92,7 @@ WAP_TABLES: list[tuple[str, str]] = [
     ("marketing", "identity_graph"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
+    ("summary", "inventory_position_daily"),
     ("summary", "sessions_daily_platform"),
 ]
 
@@ -102,6 +103,7 @@ FINANCE_SUMMARY_TABLES: list[tuple[str, str]] = [
     ("finance", "fact_inventory_snapshot"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
+    ("summary", "inventory_position_daily"),
 ]
 
 MARKETING_TABLES: list[tuple[str, str]] = [

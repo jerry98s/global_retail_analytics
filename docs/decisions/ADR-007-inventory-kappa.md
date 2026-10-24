@@ -1,6 +1,8 @@
 # ADR-007: Inventory Flow — Kappa Conversion
 
-**Status:** Accepted
+**Status:** Superseded in part by [ADR-012](ADR-012-inventory-lambda.md) —
+Gold now takes Spark-covered hours from canonical events and only later hours
+from `silver.inventory_hourly`.
 **Date:** 2026-07-05
 **Author:** Data platform team
 

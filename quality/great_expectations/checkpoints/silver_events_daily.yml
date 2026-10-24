@@ -1,0 +1,29 @@
+# Canonical Silver event contract checks (Redshift Spectrum). Gold tables are
+# audited by dbt tests in each owning DAG's WAP gate, not here.
+name: silver_events_daily
+config_version: 1.0
+class_name: Checkpoint
+run_name_template: silver_events_daily_%Y%m%d
+validations:
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: inventory_bronze_sample
+      runtime_parameters:
+        query: >
+          SELECT event_id, event_time, store_id, product_id, qty_delta,
+                 event_type, scanner_id, is_late, schema_version
+          FROM silver.inventory_events
+          WHERE event_time >= DATEADD('day', -1, CURRENT_DATE)
+    expectation_suite_name: inventory_bronze
+  - batch_request:
+      datasource_name: redshift_gold
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: clickstream_bronze_sample
+      runtime_parameters:
+        query: >
+          SELECT event_id, event_time, event_type, session_id, client_id,
+                 platform, schema_version, event_date
+          FROM silver.clickstream_events
+          WHERE event_time >= DATEADD('day', -1, CURRENT_DATE)
+    expectation_suite_name: clickstream_bronze

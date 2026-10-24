@@ -69,3 +69,23 @@ models:
         tests: [not_null_unique]
       - name: rfm_segment
         description: "Derived RFM segment."
+
+  - name: int_inventory_hourly
+    description: >
+      Hourly inventory movements per product/store (ADR-012). Spark canonical
+      events for hours inside int_inventory_batch_coverage, Flink
+      silver.inventory_hourly for every other hour. The two ranges do not
+      overlap, so the grain has one row.
+    columns:
+      - name: qty_delta_hour
+        tests: [not_null]
+      - name: is_estimated
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - snapshot_date_key
+              - snapshot_hour
+              - product_id
+              - store_id

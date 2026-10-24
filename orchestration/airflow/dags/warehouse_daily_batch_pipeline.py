@@ -2,11 +2,11 @@
 Daily batch pipeline DAG.
 Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging →
 WAP clone live→pending → dbt marts (pending) → dbt tests (pending) →
-row-count reconciliation (pending) → GE checkpoint (pending) → WAP publish to
-live → Redshift ANALYZE → Redshift usage check.
+row-count reconciliation (pending) → WAP publish to live → Redshift ANALYZE →
+Redshift usage check.
 
 Write-Audit-Publish (ADR-009): live Gold is cloned into `*_pending`, dbt rebuilds
-the marts there (`wap_phase='pending'`), dbt tests + GE audit the pending copies,
+the marts there (`wap_phase='pending'`), dbt tests audit the pending copies,
 and only then are they promoted into live `finance` / `summary`. A failing audit
 leaves live untouched, so consumers keep reading the last good publish. The clone
 is what preserves incremental state: without it every model would take its
@@ -60,7 +60,6 @@ from wap_publish import (
 from metadata_airflow import (
     collect_freshness_task,
     dbt_bash_with_metadata,
-    ge_bash_with_metadata,
     on_dag_failure,
     on_dag_start,
     on_dag_success,
@@ -69,16 +68,17 @@ from metadata_airflow import (
 # Models this DAG owns end-to-end (clone -> build -> audit -> publish).
 # marts.marketing and sessions_daily_platform belong to the hourly marketing DAG;
 # dim_product belongs to catalog_bihourly_product_scd2_refresh.
-OWNED_SELECT = "marts.finance sales_daily_store inventory_daily_product_store"
+OWNED_SELECT = (
+    "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily"
+)
 
 # Audits must cover exactly what this DAG built. A bare `dbt test` would also run
 # marketing suites whose pending tables this DAG never clones.
 TEST_SELECT = f"staging intermediate {OWNED_SELECT}"
 
-# Same set as "schema.table" strings, for the reconciliation and GE audits.
-# Derived from the publish list so the three can never drift apart.
+# Same set as "schema.table" strings, for the reconciliation audit.
+# Derived from the publish list so the two can never drift apart.
 OWNED_TABLES = [f"{schema}.{table}" for schema, table in FINANCE_SUMMARY_TABLES]
-GE_PENDING_TABLES = ",".join(OWNED_TABLES)
 
 DEFAULT_ARGS = {
     "owner":            "data-platform",
@@ -200,22 +200,6 @@ with DAG(
         python_callable=collect_freshness_task,
     )
 
-    ge_checkpoint = BashOperator(
-        task_id      = "ge_gold_checkpoint",
-        # RS_SQLALCHEMY_URL is built by ge_bash_with_metadata from the secret.
-        # --pending-tables restricts the checkpoint to the marts this DAG owns
-        # and retargets them at *_pending, so the audit validates exactly what
-        # the publish step is about to promote.
-        bash_command = ge_bash_with_metadata(f"""
-            aws s3 sync s3://{{{{ var.value.artifacts_bucket }}}}/mwaa/quality/great_expectations /tmp/great_expectations
-            aws s3 sync s3://{{{{ var.value.artifacts_bucket }}}}/mwaa/scripts /tmp/scripts
-            python /tmp/scripts/common/run_ge_checkpoint.py \\
-                --ge-root /tmp/great_expectations \\
-                --checkpoint gold_layer_daily \\
-                --pending-tables {GE_PENDING_TABLES}
-        """),
-    )
-
     # Audit gate passed — atomically promote pending marts into live schemas.
     wap_publish = PythonOperator(
         task_id         = "wap_publish_gold",
@@ -255,7 +239,6 @@ with DAG(
         >> dbt_tests
         >> row_count_reconcile
         >> metadata_freshness
-        >> ge_checkpoint
         >> wap_publish
         >> redshift_analyze
         >> cost_check

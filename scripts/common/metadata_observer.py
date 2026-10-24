@@ -25,11 +25,12 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -39,30 +40,24 @@ log = logging.getLogger("metadata_observer")
 
 COLLECTOR_VERSION = "1.0.0"
 _REPO = Path(__file__).resolve().parents[2]
-_DEFAULT_CATALOG_DIR = _REPO / "metadata" / "catalog"
+_REPO_CATALOG_DIR = _REPO / "metadata" / "catalog"
+# On MWAA the observer runs from plugins/ without the repo; the deploy bundles
+# the catalogs and the semantic-layer YAML beside it.
+_BUNDLED_CATALOG_DIR = Path(__file__).resolve().parent / "metadata_catalog"
+_DEFAULT_CATALOG_DIR = (
+    _REPO_CATALOG_DIR if _REPO_CATALOG_DIR.is_dir() else _BUNDLED_CATALOG_DIR
+)
+_DEFAULT_SEMANTIC_DIR = (
+    _REPO / "transformation" / "dbt_project" / "models" / "semantic"
+    if _REPO_CATALOG_DIR.is_dir()
+    else _BUNDLED_CATALOG_DIR / "semantic"
+)
 _DEFAULT_ANALYTICS_DUCKDB = (
     _REPO / "transformation" / "dbt_project" / "local_retail.duckdb"
 )
 _DEFAULT_METADATA_DUCKDB = (
     _REPO / "transformation" / "dbt_project" / "local_metadata.duckdb"
 )
-
-# Objects profiled for freshness / row counts (schema, table, ts_expr|None, sla_minutes|None)
-DEFAULT_FRESHNESS_TARGETS: list[tuple[str, str, str | None, int | None]] = [
-    ("silver", "clickstream_events", "event_time", 60),
-    ("silver", "inventory_events", "event_time", 60),
-    ("bronze", "pos_transactions", "transaction_date", 1440),
-    ("silver", "inventory_hourly", None, 120),
-    ("finance", "fact_sales", None, 1440),
-    ("finance", "fact_inventory_snapshot", None, 1440),
-    ("finance", "dim_store", None, None),
-    ("marketing", "dim_product", None, None),
-    ("marketing", "fact_customer_session", None, 120),
-    ("marketing", "dim_customer", None, None),
-    ("summary", "sales_daily_store", None, 1440),
-    ("summary", "inventory_daily_product_store", None, 1440),
-    ("summary", "sessions_daily_platform", None, 120),
-]
 
 _DUCKDB_DDL = """
 CREATE SCHEMA IF NOT EXISTS meta;
@@ -359,48 +354,164 @@ def open_analytics_reader(backend: str, args: argparse.Namespace) -> Any:
     )
 
 
+def _load_yaml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        log.warning("catalog file missing: %s", path)
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def load_layer_catalog(catalog_dir: Path = _DEFAULT_CATALOG_DIR) -> list[dict[str, Any]]:
+    return list(_load_yaml(catalog_dir / "layer_catalog.yml").get("objects") or [])
+
+
+def freshness_targets(
+    catalog_dir: Path = _DEFAULT_CATALOG_DIR,
+) -> list[tuple[str, str, str | None, int]]:
+    """(schema, table, timestamp_column, sla_minutes) for active objects with an SLA."""
+    targets = []
+    for obj in load_layer_catalog(catalog_dir):
+        sla = obj.get("freshness_sla_minutes")
+        if sla is None or not obj.get("is_active", True):
+            continue
+        schema, table = obj["object_fqn"].split(".", 1)
+        targets.append((schema, table, obj.get("timestamp_column"), int(sla)))
+    return targets
+
+
+_MODEL_REF = re.compile(r"ref\('([^']+)'\)")
+
+
+def semantic_metric_rows(
+    semantic_dir: Path,
+    layer_objects: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """meta.metric_catalog rows for the dbt semantic-layer metrics (ADR-013).
+
+    The metric definitions live in models/semantic/*.yml; relation and grain
+    come from layer_catalog.yml, so neither is restated here.
+    """
+    fqn_by_table = {o["object_fqn"].split(".", 1)[1]: o["object_fqn"] for o in layer_objects}
+    grain_by_fqn = {o["object_fqn"]: o.get("grain") for o in layer_objects}
+
+    measures: dict[str, tuple[str, str]] = {}
+    semantic_models = _load_yaml(semantic_dir / "semantic_models.yml").get("semantic_models")
+    for sm in semantic_models or []:
+        if not sm.get("measures"):
+            continue
+        table = _MODEL_REF.fullmatch(sm["model"]).group(1)
+        if table not in fqn_by_table:
+            raise ValueError(
+                f"semantic model {sm['name']} reads {table}, which layer_catalog.yml does not list"
+            )
+        for measure in sm["measures"]:
+            sql = f"{measure['agg'].upper()}({measure.get('expr') or measure['name']})"
+            measures[measure["name"]] = (fqn_by_table[table], sql)
+
+    metrics = _load_yaml(semantic_dir / "metrics.yml").get("metrics") or []
+    simple = {
+        m["name"]: measures[m["type_params"]["measure"]]
+        for m in metrics
+        if m["type"] == "simple"
+    }
+    rows = []
+    for met in metrics:
+        params = met["type_params"]
+        if met["type"] == "simple":
+            relation, expression = simple[met["name"]]
+        elif met["type"] == "ratio":
+            relation, numerator = simple[params["numerator"]]
+            den_relation, denominator = simple[params["denominator"]]
+            if den_relation != relation:
+                raise ValueError(f"ratio metric {met['name']} spans two relations")
+            expression = (
+                f"CAST({numerator} AS DOUBLE PRECISION) / NULLIF({denominator}, 0)"
+            )
+        else:
+            raise ValueError(f"metric {met['name']}: unsupported type {met['type']}")
+        rows.append(
+            {
+                "metric_name": met["name"],
+                "description": met.get("description") or met.get("label"),
+                "source_relation": relation,
+                "expression": expression,
+                "grain": grain_by_fqn.get(relation),
+                "unit": None,
+                "owner": "analytics-engineering",
+                "is_active": True,
+            }
+        )
+    return rows
+
+
+def _delete_absent(writer: MetadataWriter, table: str, key: str, keep: Sequence[str]) -> None:
+    placeholders = ", ".join("?" for _ in keep)
+    writer.execute(f"DELETE FROM {table} WHERE {key} NOT IN ({placeholders})", tuple(keep))
+
+
 def seed_catalogs(
     writer: MetadataWriter,
     catalog_dir: Path = _DEFAULT_CATALOG_DIR,
+    semantic_dir: Path = _DEFAULT_SEMANTIC_DIR,
 ) -> None:
+    """Replace meta.layer_catalog / meta.metric_catalog with the YAML definitions.
+
+    Operational metrics come from metric_catalog.yml; analytics metrics come
+    from the semantic layer. Rows no longer defined are removed, so every
+    source file must be present before anything is written.
+    """
+    sources = [
+        catalog_dir / "layer_catalog.yml",
+        catalog_dir / "metric_catalog.yml",
+        semantic_dir / "semantic_models.yml",
+        semantic_dir / "metrics.yml",
+    ]
+    missing = [str(p) for p in sources if not p.is_file()]
+    if missing:
+        raise FileNotFoundError(f"catalog seed skipped; missing {missing}")
     now = _iso(utc_now())
-    layer_path = catalog_dir / "layer_catalog.yml"
-    metric_path = catalog_dir / "metric_catalog.yml"
+    layer_objects = load_layer_catalog(catalog_dir)
+    operational = _load_yaml(catalog_dir / "metric_catalog.yml").get("metrics") or []
+    metrics = list(operational) + semantic_metric_rows(semantic_dir, layer_objects)
+    names = [m["metric_name"] for m in metrics]
+    if len(names) != len(set(names)):
+        raise ValueError(f"duplicate metric names across catalogs: {sorted(names)}")
 
-    if layer_path.is_file():
-        data = yaml.safe_load(layer_path.read_text(encoding="utf-8")) or {}
-        for obj in data.get("objects") or []:
-            fqn = obj["object_fqn"]
-            writer.execute(
-                "DELETE FROM meta.layer_catalog WHERE object_fqn = ?", (fqn,)
-            )
-            writer.execute(
-                """
-                INSERT INTO meta.layer_catalog (
-                    object_fqn, object_type, platform_layer, domain, owner, grain,
-                    timestamp_column, freshness_sla_minutes, is_active,
-                    created_at, updated_at, collector_version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    fqn,
-                    obj["object_type"],
-                    obj["platform_layer"],
-                    obj.get("domain"),
-                    obj.get("owner"),
-                    obj.get("grain"),
-                    obj.get("timestamp_column"),
-                    obj.get("freshness_sla_minutes"),
-                    bool(obj.get("is_active", True)),
-                    now,
-                    now,
-                    COLLECTOR_VERSION,
-                ),
-            )
+    for obj in layer_objects:
+        fqn = obj["object_fqn"]
+        writer.execute(
+            "DELETE FROM meta.layer_catalog WHERE object_fqn = ?", (fqn,)
+        )
+        writer.execute(
+            """
+            INSERT INTO meta.layer_catalog (
+                object_fqn, object_type, platform_layer, domain, owner, grain,
+                timestamp_column, freshness_sla_minutes, is_active,
+                created_at, updated_at, collector_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                fqn,
+                obj["object_type"],
+                obj["platform_layer"],
+                obj.get("domain"),
+                obj.get("owner"),
+                obj.get("grain"),
+                obj.get("timestamp_column"),
+                obj.get("freshness_sla_minutes"),
+                bool(obj.get("is_active", True)),
+                now,
+                now,
+                COLLECTOR_VERSION,
+            ),
+        )
+    if layer_objects:
+        _delete_absent(
+            writer, "meta.layer_catalog", "object_fqn", [o["object_fqn"] for o in layer_objects]
+        )
 
-    if metric_path.is_file():
-        data = yaml.safe_load(metric_path.read_text(encoding="utf-8")) or {}
-        for met in data.get("metrics") or []:
+    if metrics:
+        for met in metrics:
             name = met["metric_name"]
             writer.execute(
                 "DELETE FROM meta.metric_catalog WHERE metric_name = ?", (name,)
@@ -426,6 +537,7 @@ def seed_catalogs(
                     COLLECTOR_VERSION,
                 ),
             )
+        _delete_absent(writer, "meta.metric_catalog", "metric_name", names)
 
 
 def start_pipeline_run(
@@ -635,6 +747,25 @@ def _reader_execute(conn: Any, sql: str) -> Any:
         return cur.fetchone()
 
 
+def _as_loaded_through(value: Any) -> datetime | None:
+    """Latest point a table is loaded through.
+
+    A date or YYYYMMDD key means the whole day is loaded, so it counts as the
+    end of that day.
+    """
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time()) + timedelta(days=1)
+    text = str(value).strip()
+    if re.fullmatch(r"\d{8}", text):
+        return datetime.strptime(text, "%Y%m%d") + timedelta(days=1)
+    try:
+        return datetime.fromisoformat(text.replace("Z", "")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def collect_table_freshness(
     writer: MetadataWriter,
     analytics_conn: Any,
@@ -646,7 +777,9 @@ def collect_table_freshness(
     measured = measured_at or utc_now()
     measured_s = _iso(measured)
     written = 0
-    for schema, table, ts_col, sla in targets or DEFAULT_FRESHNESS_TARGETS:
+    if targets is None:
+        targets = freshness_targets()
+    for schema, table, ts_col, sla in targets:
         row_count: int | None = None
         max_ts: datetime | None = None
         lag: int | None = None
@@ -662,14 +795,9 @@ def collect_table_freshness(
                     f"SELECT MAX({ts_col}) FROM {schema}.{table}",
                 )
                 if row_ts and row_ts[0] is not None:
-                    max_ts = row_ts[0]
-                    if isinstance(max_ts, str):
-                        max_ts = datetime.fromisoformat(max_ts.replace("Z", ""))
-                    if isinstance(max_ts, datetime):
-                        lag = int(
-                            (measured - max_ts.replace(tzinfo=None)).total_seconds()
-                            / 60
-                        )
+                    max_ts = _as_loaded_through(row_ts[0])
+                    if max_ts is not None:
+                        lag = int((measured - max_ts).total_seconds() / 60)
             if sla is None:
                 sla_status = "ok" if row_count is not None else "unknown"
             elif lag is None:
@@ -888,6 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
                         writer,
                         analytics,
                         execution_id=args.execution_id,
+                        targets=freshness_targets(args.catalog_dir),
                     )
                 finally:
                     analytics.close()

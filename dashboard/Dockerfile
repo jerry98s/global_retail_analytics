@@ -15,7 +15,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY data.py app.py ./
+COPY data.py app.py semantic_queries.py ./
 
 EXPOSE 8501
 

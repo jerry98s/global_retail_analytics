@@ -25,7 +25,6 @@ alwaysApply: false
 
 - Iceberg → DuckDB: `scripts/local/load_iceberg_to_duckdb.py`.
 - POS local Parquet: `python -m ingestion.batch.generate_pos_parquet --output-dir ...`.
-- Unit tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/ -q`.
 
 ## Tests
 

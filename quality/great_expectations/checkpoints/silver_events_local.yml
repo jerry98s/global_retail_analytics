@@ -1,0 +1,37 @@
+# Local DuckDB mirror of silver_events_daily. SQL is DuckDB-portable (no
+# DATEADD). Run via: scripts/local/run_ge_local.py
+name: silver_events_local
+config_version: 1.0
+class_name: Checkpoint
+run_name_template: silver_events_local_%Y%m%d
+action_list:
+  - name: store_validation_result
+    action:
+      class_name: StoreValidationResultAction
+validations:
+  - batch_request:
+      datasource_name: duckdb_local
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: inventory_bronze_sample
+      runtime_parameters:
+        query: >
+          SELECT event_id, event_time, store_id, product_id, qty_delta,
+                 event_type, scanner_id, is_late, schema_version
+          FROM silver.inventory_events
+          WHERE cast(event_time as date) >= current_date - INTERVAL 1 DAY
+      batch_identifiers:
+        default_identifier_name: local
+    expectation_suite_name: inventory_bronze
+  - batch_request:
+      datasource_name: duckdb_local
+      data_connector_name: default_runtime_data_connector_name
+      data_asset_name: clickstream_bronze_sample
+      runtime_parameters:
+        query: >
+          SELECT event_id, event_time, event_type, session_id, client_id,
+                 platform, schema_version, event_date
+          FROM silver.clickstream_events
+          WHERE cast(event_time as date) >= current_date - INTERVAL 1 DAY
+      batch_identifiers:
+        default_identifier_name: local
+    expectation_suite_name: clickstream_bronze

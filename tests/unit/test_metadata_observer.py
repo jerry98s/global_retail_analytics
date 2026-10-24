@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -37,15 +39,65 @@ def test_layer_catalog_yaml_has_summary_and_gold() -> None:
         }
 
 
+def _model_unique_keys() -> dict[str, set[str]]:
+    keys: dict[str, set[str]] = {}
+    for path in (_REPO / "transformation" / "dbt_project" / "models").rglob("*.sql"):
+        match = re.search(r"unique_key\s*=\s*(\[[^\]]*\]|'[^']*')", path.read_text(encoding="utf-8"))
+        if match:
+            keys[path.stem] = set(re.findall(r"'([^']+)'", match.group(1)))
+    return keys
+
+
+def test_layer_catalog_grain_matches_model_unique_key() -> None:
+    raw = yaml.safe_load(
+        (_REPO / "metadata" / "catalog" / "layer_catalog.yml").read_text(encoding="utf-8")
+    )
+    unique_keys = _model_unique_keys()
+    checked = 0
+    for obj in raw["objects"]:
+        table = obj["object_fqn"].split(".", 1)[1]
+        grain = obj.get("grain") or ""
+        if table not in unique_keys or not grain.startswith("("):
+            continue
+        columns = {c.strip() for c in grain[1:grain.index(")")].split(",")}
+        assert columns == unique_keys[table], (obj["object_fqn"], columns, unique_keys[table])
+        checked += 1
+    assert checked >= 4
+
+
+def test_layer_catalog_lists_inventory_lambda_views() -> None:
+    raw = yaml.safe_load(
+        (_REPO / "metadata" / "catalog" / "layer_catalog.yml").read_text(encoding="utf-8")
+    )
+    fqns = {o["object_fqn"] for o in raw["objects"]}
+    assert "intermediate.int_inventory_hourly" in fqns
+    assert "intermediate.int_inventory_batch_coverage" in fqns
+
+
+def test_metric_expressions_run_on_duckdb_and_redshift() -> None:
+    # Redshift has no aggregate FILTER clause; integer / integer truncates.
+    raw = yaml.safe_load(
+        (_REPO / "metadata" / "catalog" / "metric_catalog.yml").read_text(encoding="utf-8")
+    )
+    for met in raw["metrics"]:
+        expr = met["expression"]
+        assert "FILTER" not in expr.upper(), met["metric_name"]
+        assert "::" not in expr, met["metric_name"]
+        # Every metric aggregates. Semi-additive ones (non_additive_dimension in
+        # the semantic layer) roll up across keys but not across days.
+        assert re.match(r"^(SUM|COUNT|CAST\(SUM)\(", expr), met["metric_name"]
+        if met["unit"] == "ratio":
+            assert "AS DOUBLE PRECISION" in expr.upper(), met["metric_name"]
+
+
 def test_metric_catalog_yaml_non_empty() -> None:
     raw = yaml.safe_load(
         (_REPO / "metadata" / "catalog" / "metric_catalog.yml").read_text(
             encoding="utf-8"
         )
     )
-    assert len(raw["metrics"]) >= 3
     names = {m["metric_name"] for m in raw["metrics"]}
-    assert "net_revenue_daily_store" in names
+    assert "pipeline_success_rate" in names
 
 
 def test_metadata_ddl_files_exist() -> None:
@@ -155,13 +207,64 @@ def test_seed_catalogs_upsert(tmp_path: Path) -> None:
     db = tmp_path / "local_metadata.duckdb"
     writer = mo.DuckDBMetadataWriter(db)
     writer.ensure_schema()
+    writer.execute(
+        "INSERT INTO meta.metric_catalog (metric_name, source_relation, expression) "
+        "VALUES ('retired_metric', 'summary.gone', 'SUM(x)')"
+    )
     mo.seed_catalogs(writer, _REPO / "metadata" / "catalog")
     mo.seed_catalogs(writer, _REPO / "metadata" / "catalog")
     row = writer.fetchone("SELECT COUNT(*) FROM meta.layer_catalog")
     assert row[0] >= 10
-    mrow = writer.fetchone("SELECT COUNT(*) FROM meta.metric_catalog")
-    assert mrow[0] >= 3
+    names = set(writer.fetchone("SELECT list(metric_name) FROM meta.metric_catalog")[0])
+    assert {"pipeline_success_rate", "net_revenue", "inventory_on_hand"} <= names
+    assert "retired_metric" not in names
     writer.close()
+
+
+def test_seed_catalogs_refuses_partial_sources(tmp_path: Path) -> None:
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    mo.seed_catalogs(writer, _REPO / "metadata" / "catalog")
+    before = writer.fetchone("SELECT COUNT(*) FROM meta.metric_catalog")[0]
+    with pytest.raises(FileNotFoundError):
+        mo.seed_catalogs(writer, _REPO / "metadata" / "catalog", tmp_path / "no_semantic")
+    assert writer.fetchone("SELECT COUNT(*) FROM meta.metric_catalog")[0] == before
+    writer.close()
+
+
+def test_freshness_targets_come_from_layer_catalog() -> None:
+    targets = {
+        f"{schema}.{table}": (ts, sla)
+        for schema, table, ts, sla in mo.freshness_targets(_REPO / "metadata" / "catalog")
+    }
+    assert targets["bronze.clickstream_records"] == ("ingested_at", 60)
+    assert targets["summary.inventory_position_daily"] == ("snapshot_date_key", 1440)
+    assert "bronze.clickstream_events" not in targets
+    # No SLA, no freshness probe.
+    assert "finance.dim_store" not in targets
+
+
+def test_freshness_reads_date_keys_as_end_of_day(tmp_path: Path) -> None:
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA summary")
+    analytics.execute("CREATE TABLE summary.daily AS SELECT 20261023 AS date_key")
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    mo.collect_table_freshness(
+        writer,
+        analytics,
+        execution_id="e1",
+        targets=[("summary", "daily", "date_key", 1440)],
+        measured_at=datetime(2026, 10, 24, 12, 0),
+    )
+    lag, status = writer.fetchone(
+        "SELECT lag_minutes, sla_status FROM meta.table_freshness WHERE execution_id = 'e1'"
+    )
+    assert (lag, status) == (720, "ok")
+    writer.close()
+    analytics.close()
 
 
 def test_fail_open_wrapper_swallows() -> None:
@@ -182,6 +285,7 @@ def test_summary_models_exist_and_single_fact_source() -> None:
     expected = {
         "sales_daily_store.sql": "fact_sales",
         "inventory_daily_product_store.sql": "fact_inventory_snapshot",
+        "inventory_position_daily.sql": "fact_inventory_snapshot",
         "sessions_daily_platform.sql": "fact_customer_session",
     }
     for fname, fact in expected.items():

@@ -15,7 +15,7 @@ Airflow · Great Expectations · Terraform · Streamlit
 | Team | What they need | What the platform delivers |
 |---|---|---|
 | **Finance** | Sales figures that reconcile to the till, every day | `finance.fact_sales`: one row per POS line item, built daily and only published after automated checks pass |
-| **Store operations** | Current stock per product and store | `finance.fact_inventory_snapshot`: hourly stock on hand, computed from the live scanner stream |
+| **Store operations** | Current stock per product and store | `finance.fact_inventory_snapshot`: hourly stock on hand from the scanner stream, corrected by the full event history once each hour closes |
 | **Marketing** | One view of each customer across loyalty card, web and app, respecting consent | `serving.customer_360_serving`: identities merged by a graph algorithm, with personal data shown only where `marketing_consent` is given |
 | **Engineering** | Recoverable data and visible failures | Raw events kept in a replayable lake, bad events routed to dead-letter queues, a runbook for every incident |
 
@@ -77,8 +77,8 @@ in [docs/evidence](./docs/evidence/README.md)):
 | Streaming ingestion | 40,990 clickstream + 9,001 inventory events landed in Iceberg, 0 lost, 0 dead-lettered |
 | Finance batch | 1,453 POS line items → 1,453 `fact_sales` rows (exact 1:1) |
 | Identity resolution | 19,633 identifiers resolved to customers by Spark GraphFrames |
-| Modelling | 18/18 dbt models built through Write-Audit-Publish; 122/122 dbt tests pass |
-| Data quality | 11/11 Great Expectations checks and 325/325 unit tests pass |
+| Modelling | 18/18 dbt models built through Write-Audit-Publish; dbt tests gate every publish |
+| Data quality | Current unit, dbt and Great Expectations results are in the [CI runs](https://github.com/jerry98s/global_retail_analytics/actions) for each commit |
 | Customer 360 | 3,431 consent-gated customer rows served |
 
 | | |
@@ -95,10 +95,11 @@ quality; they do not claim a production AWS deployment or a measured
 | Decision | Why | Record |
 |---|---|---|
 | Iceberg for the lake | Open format, snapshots for replay and time travel | [ADR-001](./docs/decisions/ADR-001-table-format.md) |
-| Stream inventory, batch finance | Ops needs fresh stock; finance needs reconciled totals | [ADR-002](./docs/decisions/ADR-002-batch-vs-stream.md), [ADR-007](./docs/decisions/ADR-007-inventory-kappa.md) |
+| Stream inventory, batch finance | Ops needs fresh stock; finance needs reconciled totals | [ADR-002](./docs/decisions/ADR-002-batch-vs-stream.md), [ADR-012](./docs/decisions/ADR-012-inventory-lambda.md) |
 | Flink for streaming, Spark for the identity graph | Flink for stateful event-time processing; Spark GraphFrames for connected components | [ADR-006](./docs/decisions/ADR-006-flink-vs-spark.md), [ADR-010](./docs/decisions/ADR-010-spark-graphframes-identity.md) |
 | Redshift Serverless for Gold | Pay-per-use warehouse with Spectrum over the lake | [ADR-005](./docs/decisions/ADR-005-warehouse-redshift.md) |
 | Write-Audit-Publish | Consumers only ever see audited data | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) |
+| Semantic layer for metrics | One metric definition for the dashboard and analysts; on-hand is semi-additive | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) |
 
 All decisions: [docs/decisions](./docs/decisions/). Cost figures in
 [ADR-004](./docs/decisions/ADR-004-cost-model.md) are planning scenarios, not
@@ -140,7 +141,7 @@ in this checkout.
 | `spark/` | GraphFrames identity-resolution job |
 | `transformation/` | dbt project (staging → intermediate → marts) and Redshift DDL |
 | `orchestration/` | Airflow DAGs |
-| `quality/` | Great Expectations suites and data-quality tests |
+| `quality/` | Great Expectations Silver event contract checks |
 | `infra/` | Docker images for Kafka, Flink, and Spark |
 | `scripts/` | One-command local runner |
 | `dashboard/` | Streamlit app |

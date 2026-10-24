@@ -1,7 +1,7 @@
 """
 Inventory silver Flink job.
 Pipeline: Kafka -> dedup -> watermark -> hourly window aggregation -> Iceberg Silver.
-Writes silver.inventory_hourly (kappa upstream for finance.fact_inventory_snapshot).
+Writes silver.inventory_hourly (speed layer for finance.fact_inventory_snapshot, ADR-012).
 """
 
 from __future__ import annotations
@@ -118,11 +118,9 @@ def run() -> None:
           is_estimated BOOLEAN
         )
         -- Identity partition on snapshot_date_key (YYYYMMDD int). Silver is
-        -- the upstream for finance.fact_inventory_snapshot's kappa path; the
-        -- daily dbt incremental filters on snapshot_date_key, so partition
-        -- pruning on this column collapses a 7-day backfill to 7 partitions
-        -- out of ~365/year. See docs/runbooks/iceberg-maintenance.md (DL-A
-        -- from the data lake checklist).
+        -- the speed layer for finance.fact_inventory_snapshot (ADR-012);
+        -- partition pruning on this column collapses a 7-day backfill to 7
+        -- partitions out of ~365/year.
         PARTITIONED BY (snapshot_date_key)
         """
     )

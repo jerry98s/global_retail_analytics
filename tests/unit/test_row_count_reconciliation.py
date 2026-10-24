@@ -26,8 +26,8 @@ from orchestration.airflow.plugins.row_count_reconciliation import (
 
 pytestmark = pytest.mark.unit
 
-# Counts aligned to GOLD_MARTS order (11 marts including summary.*).
-_DEFAULT_COUNTS = [3653, 20, 100_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 1_000]
+# Counts aligned to GOLD_MARTS order (12 marts including summary.*).
+_DEFAULT_COUNTS = [3653, 20, 100_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
 
 _DEFAULT_BASELINE = {
     "finance.dim_date": 3653,
@@ -40,6 +40,7 @@ _DEFAULT_BASELINE = {
     "marketing.fact_customer_session": 50_000,
     "summary.sales_daily_store": 500,
     "summary.inventory_daily_product_store": 200,
+    "summary.inventory_position_daily": 300,
     "summary.sessions_daily_platform": 1_000,
 }
 
@@ -190,7 +191,7 @@ def test_reconcile_seeds_baseline_on_first_run() -> None:
 
 def test_reconcile_warns_on_large_drop() -> None:
     # fact_sales dropped from 100k to 30k — -70%, well above the 20% threshold.
-    counts = [3653, 20, 30_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 1_000]
+    counts = [3653, 20, 30_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
     conn = _StubConn(counts=counts)
     var_get, var_set, store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
 
@@ -209,7 +210,7 @@ def test_reconcile_warns_on_large_drop() -> None:
 def test_reconcile_warns_on_large_spike() -> None:
     # fact_customer_session spiked from 50k to 300k — +500%.
     baseline = {"marketing.fact_customer_session": 50_000}
-    counts = [3653, 20, 100_000, 720, 5_000, 100, 8_000, 300_000, 500, 200, 1_000]
+    counts = [3653, 20, 100_000, 720, 5_000, 100, 8_000, 300_000, 500, 200, 300, 1_000]
     conn = _StubConn(counts=counts)
     var_get, var_set, _store = _make_var_stores(baseline=baseline)
 
@@ -225,7 +226,7 @@ def test_reconcile_warns_on_large_spike() -> None:
 
 def test_reconcile_no_warning_when_within_threshold() -> None:
     # Small day-over-day growth (+5%) — under the 20% threshold.
-    counts = [3653, 20, 105_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 1_000]
+    counts = [3653, 20, 105_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
     conn = _StubConn(counts=counts)
     var_get, var_set, store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
 
@@ -241,7 +242,7 @@ def test_reconcile_no_warning_when_within_threshold() -> None:
 
 def test_reconcile_respects_custom_threshold() -> None:
     # Tighter 5% threshold; +10% growth should warn.
-    counts = [3653, 20, 110_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 1_000]
+    counts = [3653, 20, 110_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
     conn = _StubConn(counts=counts)
     var_get, var_set, _store = _make_var_stores(
         baseline=dict(_DEFAULT_BASELINE), threshold="0.05"

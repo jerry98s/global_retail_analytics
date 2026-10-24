@@ -1,0 +1,86 @@
+version: 2
+
+metrics:
+  - name: net_revenue
+    label: Net revenue
+    description: Net revenue, voided lines excluded.
+    type: simple
+    type_params:
+      measure: net_revenue
+
+  - name: gross_revenue
+    label: Gross revenue
+    type: simple
+    type_params:
+      measure: gross_revenue
+
+  - name: gross_margin
+    label: Gross margin
+    type: simple
+    type_params:
+      measure: gross_margin
+
+  - name: units_sold
+    label: Units sold
+    type: simple
+    type_params:
+      measure: units_sold
+
+  - name: transaction_count
+    label: Transactions
+    type: simple
+    type_params:
+      measure: transaction_count
+
+  - name: inventory_on_hand
+    label: Quantity on hand
+    description: On-hand units at the end of the period (last day), summed across products and stores.
+    type: simple
+    type_params:
+      measure: on_hand_qty
+
+  - name: inventory_available
+    label: Quantity available
+    description: Available units (on-hand floored at zero) at the end of the period.
+    type: simple
+    type_params:
+      measure: available_qty
+
+  - name: stockout_hours
+    label: Stockout hours
+    description: Product/store hours with on-hand <= 0 in the period.
+    type: simple
+    type_params:
+      measure: stockout_hours
+
+  - name: sessions
+    label: Sessions
+    type: simple
+    type_params:
+      measure: sessions
+
+  - name: converted_sessions
+    label: Converted sessions
+    type: simple
+    type_params:
+      measure: converted_sessions
+
+  - name: product_views
+    label: Product views
+    type: simple
+    type_params:
+      measure: product_views
+
+  - name: add_to_carts
+    label: Add to carts
+    type: simple
+    type_params:
+      measure: add_to_carts
+
+  - name: session_conversion_rate
+    label: Session conversion rate
+    description: Converted sessions divided by sessions.
+    type: ratio
+    type_params:
+      numerator: converted_sessions
+      denominator: sessions

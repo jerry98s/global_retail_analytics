@@ -63,6 +63,7 @@ GOLD_MARTS: list[tuple[str, str]] = [
     ("marketing", "fact_customer_session"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
+    ("summary", "inventory_position_daily"),
     ("summary", "sessions_daily_platform"),
 ]
 

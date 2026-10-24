@@ -1,12 +1,19 @@
 """Data-access layer for the retail analytics dashboard.
 
-Two modes, selected by the ``DASHBOARD_MODE`` environment variable:
+Three modes, selected by the ``DASHBOARD_MODE`` environment variable:
 
 * ``redshift`` (default) — query the Gold/serving tables on Amazon Redshift
   Serverless via ``redshift_connector`` (same ``RS_*`` env vars as dbt and the
   Airflow cost sensor).
+* ``duckdb`` — query the same Gold/serving tables in the local dbt DuckDB file
+  (``DASHBOARD_DUCKDB_PATH``, default
+  ``transformation/dbt_project/local_retail.duckdb``), read-only.
 * ``local`` — read the Parquet files written by the local Flink jobs into the
   Iceberg warehouse directory (``LOCAL_ICEBERG_DIR``, default ``/tmp/iceberg``).
+
+Sales, inventory and session metrics come from the dbt semantic layer: the SQL
+in ``semantic_queries.py`` is compiled by MetricFlow (ADR-013) per dialect, so
+the dashboard never re-defines a metric.
 
 This module deliberately avoids importing Streamlit so it can be unit-tested
 and reused outside the UI.
@@ -16,12 +23,21 @@ from __future__ import annotations
 
 import glob
 import os
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
+from semantic_queries import QUERIES as SEMANTIC_QUERIES
+
 MODE_REDSHIFT = "redshift"
+MODE_DUCKDB = "duckdb"
 MODE_LOCAL = "local"
+GOLD_MODES = (MODE_REDSHIFT, MODE_DUCKDB)
+
+_DEFAULT_DUCKDB_PATH = (
+    Path(__file__).resolve().parents[1] / "transformation" / "dbt_project" / "local_retail.duckdb"
+)
 
 # Local Iceberg paths relative to LOCAL_ICEBERG_DIR — see docs/data-model/naming-conventions.md
 _LOCAL_TABLES = {
@@ -31,9 +47,9 @@ _LOCAL_TABLES = {
 
 
 def get_mode() -> str:
-    """Return the active dashboard mode (``redshift`` or ``local``)."""
+    """Return the active dashboard mode (``redshift``, ``duckdb`` or ``local``)."""
     mode = os.environ.get("DASHBOARD_MODE", MODE_REDSHIFT).strip().lower()
-    return mode if mode in (MODE_REDSHIFT, MODE_LOCAL) else MODE_REDSHIFT
+    return mode if mode in (MODE_REDSHIFT, MODE_DUCKDB, MODE_LOCAL) else MODE_REDSHIFT
 
 
 # --------------------------------------------------------------------------- #
@@ -80,8 +96,29 @@ def _redshift_connect():
     )
 
 
-def run_query(sql: str) -> pd.DataFrame:
-    """Execute a read-only SQL query against Redshift and return a DataFrame."""
+def duckdb_path() -> Path:
+    """Local dbt DuckDB file for ``duckdb`` mode."""
+    return Path(os.environ.get("DASHBOARD_DUCKDB_PATH", str(_DEFAULT_DUCKDB_PATH)))
+
+
+def _duckdb_query(sql: str) -> pd.DataFrame:
+    import duckdb  # imported lazily so Redshift mode needs no DuckDB
+
+    path = duckdb_path()
+    if not path.is_file():
+        raise RuntimeError(f"DuckDB file not found: {path}. Run the local dbt task first.")
+    conn = duckdb.connect(str(path), read_only=True)
+    try:
+        return conn.execute(sql).df()
+    finally:
+        conn.close()
+
+
+def run_query(sql: str, mode: Optional[str] = None) -> pd.DataFrame:
+    """Execute a read-only SQL query against the Gold warehouse of ``mode``."""
+    mode = mode or get_mode()
+    if mode == MODE_DUCKDB:
+        return _duckdb_query(sql)
     conn = _redshift_connect()
     try:
         cursor = conn.cursor()
@@ -91,63 +128,26 @@ def run_query(sql: str) -> pd.DataFrame:
         conn.close()
 
 
-def redshift_healthcheck() -> Optional[str]:
-    """Return None when Redshift is reachable, else a short error string."""
+def semantic_query(name: str, mode: Optional[str] = None) -> pd.DataFrame:
+    """Run a MetricFlow-compiled dashboard query (see semantic_queries.py)."""
+    mode = mode or get_mode()
+    if mode not in GOLD_MODES:
+        raise ValueError(f"Semantic queries need a Gold mode {GOLD_MODES}, not '{mode}'")
+    return run_query(SEMANTIC_QUERIES[mode][name], mode=mode)
+
+
+def warehouse_healthcheck(mode: Optional[str] = None) -> Optional[str]:
+    """Return None when the Gold warehouse is reachable, else a short error string."""
     try:
-        run_query("SELECT 1")
+        run_query("SELECT 1", mode=mode)
         return None
     except Exception as exc:  # noqa: BLE001 - surfaced to the UI as a banner
         return str(exc)
 
 
-# Named analytical queries over the Gold/serving layer. Each is defensive: the
-# UI wraps calls in try/except so a missing table (dbt not yet run) degrades to
-# an informational message rather than a crash.
-SALES_BY_DAY = """
-    SELECT date_key,
-           SUM(net_revenue)  AS net_revenue,
-           SUM(quantity_sold) AS units,
-           COUNT(*)          AS line_items
-    FROM finance.fact_sales
-    WHERE is_voided = FALSE
-    GROUP BY date_key
-    ORDER BY date_key
-"""
-
-SALES_BY_STORE = """
-    SELECT s.store_id,
-           s.store_name,
-           SUM(f.net_revenue) AS net_revenue
-    FROM finance.fact_sales f
-    JOIN finance.dim_store s ON f.store_key = s.store_key
-    WHERE f.is_voided = FALSE
-    GROUP BY s.store_id, s.store_name
-    ORDER BY net_revenue DESC
-    LIMIT 20
-"""
-
-INVENTORY_LATEST = """
-    SELECT snapshot_date_key,
-           snapshot_hour,
-           SUM(quantity_on_hand)   AS quantity_on_hand,
-           SUM(quantity_available) AS quantity_available
-    FROM finance.fact_inventory_snapshot
-    GROUP BY snapshot_date_key, snapshot_hour
-    ORDER BY snapshot_date_key, snapshot_hour
-"""
-
-SESSION_FUNNEL = """
-    SELECT platform,
-           COUNT(*)                                       AS sessions,
-           SUM(page_view_count)                           AS page_views,
-           SUM(product_view_count)                        AS product_views,
-           SUM(add_to_cart_count)                         AS add_to_carts,
-           SUM(CASE WHEN converted THEN 1 ELSE 0 END)     AS conversions
-    FROM marketing.fact_customer_session
-    GROUP BY platform
-    ORDER BY sessions DESC
-"""
-
+# Row-level Gold/serving queries that are not metrics. Metric queries live in
+# semantic_queries.py. The UI wraps calls in try/except so a missing table (dbt
+# not yet run) degrades to an informational message rather than a crash.
 CUSTOMER_360 = """
     SELECT customer_key,
            loyalty_tier,

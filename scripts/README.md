@@ -9,7 +9,7 @@ that step on its own.
 |--------|---------|
 | **`run_local_stack.ps1`** | **Wrapper** — `up` / `topics` / `flink` / `simulate` / `pos-parquet` / `spark` / `load-duckdb` / `dbt` / `quality` / `all`. Default `-DbtSource iceberg`. `-DbtSource seeds` uses CSV fixtures. Uses repo **`.venv`**. |
 | `load_iceberg_to_duckdb.py` | Materializes Flink, POS, and Spark Parquet into `local_retail.duckdb`. |
-| `run_ge_local.py` | Runs the Great Expectations `gold_layer_local` checkpoint against DuckDB. |
+| `run_ge_local.py` | Runs the Great Expectations `silver_events_local` checkpoint (Silver event contract) against DuckDB. |
 | `bootstrap_live_dim_product.py` | Seeds the live `dim_product` clone the catalog model reads. |
 
 ## `scripts/common/`

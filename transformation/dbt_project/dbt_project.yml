@@ -102,8 +102,8 @@ models:
     #   2. Staging views read Bronze/Silver Spectrum external tables, which
     #      Redshift only allows behind a late-binding view.
     # Trade-off: dbt no longer fails at build time on a missing upstream
-    # column — the error surfaces when the view is queried. dbt tests and the
-    # GE audit gate cover that.
+    # column — the error surfaces when the view is queried. The dbt tests in
+    # the WAP audit cover that.
     +bind: false
     staging:
       +schema: staging
@@ -123,3 +123,8 @@ models:
       serving:
         +schema: serving
         +materialized: view
+    # MetricFlow time spine (ADR-013). Semantic models and metrics live in
+    # models/semantic/*.yml and read the live summary.* tables.
+    semantic:
+      +schema: semantic
+      +materialized: view

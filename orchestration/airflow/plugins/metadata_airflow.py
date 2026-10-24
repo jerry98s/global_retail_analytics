@@ -1,7 +1,8 @@
 """Fail-open Airflow helpers for the operational metadata database.
 
-Requires ``scripts/common/metadata_observer.py`` on the worker (deploy syncs
-it to ``/tmp/scripts/common`` and also copies it beside this plugin).
+Requires ``scripts/common/metadata_observer.py`` on the worker. The deploy
+bundles it, with the catalogs under ``metadata_catalog/``, into the plugins
+upload; bash tasks use the ``/tmp/scripts/common`` copy.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ log = logging.getLogger(__name__)
 
 def _ensure_observer_path() -> None:
     candidates = [
-        Path(__file__).resolve().parent,  # plugins/ (copied observer)
+        Path(__file__).resolve().parent,  # plugins/ (bundled by the deploy)
         Path("/tmp/scripts/common"),
         Path(__file__).resolve().parents[3] / "scripts" / "common",
     ]
@@ -311,7 +312,7 @@ if [ $GE_RC -eq 0 ]; then SUCCESS_FLAG=--success; else SUCCESS_FLAG=; fi
 python /tmp/scripts/common/metadata_observer.py record-ge \\
   --backend redshift \\
   --execution-id "$EXEC_ID" \\
-  --suite gold_layer_daily \\
+  --suite silver_events_daily \\
   $SUCCESS_FLAG \\
   || true
 exit $GE_RC

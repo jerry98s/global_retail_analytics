@@ -10,7 +10,7 @@
   - silver.inventory_events: Spark canonical events rebuilt from the lossless
     Bronze ledger (ADR-011), deduplicated, no watermark.
   - silver.inventory_hourly: Flink windowed sums read directly from Kafka; the
-    kappa input of fact_inventory_snapshot.
+    speed layer of fact_inventory_snapshot (ADR-012).
 
   An event is predicted late-dropped when it reached Kafka after its window
   closed (window_end + watermark delay). unexplained_qty is what remains after
@@ -18,6 +18,11 @@
   reason other than lateness (consumer gaps, restarts from latest-offset,
   dedup differences). The prediction uses Kafka append time as a proxy for
   the job watermark, so expect occasional boundary noise.
+
+  is_batch_covered marks hours inside int_inventory_batch_coverage. Only those
+  are comparable: Spark's side of the open hour is still incomplete. For a
+  covered hour Gold already uses Spark's number, so a mismatch measures how
+  far the provisional Flink number was off, not an error in Gold.
 */
 
 with canonical as (
@@ -86,10 +91,18 @@ select
     coalesce(c.canonical_qty, 0) - coalesce(c.late_dropped_qty, 0) as expected_silver_qty,
     coalesce(s.silver_qty, 0) as silver_qty,
     coalesce(s.silver_qty, 0)
-        - (coalesce(c.canonical_qty, 0) - coalesce(c.late_dropped_qty, 0)) as unexplained_qty
+        - (coalesce(c.canonical_qty, 0) - coalesce(c.late_dropped_qty, 0)) as unexplained_qty,
+    coalesce(
+        coalesce(c.snapshot_date_key, s.snapshot_date_key) * 100
+            + coalesce(c.snapshot_hour, s.snapshot_hour) >= cov.batch_start_hour_key
+        and coalesce(c.snapshot_date_key, s.snapshot_date_key) * 100
+            + coalesce(c.snapshot_hour, s.snapshot_hour) < cov.batch_end_hour_key,
+        false
+    ) as is_batch_covered
 from canonical_hourly c
 full outer join silver_hourly s
   on c.snapshot_date_key = s.snapshot_date_key
  and c.snapshot_hour = s.snapshot_hour
  and c.product_id = s.product_id
  and c.store_id = s.store_id
+cross join {{ ref('int_inventory_batch_coverage') }} cov

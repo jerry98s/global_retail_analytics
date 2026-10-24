@@ -1,9 +1,10 @@
-"""Run the local Great Expectations gold checkpoint against DuckDB.
+"""Run the local Great Expectations Silver event checkpoint against DuckDB.
 
-Cloud uses ``gold_layer_daily`` (Redshift + SqlAlchemy). Local uses the same
-expectation suites with DuckDB-portable SQL from ``gold_layer_local.yml``, but
-loads each query into a Pandas batch — GE 0.18's SqlAlchemy path against
+Cloud uses ``silver_events_daily`` (Redshift + SqlAlchemy). Local uses the same
+expectation suites with DuckDB-portable SQL from ``silver_events_local.yml``,
+but loads each query into a Pandas batch — GE 0.18's SqlAlchemy path against
 duckdb-engine raises ``MetricResolutionError: list index out of range``.
+Gold tables are audited by dbt tests, not GE.
 
 Usage::
 
@@ -27,7 +28,7 @@ _DEFAULT_DUCKDB = _REPO / "transformation" / "dbt_project" / "local_retail.duckd
 _DEFAULT_METADATA = (
     _REPO / "transformation" / "dbt_project" / "local_metadata.duckdb"
 )
-_CHECKPOINT = _GE_ROOT / "checkpoints" / "gold_layer_local.yml"
+_CHECKPOINT = _GE_ROOT / "checkpoints" / "silver_events_local.yml"
 
 # Allow importing scripts.common.metadata_observer
 if str(_REPO) not in sys.path:
@@ -92,7 +93,6 @@ def run_checkpoint(
     *,
     execution_id: str | None = None,
     metadata_duckdb: Path = _DEFAULT_METADATA,
-    pending_tables: str = "",
 ) -> bool:
     if not duckdb_path.is_file():
         raise FileNotFoundError(
@@ -102,13 +102,8 @@ def run_checkpoint(
     if not _CHECKPOINT.is_file():
         raise FileNotFoundError(f"Checkpoint missing: {_CHECKPOINT}")
 
-    # ADR-009: reuse the shared checkpoint parsing / pending retargeting so the
-    # local audit and the cloud wrapper cannot drift apart.
-    from scripts.common.run_ge_checkpoint import (
-        load_validations,
-        parse_table_list,
-        prepare_validations,
-    )
+    # Shared checkpoint parsing, so the local and cloud runners cannot drift apart.
+    from scripts.common.run_ge_checkpoint import load_validations
 
     # Satisfy ${...} expansion for unused SqlAlchemy datasources at context load.
     placeholder = f"duckdb:///{duckdb_path.resolve().as_posix()}"
@@ -123,9 +118,7 @@ def run_checkpoint(
     import great_expectations as gx
     from great_expectations.core.batch import RuntimeBatchRequest
 
-    validations = prepare_validations(
-        load_validations(_CHECKPOINT), parse_table_list(pending_tables)
-    )
+    validations = load_validations(_CHECKPOINT)
     context = gx.get_context(context_root_dir=str(_GE_ROOT))
     con = duckdb.connect(str(duckdb_path), read_only=True)
     all_ok = True
@@ -192,15 +185,6 @@ def parse_args() -> argparse.Namespace:
         default=_DEFAULT_METADATA,
         help="Path to local_metadata.duckdb",
     )
-    p.add_argument(
-        "--pending-tables",
-        default="",
-        help=(
-            "Comma-separated schema.table list to audit in its *_pending schema "
-            "(WAP gate). Only validations touching those tables run. "
-            "Empty = validate every batch against live."
-        ),
-    )
     return p.parse_args()
 
 
@@ -211,7 +195,6 @@ def main() -> int:
             args.duckdb,
             execution_id=args.execution_id,
             metadata_duckdb=args.metadata_duckdb,
-            pending_tables=args.pending_tables,
         )
     except Exception as exc:  # noqa: BLE001
         import traceback
@@ -220,9 +203,9 @@ def main() -> int:
         traceback.print_exc()
         return 1
     if ok:
-        print("GE gold_layer_local: SUCCESS")
+        print("GE silver_events_local: SUCCESS")
         return 0
-    print("GE gold_layer_local: FAILED", file=sys.stderr)
+    print("GE silver_events_local: FAILED", file=sys.stderr)
     return 1
 
 

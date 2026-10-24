@@ -65,7 +65,7 @@ porting, inspect main's own files rather than assuming parity.
 | Canonical Bronze replay | Spark regression with `--iceberg` | No live Kafka/Flink capture proof |
 | Identity DataFrames | Real GraphFrames parity test in CI | Distinct from fixture generation |
 | dbt SQL / WAP | Compile relevant live/pending selections; build/test in isolated target | Compile is not data validation |
-| Local Gold quality | dbt tests and local GE on prepared data | Fixtures do not prove the Iceberg bridge |
+| Local quality | dbt tests (Gold) and local GE (Silver events) on prepared data | Fixtures do not prove the Iceberg bridge |
 | Cloud deployment | Authorized smoke/E2E using main's runbooks | Local success does not prove AWS wiring |
 
 ### Fast checks
