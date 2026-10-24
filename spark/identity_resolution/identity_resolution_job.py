@@ -246,7 +246,6 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    from pyspark import SparkFiles
     from py4j.java_gateway import java_import
     
     spark = resolution.sparkSession
