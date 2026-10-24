@@ -288,6 +288,7 @@ def write_consumer_exports(
     edges.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(edges_path)
     
     # Verify write created exactly what we expect (single directory with parquet files)
+    import sys
     for path_str in [resolution_path, edges_path]:
         hadoop_path = sc._jvm.org.apache.hadoop.fs.Path(path_str)
         fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_path.toUri(), hadoop_conf)
@@ -296,7 +297,9 @@ def write_consumer_exports(
         status = fs.listStatus(hadoop_path)
         all_files = [s.getPath().getName() for s in status]
         parquet_files = [name for name in all_files if name.startswith("part-") and name.endswith(".parquet")]
-        print(f"DEBUG {path_str}: all files = {all_files}, parquet files = {parquet_files}")
+        sys.stderr.write(f"DEBUG write_consumer_exports: {path_str} has {len(all_files)} files: {all_files}\n")
+        sys.stderr.write(f"DEBUG write_consumer_exports: {len(parquet_files)} parquet files: {parquet_files}\n")
+        sys.stderr.flush()
         if len(parquet_files) != 1:
             raise RuntimeError(f"Expected exactly 1 parquet file in {path_str}, found {len(parquet_files)}: {all_files}")
     
