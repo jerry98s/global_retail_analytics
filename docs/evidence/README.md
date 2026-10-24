@@ -26,6 +26,9 @@ Environment: Windows, Python 3.11, local project virtual environment.
 | 2026-08-30 | `main`: Ruff, Python bytecode compilation, Docker Compose config, PowerShell parse, dbt full + WAP pending compiles, identity fixture drift, internal Markdown links | Passed |
 | 2026-08-31 | `local-testing-version`: full local E2E (`run_local_stack.ps1 -Task all`, fully wiped Docker volumes + DuckDB + `.local/iceberg`) | `local_e2e` pipeline_run SUCCESS (~33 min): 40,990 clickstream + 9,001 inventory events → Iceberg Bronze (0 DLQ); 1,453 POS lines → 1,453 `finance.fact_sales` (exact 1:1); Spark GraphFrames identity job (Docker) → 19,633 rows in `silver.identity_resolution` (device_only 7,795 / session_linked 6,246 / customer_id_standalone 4,196 / component_anchor 954 / loyalty_match 442); dbt 18/18 models built via WAP pending → audit → publish; 122/122 dbt tests pass; 11/11 GE checks pass; 153/153 recorded DQ results `pass`; consent-gated `customer_360_view` / `customer_360_serving` = 3,431 rows; `marketing.dim_product` 500/500 current, 0 duplicate keys |
 | 2026-08-31 | `local-testing-version`: `python -m pytest tests/unit -q` | 325 passed in 5.40s |
+| 2026-10-24 | `main`: `python -m pytest tests/unit -q`, Ruff, dbt full compile, `terraform fmt -check` + `validate` | 388 passed; Ruff, compile and Terraform validate passed |
+| 2026-10-24 | `local-testing-version`: `python -m pytest tests/unit -q`, Ruff, dbt full + WAP pending compiles, CI identity chain (`dbt seed`, `run +identity_graph`, `test`) | 381 passed; compiles passed; identity chain 9/9 models, 21/21 tests |
+| 2026-10-24 | `local-testing-version`: two WAP rounds on `.local/iceberg` output loaded into a scratch DuckDB (clone → pending build → `dbt test` → publish → serving views) | Each round: 23/23 models, 158/158 dbt tests, 10 Gold tables published; round 2 left all 10 Gold row counts unchanged |
 
 Re-run these commands after any material change and update the table only from
 captured output.

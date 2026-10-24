@@ -86,9 +86,16 @@ in [docs/evidence](./docs/evidence/README.md)):
 | ![Flink job running with checkpoint history](docs/evidence/screenshots/02-flink-checkpoints.png) | ![Streamlit dashboard](docs/evidence/screenshots/01-dashboard-overview.png) |
 | ![DuckDB queries over Iceberg Parquet](docs/evidence/screenshots/03-iceberg-query.png) | ![dbt lineage graph](docs/evidence/screenshots/04-dbt-lineage.png) |
 
-Screenshots are from the earlier 2026-08-01 run. Offline tests prove code
-quality; they do not claim a production AWS deployment or a measured
-10k events/s load test.
+Screenshots are from the earlier 2026-08-01 run.
+
+Latest regression run (2026-10-24, this branch's Iceberg output loaded into a
+scratch DuckDB): two consecutive Write-Audit-Publish rounds each built 23
+models, passed 158 dbt audit tests and published 10 Gold tables; the second
+round left every Gold row count unchanged.
+
+Not proven yet: no completed AWS run, no measured load test (10k events/s is
+a target), and cost figures are estimates. The data comes from the bundled
+simulators. Details in the [evidence ledger](./docs/evidence/README.md).
 
 ## Key design decisions
 
@@ -128,9 +135,8 @@ in this checkout.
 
 | Branch | Role |
 |---|---|
-| `showcase` | This branch: the critical flow on a laptop |
-| `main` | Cloud implementation |
-| `local-testing-version` | Same local pipeline, plus the cloud tree |
+| `local-testing-version` | This branch: the whole pipeline on a laptop |
+| `main` | Default branch: the cloud implementation (Terraform, MSK, EMR, Redshift, MWAA) |
 
 ## Repo map
 
