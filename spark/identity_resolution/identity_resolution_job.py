@@ -40,6 +40,8 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
+import shutil
+from pathlib import Path
 from urllib.parse import urlparse
 
 from pyspark.sql import SparkSession, DataFrame
@@ -246,6 +248,15 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
+    # Ensure clean overwrites by removing existing directories
+    parsed = urlparse(root)
+    if parsed.scheme in ("", "file"):
+        root_path = Path(parsed.path if parsed.path else root)
+        for subdir in ["identity_resolution", "identity_edges"]:
+            target = root_path / subdir
+            if target.exists():
+                shutil.rmtree(target)
+    
     resolution.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_resolution")
     edges.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_edges")
 
