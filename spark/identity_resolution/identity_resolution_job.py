@@ -274,6 +274,9 @@ def write_consumer_exports(
     # Coalesce to single partition for predictable single-file output.
     resolution.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(resolution_path)
     edges.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(edges_path)
+    
+    # Clear any cached metadata to ensure subsequent reads see the new data.
+    resolution.sparkSession.catalog.clearCache()
 
 
 def assign_resolution(
