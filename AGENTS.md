@@ -75,7 +75,8 @@ uv sync --group dev
   `python -m ingestion.batch.generate_product_master --check`).
 - `-DbtSource seeds`: curated CSV fixtures (identity CI /
   `verify_local_identity.py`).
-- Start **Flink before simulate** (`latest-offset`). Task `all` does this.
+- Flink sources use `group-offsets` (reset `earliest`), so simulate and Flink
+ can start in either order; a restart resumes from committed offsets.
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
 - `-Task quality`: `dbt test` (the Gold WAP gate) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
