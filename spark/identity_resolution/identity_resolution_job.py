@@ -246,26 +246,9 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    from py4j.java_gateway import java_import
-    
-    spark = resolution.sparkSession
-    sc = spark.sparkContext
-    
-    # Use Hadoop FileSystem for reliable directory cleanup before write
-    java_import(sc._jvm, "org.apache.hadoop.fs.FileSystem")
-    java_import(sc._jvm, "org.apache.hadoop.fs.Path")
-    
-    fs = sc._jvm.FileSystem.get(sc._jsc.hadoopConfiguration())
-    
-    # Delete existing directories to ensure clean write
-    for subdir in ["identity_resolution", "identity_edges"]:
-        path = sc._jvm.Path(f"{root}/{subdir}")
-        if fs.exists(path):
-            fs.delete(path, True)
-    
-    # Single partition for deterministic single-file output
-    resolution.repartition(1).write.parquet(f"{root}/identity_resolution")
-    edges.repartition(1).write.parquet(f"{root}/identity_edges")
+    # Single partition to ensure exactly one output file per write
+    resolution.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_resolution")
+    edges.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_edges")
 
 
 def assign_resolution(
