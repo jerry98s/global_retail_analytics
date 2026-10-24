@@ -251,25 +251,13 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    from py4j.java_gateway import java_import
-    
     resolution_path = f"{root}/identity_resolution"
     edges_path = f"{root}/identity_edges"
     
-    # Use Hadoop FileSystem API for reliable cross-platform directory removal
-    sc = resolution.sparkSession.sparkContext
-    java_import(sc._jvm, "org.apache.hadoop.fs.Path")
-    java_import(sc._jvm, "org.apache.hadoop.fs.FileSystem")
-    hadoop_conf = sc._jsc.hadoopConfiguration()
-    
-    for path_str in [resolution_path, edges_path]:
-        hadoop_path = sc._jvm.org.apache.hadoop.fs.Path(path_str)
-        fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_path.toUri(), hadoop_conf)
-        if fs.exists(hadoop_path):
-            fs.delete(hadoop_path, True)  # True = recursive
-    
-    resolution.write.mode("overwrite").option("overwriteSchema", "true").parquet(resolution_path)
-    edges.write.mode("overwrite").option("overwriteSchema", "true").parquet(edges_path)
+    # Coalesce to single partition to ensure exactly one output file per overwrite.
+    # Multiple partfiles can cause stale data to persist across overwrites.
+    resolution.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(resolution_path)
+    edges.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(edges_path)
 
 
 def assign_resolution(
