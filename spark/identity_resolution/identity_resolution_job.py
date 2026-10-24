@@ -258,18 +258,14 @@ def write_consumer_exports(
     fs = sc._jvm.FileSystem.get(sc._jsc.hadoopConfiguration())
     
     # Delete existing directories to ensure clean write
-    res_path = sc._jvm.Path(f"{root}/identity_resolution")
-    edges_path = sc._jvm.Path(f"{root}/identity_edges")
-    
-    if fs.exists(res_path):
-        fs.delete(res_path, True)
-    if fs.exists(edges_path):
-        fs.delete(edges_path, True)
+    for subdir in ["identity_resolution", "identity_edges"]:
+        path = sc._jvm.Path(f"{root}/{subdir}")
+        if fs.exists(path):
+            fs.delete(path, True)
     
     # Single partition for deterministic single-file output
-    # Write without mode("overwrite") since we manually deleted
-    resolution.repartition(1).write.parquet(str(res_path))
-    edges.repartition(1).write.parquet(str(edges_path))
+    resolution.repartition(1).write.parquet(f"{root}/identity_resolution")
+    edges.repartition(1).write.parquet(f"{root}/identity_edges")
 
 
 def assign_resolution(
