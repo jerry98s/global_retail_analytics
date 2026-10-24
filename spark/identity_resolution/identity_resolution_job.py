@@ -40,9 +40,6 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
-import shutil
-from pathlib import Path
-from urllib.parse import urlparse
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
