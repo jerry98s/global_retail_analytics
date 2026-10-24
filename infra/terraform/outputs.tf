@@ -129,7 +129,7 @@ output "silver_iceberg_warehouse" {
 }
 
 output "alert_topic_arn" {
-  description = "SNS topic ARN for platform operational alerts (Kafka consumer lag, future alarms)."
+  description = "SNS topic ARN for platform operational alerts (Kafka consumer lag, Airflow task failures, freshness breaches)."
   value       = aws_sns_topic.alerts.arn
 }
 
@@ -157,5 +157,6 @@ output "airflow_variables" {
     redshift_metadata_database = var.redshift_metadata_database_name
     redshift_secret_arn        = aws_secretsmanager_secret.redshift_admin.arn
     pos_bronze_s3_path         = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_transactions/"
+    alert_topic_arn            = aws_sns_topic.alerts.arn
   }
 }

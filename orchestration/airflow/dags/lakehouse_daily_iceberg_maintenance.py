@@ -1,41 +1,23 @@
 """
 Iceberg maintenance DAG.
 
-Submits a one-shot Flink batch job that runs Iceberg `rewrite_data_files`
-(compaction) and `expire_snapshots` on all three Iceberg tables
-(bronze.inventory_records, bronze.clickstream_records, silver.inventory_hourly).
-
-Closes DL-D from the data lake checklist applied 2026-07-05.
+Submits a Spark EMR step (spark/maintenance/iceberg_maintenance.py) that runs
+Iceberg `rewrite_data_files` on the Flink streaming sinks and
+`expire_snapshots` on every Bronze/Silver Iceberg table. Iceberg ships these
+procedures for Spark only.
 
 Schedule: 03:00 UTC daily — off-peak, after the warehouse_daily_batch_pipeline
-finishes (~02:30 UTC) and before the next hourly customer_360 run.
+finishes (~02:30 UTC). max_active_runs=1 plus the EMR step guard keep one run
+in flight; a re-run on the same Iceberg state is a no-op.
 
-Idempotency:
-  This DAG runs `flink run` (batch mode, not `run-application`) so the
-  step exits when the maintenance procedures complete. A re-run for the
-  same Iceberg state is a no-op (nothing to compact, nothing to expire).
-  The ShortCircuitOperator guard prevents duplicate in-flight steps
-  (same pattern as streaming_manual_flink_jobs DAG — P1.4).
-
-Required Airflow Variables (same as streaming_manual_flink_jobs):
+Required Airflow Variables:
   - emr_cluster_id
   - artifacts_bucket
   - bronze_iceberg_warehouse
   - silver_iceberg_warehouse
 
-Optional tuning Variables / env overrides (set as Airflow Variables and
-pass through the step's env block):
-  - ICEBERG_MIN_INPUT_FILES         (default 5)
-  - ICEBERG_TARGET_FILE_SIZE_BYTES  (default 268435456 = 256MB)
-  - ICEBERG_SNAPSHOTS_RETAIN_LAST   (default 5)
-  - BRONZE_SNAPSHOT_RETENTION_DAYS  (default 7)
-  - SILVER_SNAPSHOT_RETENTION_DAYS  (default 30)
-
-Revisit triggers (per ADR-006):
-  If Iceberg bronze/silver exceeds 10,000 data files per partition, or
-  snapshot count exceeds 500, increase the daily maintenance frequency
-  to twice-daily (06:00 + 18:00 UTC) or migrate the maintenance job to
-  Spark on the same EMR cluster for tighter control over parallelism.
+Retention defaults (job arguments): Bronze 7 days, Silver 30 days, and the
+last 5 snapshots of every table are always kept.
 """
 
 from __future__ import annotations
@@ -44,40 +26,40 @@ from datetime import datetime, timedelta
 
 import boto3
 from airflow import DAG
+from airflow.models import Variable
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
-from airflow.models import Variable
 
+from alerting import notify_task_failure
 from metadata_airflow import on_dag_failure, on_dag_start, on_dag_success
 
+STEP_NAME = "iceberg-maintenance"
+SPARK_PACKAGES = "org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3"
 
 DEFAULT_ARGS = {
-    "owner":            "data-platform",
-    "depends_on_past":  False,
-    "start_date":       datetime(2024, 1, 1),
-    "retries":          1,
-    "retry_delay":      timedelta(minutes=5),
-    "email_on_failure": True,
-    "email":            ["data-platform@company.com"],
+    "owner":               "data-platform",
+    "depends_on_past":     False,
+    "start_date":          datetime(2024, 1, 1),
+    "retries":             1,
+    "retry_delay":         timedelta(minutes=5),
+    "execution_timeout":   timedelta(hours=1),
+    "on_failure_callback": notify_task_failure,
 }
 
 
 def _iceberg_maintenance_step() -> dict:
-    """Build an EMR step that runs the Iceberg maintenance Flink batch job."""
+    """EMR step: Spark Iceberg compaction + snapshot expiration."""
     cmd = (
-        "export KAFKA_BOOTSTRAP_SERVERS='{{ var.value.msk_bootstrap_brokers }}' "
-        "ICEBERG_BRONZE_WAREHOUSE='{{ var.value.bronze_iceberg_warehouse }}' "
-        "ICEBERG_SILVER_WAREHOUSE='{{ var.value.silver_iceberg_warehouse }}' "
-        "&& aws s3 sync s3://{{ var.value.artifacts_bucket }}/streaming /opt/flink-config-src "
-        "&& flink run -t yarn-application "
-        "-Dyarn.application.name=iceberg-maintenance "
-        "-Dexecution.attached=true "
-        "-pyfs /opt/flink-config-src/flink_jobs "
-        "-py /opt/flink-config-src/flink_jobs/iceberg_maintenance.py"
+        "aws s3 sync s3://{{ var.value.artifacts_bucket }}/spark /opt/spark-maintenance "
+        "&& cd /opt/spark-maintenance/maintenance "
+        f"&& spark-submit --master yarn --deploy-mode cluster --packages {SPARK_PACKAGES} "
+        "iceberg_maintenance.py "
+        "--bronze-warehouse {{ var.value.bronze_iceberg_warehouse }} "
+        "--silver-warehouse {{ var.value.silver_iceberg_warehouse }}"
     )
     return {
-        "Name":            "iceberg-maintenance",
+        "Name":            STEP_NAME,
         "ActionOnFailure": "CONTINUE",
         "HadoopJarStep": {
             "Jar":  "command-runner.jar",
@@ -87,31 +69,28 @@ def _iceberg_maintenance_step() -> dict:
 
 
 def _no_existing_maintenance_step() -> bool:
-    """Skip submission if a PENDING or RUNNING iceberg-maintenance step exists."""
+    """Skip submission if a PENDING or RUNNING maintenance step exists."""
     cluster_id = Variable.get("emr_cluster_id")
-    emr_client = boto3.client("emr")
-    response = emr_client.list_steps(
+    response = boto3.client("emr").list_steps(
         ClusterId=cluster_id,
         StepStates=["PENDING", "RUNNING"],
     )
     for step in response.get("Steps", []):
-        if step.get("Name", "").startswith("iceberg-maintenance"):
+        if step.get("Name", "") == STEP_NAME:
             state = step.get("Status", {}).get("State", "UNKNOWN")
-            print(
-                f"Existing EMR step '{step['Name']}' (id={step['Id']}) is {state}; "
-                f"skipping submission to avoid duplicate maintenance run."
-            )
+            print(f"EMR step {step['Id']} is {state}; skipping duplicate maintenance run.")
             return False
     return True
 
 
 with DAG(
-    dag_id            = "lakehouse_daily_iceberg_maintenance",
-    default_args      = DEFAULT_ARGS,
-    schedule_interval = "0 3 * * *",
-    catchup           = False,
-    tags              = ["iceberg", "maintenance", "lakehouse"],
-    doc_md            = __doc__,
+    dag_id              = "lakehouse_daily_iceberg_maintenance",
+    default_args        = DEFAULT_ARGS,
+    schedule_interval   = "0 3 * * *",
+    catchup             = False,
+    max_active_runs     = 1,
+    tags                = ["iceberg", "maintenance", "lakehouse"],
+    doc_md              = __doc__,
     on_success_callback = on_dag_success,
     on_failure_callback = on_dag_failure,
 ) as dag:
@@ -138,7 +117,7 @@ with DAG(
         step_id       = "{{ task_instance.xcom_pull('submit_iceberg_maintenance')[0] }}",
         target_states = {"COMPLETED"},
         poke_interval = 60,
-        timeout       = 1800,  # 30 min — maintenance is bounded, not streaming.
+        timeout       = 3000,
     )
 
     metadata_start >> check_no_existing >> submit >> wait

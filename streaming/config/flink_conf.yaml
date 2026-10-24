@@ -48,5 +48,7 @@ inventory_bronze_watermark_delay_seconds: ${INVENTORY_BRONZE_WATERMARK_DELAY_SEC
 inventory_silver_watermark_delay_seconds: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-60}
 iceberg_catalog_name:    iceberg_catalog
 iceberg_catalog_type:    hadoop
-iceberg_warehouse_bronze: ${ICEBERG_BRONZE_WAREHOUSE:-s3://retail-platform-dev-bronze/iceberg}
-iceberg_warehouse_silver: ${ICEBERG_SILVER_WAREHOUSE:-s3://retail-platform-dev-silver/iceberg}
+# No default: an unset warehouse must fail the job, not write into another
+# environment's bucket. Compose and the EMR step both set these.
+iceberg_warehouse_bronze: ${ICEBERG_BRONZE_WAREHOUSE}
+iceberg_warehouse_silver: ${ICEBERG_SILVER_WAREHOUSE}

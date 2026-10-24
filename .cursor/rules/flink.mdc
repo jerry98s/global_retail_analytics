@@ -11,7 +11,7 @@ alwaysApply: false
 - `inventory_bronze_job.py` / `clickstream_bronze_job.py`: lossless Kafka bytes → `bronze.*_records` (ADR-011). No parse and no DLQ in the capture job.
 - Canonical parse, quarantine, and dedup are Spark (`canonical_events.py`), rebuilt from a committed Bronze snapshot.
 - `inventory_silver_job.py`: reads Kafka directly (not Bronze) → dedup → watermark → tumble → `silver.inventory_hourly`.
-- `iceberg_maintenance.py`: batch compaction/snapshot expiry (Airflow-owned).
+- Iceberg compaction/snapshot expiry is Spark (`spark/maintenance/`); Flink 1.17 SQL has no `CALL`.
 
 ## Config
 
@@ -26,7 +26,14 @@ alwaysApply: false
 - Call `apply_state_config(env, t_env, state_cfg)` after creating `t_env`.
 - Kafka source: `enable.auto.commit=false`, `isolation.level=read_committed`,
   `auto.offset.reset=earliest`, `partition.discovery.interval.ms=300000`.
-- Cloud: `scan.startup.mode=latest-offset`; match parallelism to partitions via env.
+- `scan.startup.mode=group-offsets` (offsets commit on checkpoint), so a job
+  started without a checkpoint resumes instead of skipping or replaying.
+  Match parallelism to partitions via env.
+- Submit only through `streaming/bin/submit_flink_job.sh` (YARN duplicate
+  guard + restore from the newest checkpoint or savepoint). A new env var read
+  by `flink_conf.yaml` or a job must be added to its `forwarded` list: YARN
+  application-mode containers do not inherit the step's environment.
+- `iceberg_warehouse_*` have no default: an unset warehouse fails the job.
 - Silver default window: `INTERVAL '1' HOUR`. Local compose may set
   `INVENTORY_SILVER_WINDOW=INTERVAL '1' MINUTE` for short sims.
 

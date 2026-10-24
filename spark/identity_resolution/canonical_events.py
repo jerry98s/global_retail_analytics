@@ -10,8 +10,10 @@ import json
 from pyspark.sql import DataFrame, Window, functions as F, types as T
 
 try:
+    from .consumer_exports import new_run_id, publish
     from .event_contract import parse_event
 except ImportError:
+    from consumer_exports import new_run_id, publish
     from event_contract import parse_event
 
 TRANSPORT = ['source_system', 'kafka_topic', 'kafka_partition', 'kafka_offset']
@@ -61,18 +63,19 @@ def canonicalize(raw: DataFrame, stream: str) -> tuple[DataFrame, DataFrame, Dat
     return canonical, invalid, duplicates
 
 
-def write_exports(canonical, invalid, duplicates, root: str, stream: str) -> None:
+def write_exports(canonical, invalid, duplicates, root: str, stream: str, run_id: str) -> None:
     for suffix, frame in [('events', canonical), ('quarantine', invalid), ('duplicates', duplicates)]:
-        frame.write.mode('overwrite').parquet(f'{root}/{stream}_{suffix}')
+        publish(frame, root, f'{stream}_{suffix}', run_id)
 
 
 def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str) -> dict[str, DataFrame]:
     """Pin each source snapshot, persist outputs, then return canonical sources.
 
-    Iceberg reads are snapshot-aware. Downstream jobs must wait for completion
-    before reading the replacement exports; run one writer at a time.
+    Iceberg reads are snapshot-aware, and each plain-Parquet export switches
+    atomically through its manifest (consumer_exports). Run one writer at a time.
     """
     outputs = {}
+    run_id = new_run_id()
     spark.sql(f'CREATE NAMESPACE IF NOT EXISTS {silver_catalog}.silver')
     for stream in ('clickstream', 'inventory'):
         source = f'{bronze_catalog}.bronze.{stream}_records'
@@ -92,7 +95,7 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str) -
                 raise RuntimeError(f'{stream} reconciliation failed: {input_rows} != {counts}')
             for suffix, frame in zip(('events', 'quarantine', 'duplicates'), frames):
                 frame.writeTo(f'{silver_catalog}.silver.{stream}_{suffix}').using('iceberg').createOrReplace()
-            write_exports(*frames, root, stream)
+            write_exports(*frames, root, stream, run_id)
             print(json.dumps(dict(stream=stream, bronze_snapshot_id=head.snapshot_id if head else None,
                                   input_rows=input_rows, canonical_rows=counts[0],
                                   invalid_rows=counts[1], duplicate_rows=counts[2]), sort_keys=True))

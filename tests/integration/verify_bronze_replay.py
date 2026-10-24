@@ -8,6 +8,7 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 
 from spark.identity_resolution.canonical_events import canonicalize, promote_events, write_exports
+from spark.identity_resolution.consumer_exports import new_run_id, read_current
 
 
 def main():
@@ -54,13 +55,13 @@ def main():
         assert {(r.event_id, r.kafka_offset) for r in again.collect()} == {('E1', 2), ('late', 6)}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve().as_uri()
-            write_exports(canonical, invalid, duplicates, root, 'clickstream')
+            write_exports(canonical, invalid, duplicates, root, 'clickstream', new_run_id())
             # A changed business policy/input must replace previous output.
             second, bad2, dup2 = canonicalize(raw.filter('kafka_offset = 6'), 'clickstream')
-            write_exports(second, bad2, dup2, root, 'clickstream')
-            assert spark.read.parquet(root + '/clickstream_events').count() == 1
-            assert spark.read.parquet(root + '/clickstream_quarantine').count() == 0
-            assert spark.read.parquet(root + '/clickstream_duplicates').count() == 0
+            write_exports(second, bad2, dup2, root, 'clickstream', new_run_id())
+            assert read_current(spark, root, 'clickstream_events').count() == 1
+            assert read_current(spark, root, 'clickstream_quarantine').count() == 0
+            assert read_current(spark, root, 'clickstream_duplicates').count() == 0
         # Original byte payloads, including undecodable values, survived unchanged.
         assert [(r.kafka_offset, bytes(r.raw_payload) if r.raw_payload is not None else None)
                 for r in raw.orderBy('kafka_offset').collect()] == [(r[5], r[0]) for r in rows]
@@ -79,7 +80,7 @@ def main():
                     outputs = promote_events(spark, 'replay', 'replay', root + '/consumer_current')
                     assert outputs['clickstream'].count() == 2
                     assert outputs['inventory'].count() == 1
-                    assert spark.read.parquet(root + '/consumer_current/clickstream_events').count() == 2
+                    assert read_current(spark, root + '/consumer_current', 'clickstream_events').count() == 2
                 assert spark.table('replay.bronze.clickstream_records').count() == 7
                 assert spark.sql('SELECT snapshot_id FROM replay.bronze.clickstream_records.snapshots').collect() == before
                 print('PASS: pinned Iceberg snapshots, repeat promotion, no Bronze mutations')

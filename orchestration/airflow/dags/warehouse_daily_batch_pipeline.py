@@ -1,9 +1,15 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging →
-WAP clone live→pending → dbt marts (pending) → dbt tests (pending) →
-row-count reconciliation (pending) → WAP publish to live → Redshift ANALYZE →
+Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging
+(owned models) → WAP clone live→pending → dbt marts (pending) → dbt tests
+(pending) → row-count gate (pending) → WAP publish to live → Redshift ANALYZE →
 Redshift usage check.
+
+Each dbt task syncs its own copy of the project (`dbt_task_bash`), because
+consecutive tasks can land on different MWAA workers. Staging/intermediate
+models are built only by their owning DAG (`plugins/dbt_selectors.py`).
+Failed tasks alert through SNS (`alert_topic_arn`); freshness SLAs are checked
+hourly by `quality_hourly_ge_checkpoint`.
 
 Write-Audit-Publish (ADR-009): live Gold is cloned into `*_pending`, dbt rebuilds
 the marts there (`wap_phase='pending'`), dbt tests audit the pending copies,
@@ -34,6 +40,7 @@ Required Airflow Variables (seed from `.\scripts\cloud\deploy_platform.ps1 -Env 
                                   Tasks fetch the value at runtime, so the
                                   password itself is never an Airflow Variable.
   - pos_bronze_s3_path          : s3://<bronze-bucket>/iceberg/bronze/pos_transactions/
+  - alert_topic_arn             : SNS topic for task-failure alerts
 
 Optional Airflow Variables for row-count reconciliation (P2.5):
   - gold_row_counts_baseline    : JSON map of {"schema.table": row_count}; default "{}".
@@ -51,6 +58,8 @@ from airflow.operators.python import PythonOperator
 # MWAA loads modules under plugins/ onto sys.path, so this imports cleanly
 # in the cloud runtime. Local `python -m compileall` skips Airflow imports
 # (compileall does not execute imports).
+from alerting import notify_task_failure
+from dbt_selectors import WAREHOUSE_LIVE_MODELS, select
 from row_count_reconciliation import reconcile_gold_row_counts_task
 from wap_publish import (
     FINANCE_SUMMARY_TABLES,
@@ -58,8 +67,7 @@ from wap_publish import (
     publish_finance_summary_task,
 )
 from metadata_airflow import (
-    collect_freshness_task,
-    dbt_bash_with_metadata,
+    dbt_task_bash,
     on_dag_failure,
     on_dag_start,
     on_dag_success,
@@ -74,20 +82,20 @@ OWNED_SELECT = (
 
 # Audits must cover exactly what this DAG built. A bare `dbt test` would also run
 # marketing suites whose pending tables this DAG never clones.
-TEST_SELECT = f"staging intermediate {OWNED_SELECT}"
+TEST_SELECT = select(WAREHOUSE_LIVE_MODELS, OWNED_SELECT)
 
 # Same set as "schema.table" strings, for the reconciliation audit.
 # Derived from the publish list so the two can never drift apart.
 OWNED_TABLES = [f"{schema}.{table}" for schema, table in FINANCE_SUMMARY_TABLES]
 
 DEFAULT_ARGS = {
-    "owner":            "data-platform",
-    "depends_on_past":  False,
-    "start_date":       datetime(2024, 1, 1),
-    "retries":          2,
-    "retry_delay":      timedelta(minutes=10),
-    "email_on_failure": True,
-    "email":            ["data-platform@company.com"],
+    "owner":               "data-platform",
+    "depends_on_past":     False,
+    "start_date":          datetime(2024, 1, 1),
+    "retries":             2,
+    "retry_delay":         timedelta(minutes=10),
+    "execution_timeout":   timedelta(hours=1),
+    "on_failure_callback": notify_task_failure,
 }
 
 
@@ -97,27 +105,12 @@ def _dbt_step(
     selector: str,
     *,
     vars_json: str | None = None,
-    bootstrap: bool = False,
 ) -> BashOperator:
-    """Factory for dbt BashOperator tasks; wraps result parsing in-process."""
-    selector_arg = f"--select {selector}" if selector else ""
-    vars_arg = f"--vars '{vars_json}'" if vars_json else ""
-    dbt_cmd_str = f"dbt {dbt_cmd} {selector_arg} --target prod {vars_arg}".strip()
-    if bootstrap:
-        inner = (
-            "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/dbt_project /tmp/dbt_project && "
-            "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts && "
-            "cp /tmp/dbt_project/profiles.yml.example /tmp/dbt_project/profiles.yml && "
-            "cd /tmp/dbt_project && dbt deps && "
-            f"{dbt_cmd_str}"
-        )
-    else:
-        inner = f"cd /tmp/dbt_project && {dbt_cmd_str}"
-    # No env= here: dbt_bash_with_metadata exports RS_HOST/RS_USER/RS_DATABASE
-    # and resolves RS_PASSWORD from Secrets Manager inside the task shell.
+    """dbt BashOperator; the helper syncs the project and records run_results."""
+    vars_arg = f" --vars '{vars_json}'" if vars_json else ""
     return BashOperator(
         task_id=task_id,
-        bash_command=dbt_bash_with_metadata(inner),
+        bash_command=dbt_task_bash(f"{dbt_cmd} --select {selector}{vars_arg}"),
     )
 
 
@@ -138,11 +131,17 @@ with DAG(
         python_callable=on_dag_start,
     )
 
+    # The generator imports ingestion.kafka.sim_entities, so the whole package
+    # is synced and run as a module from the work directory.
     generate_pos_parquet = BashOperator(
         task_id      = "generate_pos_parquet",
         bash_command = """
-            aws s3 sync s3://{{ var.value.artifacts_bucket }}/ingestion/batch /tmp/ingestion/batch
-            python /tmp/ingestion/batch/generate_pos_parquet.py \
+            set -e
+            WORK="$(mktemp -d /tmp/pos_task.XXXXXX)"
+            trap 'rm -rf "$WORK"' EXIT
+            aws s3 sync --only-show-errors s3://{{ var.value.artifacts_bucket }}/ingestion "$WORK/ingestion"
+            cd "$WORK"
+            python -m ingestion.batch.generate_pos_parquet \
                 --date {{ ds }} \
                 --output-s3 {{ var.value.pos_bronze_s3_path }}
         """,
@@ -166,8 +165,7 @@ with DAG(
     dbt_staging = _dbt_step(
         "dbt_staging_and_intermediate",
         "run",
-        "staging intermediate",
-        bootstrap=True,
+        select(WAREHOUSE_LIVE_MODELS),
     )
 
     # WAP step 1: copy live Gold into the pending schemas so the incremental
@@ -189,15 +187,11 @@ with DAG(
         "dbt_tests", "test", TEST_SELECT, vars_json='{"wap_phase": "pending"}'
     )
 
+    # Publish gate: an owned table that shrank or cannot be read fails here.
     row_count_reconcile = PythonOperator(
         task_id          = "row_count_reconciliation",
         python_callable  = reconcile_gold_row_counts_task,
         op_kwargs        = {"pending_tables": OWNED_TABLES},
-    )
-
-    metadata_freshness = PythonOperator(
-        task_id="metadata_collect_freshness",
-        python_callable=collect_freshness_task,
     )
 
     # Audit gate passed — atomically promote pending marts into live schemas.
@@ -238,7 +232,6 @@ with DAG(
         >> dbt_marts
         >> dbt_tests
         >> row_count_reconcile
-        >> metadata_freshness
         >> wap_publish
         >> redshift_analyze
         >> cost_check

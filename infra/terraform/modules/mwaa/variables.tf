@@ -63,6 +63,21 @@ variable "webserver_access_mode" {
   default     = "PUBLIC_ONLY"
 }
 
+variable "emr_cluster_id" {
+  description = "EMR cluster the DAGs submit Spark/Flink steps to."
+  type        = string
+}
+
+variable "redshift_workgroup_arn" {
+  description = "Redshift Serverless workgroup the Data API tasks run against."
+  type        = string
+}
+
+variable "alert_topic_arn" {
+  description = "SNS topic for task-failure and data-quality alerts (Airflow Variable alert_topic_arn)."
+  type        = string
+}
+
 variable "redshift_secret_arn" {
   description = "Secrets Manager ARN holding the Redshift admin password. DAG tasks receive this ARN (not the password) and fetch the value at runtime."
   type        = string

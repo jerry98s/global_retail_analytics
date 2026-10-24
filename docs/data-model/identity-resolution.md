@@ -28,7 +28,7 @@ bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
       edge construction + public-device exclusion + connected components
       → silver.identity_resolution  (Iceberg; full overwrite per run)
       → silver.identity_edges       (audit copy of the graph)
-      → consumer_current/*          (replace-only Parquet for Spectrum/DuckDB)
+      → consumer_current/*          (run dir + atomic manifest for Spectrum)
   → int_identity_resolution         (thin dbt view over the silver source; adds identity_key)
   → marketing.identity_graph        (filtered: public devices excluded)
 ```
@@ -101,8 +101,8 @@ Public devices:
 
 ## Consent (`intermediate.int_customer_consent`)
 
-- **Marketing:** `true` if customer has `loyalty_id`, or explicit `properties.marketing_consent` on login events.
-- **Analytics:** from `properties.analytics_consent` when present; defaults `true` for loyalty holders.
+- **Marketing:** the latest event stating `properties.marketing_consent` wins, so an opt-out revokes on the next run. With no statement, `true` for loyalty members.
+- **Analytics:** the latest event stating `properties.analytics_consent` wins. With no statement, `true` for authenticated or loyalty customers.
 
 `marketing.customer_360_view` and `serving.customer_360_serving` filter `marketing_consent = true`.
 
@@ -125,5 +125,5 @@ bronze.clickstream_events + bronze.pos_transactions
 
 - Probabilistic device graph (linking client_ids without a shared authenticated session)
 - Email / PII ingest (`email_hashed` column reserved; no hash pipeline yet)
-- Automated consent revocation — not implemented; `marketing_consent` is the gate on Customer 360
+- Consent revocation outside clickstream (e.g. a CRM or email unsubscribe feed)
 - identity_graph TTL enforcement (data freshness — old relationships should expire)

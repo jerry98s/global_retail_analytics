@@ -1,7 +1,14 @@
 -- ===========================================================================
--- Spectrum external schema + silver inventory_hourly (Flink silver layer)
+-- Spectrum external schema + Silver consumer exports
 -- ===========================================================================
--- Prereqs: platform stack + inventory_hourly Flink job writing Parquet.
+-- Spectrum must never scan an Iceberg table's data/ directory: superseded
+-- and uncommitted snapshot files live there and would be returned as rows.
+-- The hourly Spark step (spark/identity_resolution) reads each table through
+-- the Iceberg catalog and publishes a snapshot-safe export: a run directory
+-- plus a manifest object that is replaced atomically
+-- (spark/identity_resolution/consumer_exports.py). Every table below points
+-- at <export>/manifest, so a query sees one complete run.
+-- Re-run this DDL only if a schema changes; data refreshes need no action.
 --
 -- Column semantics (NOT the same as gold finance.fact_inventory_snapshot):
 --   qty_delta_hour    = SUM(qty_delta) within the hourly TUMBLE window
@@ -35,19 +42,15 @@ CREATE EXTERNAL TABLE silver.inventory_hourly (
     is_estimated        boolean
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/silver/inventory_hourly/data/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_hourly/manifest';
 
 SELECT COUNT(*) AS inventory_hourly_rows FROM silver.inventory_hourly;
 
 -- ---------------------------------------------------------------------------
 -- silver.identity_resolution + silver.identity_edges (ADR-010)
--- Written by the Spark GraphFrames job (spark/identity_resolution/) as
--- Iceberg tables plus dedicated current-run Parquet exports. Spectrum must not
--- scan an Iceberg table's data/ directory: superseded snapshot files may remain
--- there after replace/compaction and would be returned as duplicate stale rows.
+-- Written by the Spark GraphFrames job as Iceberg tables plus exports.
 -- dbt reads identity_resolution via source('silver', 'identity_resolution')
--- (int_identity_resolution view). Re-run this DDL only if the schema changes;
--- plain data refreshes need no Spectrum action (unpartitioned table).
+-- (int_identity_resolution view).
 -- ---------------------------------------------------------------------------
 DROP TABLE IF EXISTS silver.identity_resolution;
 CREATE EXTERNAL TABLE silver.identity_resolution (
@@ -62,7 +65,7 @@ CREATE EXTERNAL TABLE silver.identity_resolution (
     computed_at         timestamp
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_resolution/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_resolution/manifest';
 
 DROP TABLE IF EXISTS silver.identity_edges;
 CREATE EXTERNAL TABLE silver.identity_edges (
@@ -72,12 +75,11 @@ CREATE EXTERNAL TABLE silver.identity_edges (
     last_observed_at    timestamp
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_edges/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_edges/manifest';
 
 SELECT COUNT(*) AS identity_resolution_rows FROM silver.identity_resolution;
 
--- Canonical replay outputs (ADR-011). Never glob Iceberg data/ files here.
--- Spark replaces these exports before downstream dbt/GE tasks start.
+-- Canonical replay outputs (ADR-011).
 DROP TABLE IF EXISTS silver.clickstream_events;
 CREATE EXTERNAL TABLE silver.clickstream_events (
     event_id varchar(256),
@@ -99,7 +101,7 @@ CREATE EXTERNAL TABLE silver.clickstream_events (
     ingested_at timestamp
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/clickstream_events/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/clickstream_events/manifest';
 
 DROP TABLE IF EXISTS silver.inventory_events;
 CREATE EXTERNAL TABLE silver.inventory_events (
@@ -121,4 +123,4 @@ CREATE EXTERNAL TABLE silver.inventory_events (
     ingested_at timestamp
 )
 STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_events/';
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_events/manifest';

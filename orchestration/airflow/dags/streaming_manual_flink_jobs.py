@@ -17,12 +17,17 @@ Required Airflow Variables (see `terraform output airflow_variables`):
   - msk_bootstrap_brokers
 
 Idempotency guard (P1.4 from docs/runbooks/dw-checklist-audit.md):
-  Each branch starts with a ShortCircuitOperator that queries EMR for
-  existing steps whose name starts with `flink-{name}`. If any are
-  PENDING or RUNNING, the submit + wait tasks for that branch are
-  skipped — preventing duplicate Flink submissions on DAG re-runs
-  (YARN app names would otherwise collide and EMR would either reject
-  the second step or queue it indefinitely).
+  Each branch starts with a ShortCircuitOperator that skips the branch while
+  an EMR step named `flink-{name}` is still PENDING or RUNNING. In YARN
+  application mode that step ends as soon as the job is submitted, so the
+  step itself runs `streaming/bin/submit_flink_job.sh`, which also exits
+  without submitting when YARN already runs `flink-{name}`.
+
+Restart:
+  The submit script restores from the newest retained checkpoint under
+  `s3://<checkpoints>/flink/checkpoints/<name>/`. Kafka sources use
+  `group-offsets` (reset `earliest`), so a job started without a checkpoint
+  resumes from its committed offsets instead of skipping or replaying data.
 
 Bronze vs silver parallel safety (P1.6):
   The three Flink jobs are submitted in parallel by design. There is
@@ -49,22 +54,27 @@ from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 from airflow.models import Variable
 import shlex
 
+from alerting import notify_task_failure
 from metadata_airflow import on_dag_failure, on_dag_start, on_dag_success
 
 
 DEFAULT_ARGS = {
-    "owner":            "data-platform",
-    "depends_on_past":  False,
-    "start_date":       datetime(2024, 1, 1),
-    "retries":          1,
-    "retry_delay":      timedelta(minutes=2),
-    "email_on_failure": True,
-    "email":            ["data-platform@company.com"],
+    "owner":               "data-platform",
+    "depends_on_past":     False,
+    "start_date":          datetime(2024, 1, 1),
+    "retries":             1,
+    "retry_delay":         timedelta(minutes=2),
+    "execution_timeout":   timedelta(minutes=20),
+    "on_failure_callback": notify_task_failure,
 }
 
 
 def _flink_step(name: str, entry: str) -> dict:
-    """Build an EMR step that runs a PyFlink job in YARN application mode."""
+    """EMR step running streaming/bin/submit_flink_job.sh for one PyFlink job.
+
+    The script skips the submit when YARN already runs the job and restores
+    from the newest retained checkpoint.
+    """
     cmd = (
         "export KAFKA_BOOTSTRAP_SERVERS='{{ var.value.msk_bootstrap_brokers }}' "
         "BRONZE_SOURCE_SYSTEM={{ var.value.get('bronze_source_system', 'retail-v1') | shellquote }} "
@@ -77,15 +87,10 @@ def _flink_step(name: str, entry: str) -> dict:
         "INVENTORY_PARALLELISM='12' "
         "CLICKSTREAM_PARALLELISM='24' "
         "&& aws s3 sync s3://{{ var.value.artifacts_bucket }}/streaming /opt/flink-config-src "
-        "&& flink run-application -t yarn-application "
-        f"-Dyarn.application.name=flink-{name} "
-        "-Dcontainerized.master.env.BRONZE_SOURCE_SYSTEM={{ var.value.get('bronze_source_system', 'retail-v1') | shellquote }} "
-        "-Dstate.checkpoints.dir=s3://{{ var.value.checkpoints_bucket }}/flink/checkpoints/"
-        f"{name} "
-        "-Dstate.savepoints.dir=s3://{{ var.value.checkpoints_bucket }}/flink/savepoints/"
-        f"{name} "
-        "-pyfs /opt/flink-config-src/flink_jobs "
-        f"-py /opt/flink-config-src/flink_jobs/{entry}"
+        # A Windows checkout uploads the shell script with CRLF.
+        "&& sed -i 's/\\r$//' /opt/flink-config-src/bin/*.sh "
+        f"&& bash /opt/flink-config-src/bin/submit_flink_job.sh {name} {entry} "
+        "{{ var.value.checkpoints_bucket }}"
     )
 
     return {

@@ -19,10 +19,11 @@
   Notes:
     - email_hashed is NULL today — placeholder for future PII ingestion
       behind the marketing_consent gate.
-    - marketing_consent is true if loyalty_id is known OR explicit consent
-      is recorded; analytics_consent requires explicit consent OR loyalty
-      membership. See docs/data-model/identity-resolution.md.
-      marketing_consent is the gate; automated revocation is not implemented.
+    - Consent flags take the customer's latest explicit statement, so an
+      opt-out revokes on the next run. Without a statement, loyalty members
+      default to marketing consent and authenticated or loyalty customers to
+      analytics consent. marketing_consent is the PII gate. See
+      docs/data-model/identity-resolution.md.
     - last_updated_at is current_timestamp — every dbt run on an affected
       customer_key overwrites the row via delete+insert.
 */
@@ -58,16 +59,15 @@ select
         else 0.10
     end as decimal(10, 4)) as churn_risk_score,
     cast(coalesce(r.monetary_value, 0) as decimal(18, 2)) as total_lifetime_value,
-    case
-        when i.loyalty_id is not null then true
-        when coalesce(c.explicit_marketing_consent, false) then true
-        else false
-    end as marketing_consent,
-    case
-        when c.customer_key is not null then c.explicit_analytics_consent
-        when i.loyalty_id is not null then true
-        else false
-    end as analytics_consent,
+    -- An explicit statement always wins; loyalty enrolment is only the default.
+    coalesce(
+        c.explicit_marketing_consent,
+        i.loyalty_id is not null
+    ) as marketing_consent,
+    coalesce(
+        c.explicit_analytics_consent,
+        c.customer_key is not null or i.loyalty_id is not null
+    ) as analytics_consent,
     current_timestamp as last_updated_at
 from identity_base i
 left join rfm r

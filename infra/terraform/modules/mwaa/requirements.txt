@@ -1,8 +1,11 @@
-# MWAA extra Python deps (Airflow core is managed by AWS).
-apache-airflow-providers-amazon==8.24.0
-dbt-redshift==1.8.1
+--constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.8.1/constraints-3.11.txt"
+# MWAA task dependencies, installed into Airflow's own environment under the
+# Airflow 2.8.1 / Python 3.11 constraints. Packages the constraints file pins
+# (amazon provider, boto3, pyarrow, redshift-connector, sqlalchemy) take its
+# version; do not pin them here. dbt cannot satisfy these constraints and runs
+# from its own virtualenv (startup.sh + dbt-requirements.txt).
 great-expectations==0.18.21
-redshift-connector==2.1.4
-boto3>=1.34.0
-structlog>=24.1.0
-pyarrow>=18.1.0
+redshift-connector
+sqlalchemy-redshift==0.8.14
+pyarrow
+structlog==26.1.0

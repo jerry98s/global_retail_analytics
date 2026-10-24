@@ -31,7 +31,7 @@ def capture_sql(cfg: dict, stream: str, catalog: str) -> tuple[str, str, str]:
           'topic' = '{literal(cfg[stream + '_topic'])}',
           'properties.bootstrap.servers' = '{literal(cfg['kafka_bootstrap_servers'])}',
           'properties.group.id' = '{literal(cfg[group_key])}-raw-v1',
-          'scan.startup.mode' = 'earliest-offset',
+          'scan.startup.mode' = 'group-offsets',
           'properties.enable.auto.commit' = 'false',
           'properties.isolation.level' = 'read_committed',
           'properties.auto.offset.reset' = 'earliest',

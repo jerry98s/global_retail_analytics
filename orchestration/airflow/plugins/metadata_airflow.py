@@ -9,7 +9,6 @@ Requires ``scripts/common/metadata_observer.py`` on the worker.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import uuid
 from pathlib import Path
@@ -171,39 +170,12 @@ def _finalize(
             pass
 
 
-def parse_dbt_run_results_task(**context: Any) -> int:
-    observer = _observer()
-    if observer is None:
-        return 0
-    writer = _writer(observer)
-    if writer is None:
-        return 0
-    try:
-        path = Path(
-            os.environ.get(
-                "DBT_RUN_RESULTS",
-                "/tmp/dbt_project/target/run_results.json",
-            )
-        )
-        results = observer.parse_dbt_run_results(path)
-        return int(
-            observer.record_dq_results(
-                writer,
-                execution_id=execution_id_for_context(context),
-                results=results,
-            )
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.warning("parse_dbt_run_results_task failed (fail-open): %s", exc)
-        return 0
-    finally:
-        try:
-            writer.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-
 def collect_freshness_task(**context: Any) -> int:
+    """Measure every catalogued table's freshness; fail on an SLA breach.
+
+    A metadata outage is fail-open (logged, returns 0). A measured breach
+    raises, so the task-failure alert carries the breached tables.
+    """
     observer = _observer()
     if observer is None:
         return 0
@@ -211,6 +183,8 @@ def collect_freshness_task(**context: Any) -> int:
     if writer is None:
         return 0
     analytics = None
+    breaches: list[str] = []
+    written = 0
     try:
         from airflow.models import Variable
         import redshift_connector
@@ -222,13 +196,11 @@ def collect_freshness_task(**context: Any) -> int:
             user=Variable.get("redshift_user"),
             password=redshift_password(),
         )
-        return int(
-            observer.collect_table_freshness(
-                writer,
-                analytics,
-                execution_id=execution_id_for_context(context),
-            )
+        execution_id = execution_id_for_context(context)
+        written = int(
+            observer.collect_table_freshness(writer, analytics, execution_id=execution_id)
         )
+        breaches = observer.freshness_breaches(writer, execution_id=execution_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("collect_freshness_task failed (fail-open): %s", exc)
         return 0
@@ -242,6 +214,9 @@ def collect_freshness_task(**context: Any) -> int:
             writer.close()
         except Exception:  # noqa: BLE001
             pass
+    if breaches:
+        raise RuntimeError("Freshness SLA breached: " + "; ".join(breaches))
+    return written
 
 
 def redshift_env_prelude(*, sqlalchemy_url: bool = False) -> str:
@@ -280,20 +255,38 @@ export RS_SQLALCHEMY_URL="redshift+redshift_connector://$RS_USER:$RS_PASSWORD_EN
     )
 
 
-def dbt_bash_with_metadata(inner_bash: str) -> str:
-    """Run dbt bash, parse run_results in the same task, preserve exit code."""
+def dbt_task_bash(dbt_args: str) -> str:
+    """Bash for one dbt task: private synced workdir, dbt, run_results to metadata.
+
+    Each task syncs its own copy of the project and scripts into a fresh temp
+    directory, because Airflow may run consecutive tasks on different workers
+    and concurrent DAGs on the same one. dbt runs from the virtualenv the MWAA
+    startup script builds (``$DBT_BIN``). The dbt exit code is preserved.
+    """
     return f"""
+set -e
+if [ ! -x "${{DBT_BIN:-}}" ]; then
+  echo "DBT_BIN='${{DBT_BIN:-}}' is not executable; check the MWAA startup script log" >&2
+  exit 1
+fi
 {redshift_env_prelude()}
+WORK="$(mktemp -d /tmp/dbt_task.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+aws s3 sync --only-show-errors s3://{{{{ var.value.artifacts_bucket }}}}/mwaa/dbt_project "$WORK/dbt_project"
+aws s3 sync --only-show-errors s3://{{{{ var.value.artifacts_bucket }}}}/mwaa/scripts "$WORK/scripts"
+cp "$WORK/dbt_project/profiles.yml.example" "$WORK/dbt_project/profiles.yml"
+cd "$WORK/dbt_project"
+"$DBT_BIN" deps
 set +e
-{inner_bash}
+"$DBT_BIN" {dbt_args} --target prod
 DBT_RC=$?
 set -e
 EXEC_ID="{{{{ ti.xcom_pull(task_ids='metadata_start', key='metadata_execution_id') }}}}"
 if [ -z "$EXEC_ID" ]; then EXEC_ID="{{{{ run_id }}}}"; fi
-python /tmp/scripts/common/metadata_observer.py parse-dbt \\
+python "$WORK/scripts/common/metadata_observer.py" parse-dbt \\
   --backend redshift \\
   --execution-id "$EXEC_ID" \\
-  --run-results /tmp/dbt_project/target/run_results.json \\
+  --run-results "$WORK/dbt_project/target/run_results.json" \\
   || true
 exit $DBT_RC
 """.strip()

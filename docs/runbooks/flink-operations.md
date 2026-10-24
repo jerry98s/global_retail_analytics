@@ -29,7 +29,7 @@ The platform runs Flink jobs on EMR, which submits each job as a YARN applicatio
 | `state.backend` | `rocksdb` | `streaming/config/state.yaml` |
 | `state.backend.incremental` | `true` | same |
 
-Applied by `_config.apply_state_config()` in each Flink job's `run()`. The maintenance batch job (`iceberg_maintenance.py`) does NOT call this — it has no long-running state.
+Applied by `_config.apply_state_config()` in each Flink job's `run()`.
 
 **Why RocksDB over HashMap?** HashMap is faster (~10-20% throughput) but JVM-heap-bound — OOMs at ~10GB state. RocksDB stores state off-heap on disk, supports TB-scale state, and is the Flink-recommended production default.
 
@@ -177,12 +177,26 @@ In SQL, this is two `GROUP BY` clauses with a `UNION ALL` of the salted subqueri
 
 **Never just kill a Flink job to upgrade its code.** Always:
 
-1. **Trigger a manual savepoint** — `flink savepoint <jobId> s3://<checkpoints_bucket>/savepoints/`. This writes a consistent snapshot of all operator state to S3.
-2. **Stop the job with `--savepointPath`** — `flink stop --savepointPath s3://... <jobId>`. This drains in-flight records and stops cleanly.
-3. **Deploy the new code** — submit via `streaming_manual_flink_jobs` DAG with the new artifacts bucket path.
-4. **Resume from the savepoint** — `flink run -s s3://.../savepoints/<savepointId> ...`. State is restored; the job continues from where it left off.
+1. **Stop the job with a savepoint** — on the EMR primary node:
+   `flink stop --savepointPath s3://<checkpoints_bucket>/flink/savepoints/<job-name> -yid <yarn-app-id> <jobId>`.
+   This drains in-flight records, writes a consistent snapshot of all operator state, and stops cleanly.
+2. **Deploy the new code** — `deploy_platform.ps1 -Action mwaa-sync` (or the S3 sync of `streaming/`).
+3. **Resubmit** — trigger `streaming_manual_flink_jobs` (or `deploy_platform.ps1 -Action flink`).
+   `streaming/bin/submit_flink_job.sh` restores from the newest `_metadata` under the job's
+   `flink/checkpoints/<job-name>/` and `flink/savepoints/<job-name>/` prefixes, so it picks up
+   the savepoint from step 1 and passes it as `-s`.
 
-The platform's `streaming_manual_flink_jobs.py` DAG already uses `EmrAddStepsOperator` with the savepoint path passed as a parameter. The checkpoints bucket is `module.s3.checkpoints_bucket_name` (see Terraform outputs).
+The same script makes a plain resubmit safe: it skips the submit when YARN already runs
+`flink-<job-name>`, and after a crash it resumes from the last retained checkpoint. To start a
+job from scratch (incompatible job-graph change), delete both of its prefixes first; the Kafka
+source then resumes from the consumer group's committed offsets (`scan.startup.mode = group-offsets`).
+
+In YARN application mode the job's Python driver runs in the JobManager container, which does
+not inherit the step's shell environment. The script forwards every variable
+`flink_conf.yaml` reads as `containerized.{master,taskmanager}.env.*` and refuses to submit
+when the Kafka brokers, either Iceberg warehouse, or `BRONZE_SOURCE_SYSTEM` is unset.
+Checkpoint objects under `flink/` never expire by S3 lifecycle: incremental RocksDB
+checkpoints keep referencing older shared files, and Flink prunes its own retained checkpoints.
 
 ### 7.2 Fault-tolerant parsing
 
@@ -220,7 +234,8 @@ The Kafka lag alarm is wired in `infra/terraform/modules/kafka/main.tf:aws_cloud
 | Flink runtime config (parallelism, topics, consumer groups) | `streaming/config/flink_conf.yaml` |
 | `apply_state_config()` helper | `streaming/flink_jobs/_config.py` |
 | Streaming Flink jobs | `streaming/flink_jobs/{inventory_bronze,clickstream_bronze,inventory_silver}_job.py` |
-| Maintenance batch job (no state) | `streaming/flink_jobs/iceberg_maintenance.py` |
+| Iceberg compaction + snapshot expiry (Spark) | `spark/maintenance/iceberg_maintenance.py` |
+| Submit script (YARN guard, restore, env forwarding) | `streaming/bin/submit_flink_job.sh` |
 | Job submitter DAG | `orchestration/airflow/dags/streaming_manual_flink_jobs.py` |
 | Iceberg maintenance DAG | `orchestration/airflow/dags/lakehouse_daily_iceberg_maintenance.py` |
 | State config unit tests | `tests/unit/test_flink_state_config.py` |

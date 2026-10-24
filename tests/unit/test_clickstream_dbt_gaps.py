@@ -59,11 +59,14 @@ class TestClickstreamDbtGapFixes:
         # audit, publish, and a serving refresh. The shared selector lives in
         # SELECT_PENDING; the serving refresh is a separate live dbt run.
         selector = src  # SELECT_PENDING block + task wiring
-        assert "stg_clickstream_events" in selector
-        assert "stg_pos_transactions" in selector
+        # Live staging/intermediate models come from the single-owner sets in
+        # plugins/dbt_selectors.py (stg_pos_transactions is warehouse-owned,
+        # int_product_catalog catalog-owned).
+        pending = src.split("SELECT_PENDING = (", 1)[1].split(")\n", 1)[0]
+        assert "select(MARKETING_LIVE_MODELS" in pending
+        assert "stg_pos_transactions" not in pending
         assert "customer_360_serving" in selector
         assert "--exclude" in selector
-        assert "int_product_catalog" in selector
         assert "dim_product" in selector
         # WAP: write phase targets pending; publish promotes to live after audit.
         assert "wap_phase" in selector

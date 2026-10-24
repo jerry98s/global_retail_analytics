@@ -284,143 +284,119 @@ class TestWapPublishHelper:
         assert "CREATE TABLE finance_pending.fact_sales (LIKE finance.fact_sales)" in joined
         assert "INSERT INTO finance_pending.fact_sales SELECT * FROM finance.fact_sales" in joined
 
-    def test_redshift_publish_statements_swap(self) -> None:
+    def test_redshift_publish_statements_keep_live_table(self) -> None:
         from orchestration.airflow.plugins import wap_publish
 
-        stmts = wap_publish.build_redshift_publish_statements(
-            [("finance", "fact_sales"), ("summary", "sales_daily_store")]
+        stmts = wap_publish.build_publish_statements(
+            "finance", "fact_sales", ["sale_id", "amount"], live_exists=True
         )
-        joined = "\n".join(stmts)
-        assert stmts.count("COMMIT") == 1
-        assert joined.index("SET SCHEMA finance") < joined.index("COMMIT")
-        assert joined.index("SET SCHEMA summary") < joined.index("COMMIT")
-        assert joined.index("COMMIT") < joined.rindex(
-            "DROP TABLE IF EXISTS finance.fact_sales__wap_old"
+        assert stmts == [
+            "DELETE FROM finance.fact_sales",
+            "INSERT INTO finance.fact_sales (sale_id, amount) "
+            "SELECT sale_id, amount FROM finance_pending.fact_sales",
+        ]
+        first = wap_publish.build_publish_statements(
+            "finance", "fact_sales", ["sale_id"], live_exists=False
         )
-        assert "ALTER TABLE finance.fact_sales RENAME TO fact_sales__wap_old" in joined
-        assert "ALTER TABLE finance_pending.fact_sales SET SCHEMA finance" in joined
+        assert first[0] == "CREATE TABLE finance.fact_sales (LIKE finance_pending.fact_sales)"
+        joined = " ".join(stmts + first)
+        assert "SET SCHEMA" not in joined
+        assert "RENAME" not in joined
+
+    @staticmethod
+    def _duckdb_with(tables: dict[str, list[tuple[int, str]]]) -> object:
+        import duckdb
+
+        conn = duckdb.connect()
+        for fqn, rows in tables.items():
+            schema = fqn.split(".", 1)[0]
+            conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+            conn.execute(f"CREATE TABLE {fqn} (id INTEGER, label VARCHAR)")
+            for row in rows:
+                conn.execute(f"INSERT INTO {fqn} VALUES (?, ?)", list(row))
+        return conn
+
+    def test_publish_replaces_live_rows_and_drops_pending(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        conn = self._duckdb_with({
+            "finance.fact_sales": [(1, "old")],
+            "finance_pending.fact_sales": [(1, "new"), (2, "new")],
+            "summary_pending.sales_daily_store": [(9, "first")],
+        })
+        conn.execute("CREATE SCHEMA summary")
+        result = wap_publish.publish_gold(
+            conn,
+            [("finance", "fact_sales"), ("summary", "sales_daily_store")],
+            dialect="duckdb",
+        )
+        assert result["published"] == ["finance.fact_sales", "summary.sales_daily_store"]
+        assert conn.execute("SELECT * FROM finance.fact_sales ORDER BY id").fetchall() == [
+            (1, "new"),
+            (2, "new"),
+        ]
+        assert conn.execute("SELECT * FROM summary.sales_daily_store").fetchall() == [
+            (9, "first")
+        ]
+        pending_left = conn.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_schema LIKE '%_pending'"
+        ).fetchone()
+        assert pending_left == (0,)
 
     def test_publish_aborts_when_pending_missing(self) -> None:
         from orchestration.airflow.plugins import wap_publish
 
-        class _Cur:
-            def execute(self, *a: object) -> None:
-                pass
-
-            def fetchone(self) -> tuple[int]:
-                return (0,)
-
-            def close(self) -> None:
-                pass
-
-        class _Conn:
-            def cursor(self) -> _Cur:
-                return _Cur()
-
-            def commit(self) -> None:
-                pass
-
-            def rollback(self) -> None:
-                pass
-
-        with pytest.raises(RuntimeError, match="pending table"):
-            wap_publish.publish_gold(
-                _Conn(), [("finance", "fact_sales")], dialect="redshift"
-            )
-
-    def test_publish_preflights_set_before_any_swap(self) -> None:
-        from orchestration.airflow.plugins import wap_publish
-
-        class _Conn:
-            def __init__(self) -> None:
-                self.existing = {("finance_pending", "fact_sales")}
-                self.sql: list[str] = []
-                self.commits = 0
-                self._count = 0
-
-            def cursor(self) -> "_Conn":
-                return self
-
-            def execute(self, sql: str, params: tuple[str, str] | None = None) -> None:
-                self.sql.append(sql)
-                if params is not None:
-                    self._count = 1 if params in self.existing else 0
-
-            def fetchone(self) -> tuple[int]:
-                return (self._count,)
-
-            def close(self) -> None:
-                pass
-
-            def commit(self) -> None:
-                self.commits += 1
-
-            def rollback(self) -> None:
-                pass
-
-        conn = _Conn()
+        conn = self._duckdb_with({
+            "finance.fact_sales": [(1, "live")],
+            "finance_pending.fact_sales": [(1, "new")],
+        })
         with pytest.raises(RuntimeError, match="fact_inventory_snapshot"):
             wap_publish.publish_gold(
                 conn,
-                [
-                    ("finance", "fact_sales"),
-                    ("finance", "fact_inventory_snapshot"),
-                ],
-                dialect="redshift",
+                [("finance", "fact_sales"), ("finance", "fact_inventory_snapshot")],
+                dialect="duckdb",
             )
-        mutating = [
-            s for s in conn.sql if s.startswith(("DROP", "ALTER", "CREATE"))
-        ]
-        assert mutating == []
-        assert conn.commits == 0
+        assert conn.execute("SELECT label FROM finance.fact_sales").fetchall() == [("live",)]
 
-    def test_publish_commits_whole_set_once(self) -> None:
+    def test_publish_aborts_on_column_drift_before_any_write(self) -> None:
         from orchestration.airflow.plugins import wap_publish
 
-        class _Conn:
-            def __init__(self) -> None:
-                self.existing = {
-                    ("finance_pending", "fact_sales"),
-                    ("finance_pending", "fact_inventory_snapshot"),
-                    ("finance", "fact_sales"),
-                    ("finance", "fact_inventory_snapshot"),
-                }
-                self.sql: list[str] = []
-                self.commits = 0
-                self._count = 0
+        conn = self._duckdb_with({
+            "finance.fact_sales": [(1, "live")],
+            "finance_pending.fact_sales": [(1, "new")],
+        })
+        conn.execute("ALTER TABLE finance_pending.fact_sales ADD COLUMN extra INTEGER")
+        with pytest.raises(RuntimeError, match="columns differ"):
+            wap_publish.publish_gold(conn, [("finance", "fact_sales")], dialect="duckdb")
+        assert conn.execute("SELECT label FROM finance.fact_sales").fetchall() == [("live",)]
 
-            def cursor(self) -> "_Conn":
-                return self
+    def test_publish_failure_rolls_back_whole_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from orchestration.airflow.plugins import wap_publish
 
-            def execute(self, sql: str, params: tuple[str, str] | None = None) -> None:
-                self.sql.append(sql)
-                if params is not None:
-                    self._count = 1 if params in self.existing else 0
+        conn = self._duckdb_with({
+            "finance.fact_sales": [(1, "live")],
+            "finance_pending.fact_sales": [(1, "new")],
+            "finance.fact_inventory_snapshot": [(1, "live")],
+            "finance_pending.fact_inventory_snapshot": [(1, "new")],
+        })
+        real_build = wap_publish.build_publish_statements
 
-            def fetchone(self) -> tuple[int]:
-                return (self._count,)
+        def _failing_second(schema: str, table: str, *a: object, **kw: object) -> list[str]:
+            if table == "fact_inventory_snapshot":
+                return ["INSERT INTO finance.no_such_table VALUES (1)"]
+            return real_build(schema, table, *a, **kw)
 
-            def close(self) -> None:
-                pass
-
-            def commit(self) -> None:
-                self.commits += 1
-
-            def rollback(self) -> None:
-                pass
-
-        conn = _Conn()
-        result = wap_publish.publish_gold(
-            conn,
-            [
-                ("finance", "fact_sales"),
-                ("finance", "fact_inventory_snapshot"),
-            ],
-            dialect="redshift",
-        )
-        assert result["count"] == 2
-        assert conn.commits == 2  # one swap transaction, one __wap_old drop
-        assert sum("SET SCHEMA finance" in s for s in conn.sql) == 2
+        monkeypatch.setattr(wap_publish, "build_publish_statements", _failing_second)
+        with pytest.raises(Exception, match="no_such_table"):
+            wap_publish.publish_gold(
+                conn,
+                [("finance", "fact_sales"), ("finance", "fact_inventory_snapshot")],
+                dialect="duckdb",
+            )
+        assert conn.execute("SELECT label FROM finance.fact_sales").fetchall() == [("live",)]
 
     def test_clone_skips_missing_live_table(self) -> None:
         from orchestration.airflow.plugins import wap_publish
@@ -429,8 +405,8 @@ class TestWapPublishHelper:
             def execute(self, *a: object) -> None:
                 pass
 
-            def fetchone(self) -> tuple[int]:
-                return (0,)
+            def fetchall(self) -> list[tuple[int]]:
+                return [(0,)]
 
             def close(self) -> None:
                 pass

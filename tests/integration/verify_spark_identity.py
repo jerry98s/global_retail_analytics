@@ -13,6 +13,7 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 
 from spark.identity_resolution import graph_logic as reference
+from spark.identity_resolution.consumer_exports import read_current
 from spark.identity_resolution.identity_resolution_job import (
     assign_resolution,
     build_edges,
@@ -104,7 +105,7 @@ def main() -> None:
             }
 
             # Consumers never glob an Iceberg table's data directory. Verify
-            # the dedicated plain-Parquet handoff is replace-only across runs.
+            # the manifest exposes exactly the latest run and old runs prune.
             consumer_root = (Path(tmp) / "consumer-current").resolve().as_uri()
             write_consumer_exports(actual_frame, edges, consumer_root)
             second_resolution = actual_frame.filter("identifier_value = 'L1001'")
@@ -112,14 +113,19 @@ def main() -> None:
             # L1001 appears as both loyalty_id and customer_id (2 rows total)
             expected_resolution_count = second_resolution.count()
             write_consumer_exports(second_resolution, second_edges, consumer_root)
-            exported_resolution = spark.read.parquet(
-                f"{consumer_root}/identity_resolution"
-            )
-            exported_edges = spark.read.parquet(f"{consumer_root}/identity_edges")
+            write_consumer_exports(second_resolution, second_edges, consumer_root)
+            exported_resolution = read_current(spark, consumer_root, "identity_resolution")
+            exported_edges = read_current(spark, consumer_root, "identity_edges")
             if exported_resolution.count() != expected_resolution_count or exported_edges.count() != 1:
-                raise SystemExit("consumer_current export retained superseded run files")
+                raise SystemExit("consumer_current manifest exposed superseded run files")
             if exported_resolution.filter("identifier_value != 'L1001'").count() > 0:
-                raise SystemExit("consumer_current export did not expose the latest run")
+                raise SystemExit("consumer_current manifest did not expose the latest run")
+            runs = [
+                p for p in (Path(tmp) / "consumer-current" / "identity_resolution").iterdir()
+                if p.name.startswith("run=")
+            ]
+            if len(runs) != 2:
+                raise SystemExit(f"expected current + previous run kept, found {len(runs)}")
         finally:
             spark.stop()
 

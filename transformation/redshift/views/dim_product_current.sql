@@ -1,9 +1,7 @@
 -- Current-version convenience view over the SCD2 product dimension.
 --
--- WITH NO SCHEMA BINDING is required, not cosmetic: marketing.dim_product is
--- WAP-published (ADR-009) by renaming the live table aside and dropping the old
--- copy. A bound view would follow the renamed table by OID and then block the
--- drop of dim_product__wap_old (or be CASCADE-dropped with it).
+-- WITH NO SCHEMA BINDING: a bound view would block (or be CASCADE-dropped by)
+-- a deliberate DDL migration that drops and recreates marketing.dim_product.
 --
 -- Redshift cannot convert a bound view to late-binding in place
 -- ("Cannot replace a normal view with a late binding view"), so drop first.

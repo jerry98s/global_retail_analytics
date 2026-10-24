@@ -189,6 +189,12 @@ class TestDbtHandoffContract:
         ddl = (
             _REPO / "transformation/redshift/spectrum/silver_external_tables.sql"
         ).read_text(encoding="utf-8")
-        assert "consumer_current/identity_resolution/" in ddl
-        assert "consumer_current/identity_edges/" in ddl
-        assert "silver/identity_resolution/data/" not in ddl
+        for name in (
+            "inventory_hourly",
+            "identity_resolution",
+            "identity_edges",
+            "clickstream_events",
+            "inventory_events",
+        ):
+            assert f"consumer_current/{name}/manifest'" in ddl
+        assert "/data/'" not in ddl

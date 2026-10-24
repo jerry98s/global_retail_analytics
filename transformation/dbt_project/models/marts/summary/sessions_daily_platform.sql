@@ -12,6 +12,9 @@
 
   Grain: (session_date_key, platform)
   Preserves platform so digital mix analysis remains possible.
+  Incremental: re-aggregates from the day before the latest session day,
+  because a session that started before midnight can still be extended
+  (fact_customer_session re-emits it under its start date).
 */
 
 with sessions as (
@@ -26,7 +29,11 @@ with sessions as (
     from {{ ref('fact_customer_session') }}
     {% if is_incremental() %}
       where session_date_key >= (
-          select coalesce(max(session_date_key), 0)
+          select coalesce({{ date_key_from_date(dateadd_unit(
+              'day',
+              -1,
+              date_from_date_key('max(session_date_key)')
+          )) }}, 0)
           from {{ this }}
       )
     {% endif %}

@@ -48,6 +48,26 @@ resource "aws_s3_bucket" "checkpoints" {
   tags   = merge(local.tags, { Layer = "Checkpoints" })
 }
 
+locals {
+  bucket_ids = {
+    bronze      = aws_s3_bucket.bronze.id
+    silver      = aws_s3_bucket.silver.id
+    gold        = aws_s3_bucket.gold.id
+    artifacts   = aws_s3_bucket.artifacts.id
+    checkpoints = aws_s3_bucket.checkpoints.id
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "this" {
+  for_each = local.bucket_ids
+
+  bucket                  = each.value
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "aws_s3_bucket_versioning" "bronze" {
   bucket = aws_s3_bucket.bronze.id
   versioning_configuration {
@@ -131,13 +151,32 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "checkpoints" {
 resource "aws_s3_bucket_lifecycle_configuration" "checkpoints" {
   bucket = aws_s3_bucket.checkpoints.id
 
+  # Flink prunes its own retained checkpoints. Incremental RocksDB checkpoints
+  # keep referencing shared files older than any fixed age, so live objects
+  # under flink/ must never expire; only deleted versions are cleaned up.
   rule {
-    id     = "expire-old-checkpoints"
+    id     = "expire-graphframes-scratch"
     status = "Enabled"
-    filter {}
+    filter {
+      prefix = "graphframes/"
+    }
 
     expiration {
       days = 14
+    }
+  }
+
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 14
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }

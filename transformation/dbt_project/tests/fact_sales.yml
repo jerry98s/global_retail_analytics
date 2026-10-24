@@ -19,13 +19,20 @@ models:
                 to: source('gold_finance', 'dim_date')
                 field: date_key
       - name: product_key
-        description: "Resolved product surrogate key. Joins live dim_product on is_current=true (current attributes at load time, not as-of SCD2)."
+        description: "Resolved product surrogate key. Joins live dim_product on is_current=true (current attributes at load time, not as-of SCD2). -1 = product not yet published by the catalog DAG; re-keyed inside the pos_restatement_days window."
         tests:
           - not_null
           - relationships:
               arguments:
                 to: source('gold_marketing', 'dim_product')
                 field: product_key
+              config:
+                where: "product_key <> -1"
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<> -1"
+              config:
+                severity: warn
       - name: store_key
         description: "Resolved store surrogate key (joins gold_finance.dim_store)."
         tests:

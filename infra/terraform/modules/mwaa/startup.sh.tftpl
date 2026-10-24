@@ -1,0 +1,18 @@
+#!/bin/sh
+# MWAA startup script, rendered by Terraform (modules/mwaa/main.tf). MWAA
+# sources it on every scheduler/worker/webserver start, so it uses no exit or
+# set -e. It builds the dbt virtualenv from the hashed lock; DAG tasks run
+# $DBT_BIN and fail with a clear error if this install did not complete.
+DBT_VENV=/usr/local/airflow/dbt_venv
+if [ "$MWAA_AIRFLOW_COMPONENT" != "webserver" ]; then
+  cat > /tmp/dbt-requirements.txt <<'REQUIREMENTS'
+${dbt_requirements}
+REQUIREMENTS
+  if python3 -m venv "$DBT_VENV" \
+    && "$DBT_VENV/bin/pip" install --quiet --no-cache-dir --require-hashes -r /tmp/dbt-requirements.txt; then
+    echo "dbt virtualenv ready: $("$DBT_VENV/bin/dbt" --version | head -n 1)"
+  else
+    echo "dbt virtualenv install FAILED; dbt tasks will fail until the environment restarts" >&2
+  fi
+fi
+export DBT_BIN="$DBT_VENV/bin/dbt"

@@ -1,9 +1,9 @@
 # Spark jobs
 
-Spark runs **one** workload on the existing EMR cluster (ADR-010): identity
-resolution with GraphFrames. Flink still owns all streaming; dbt still owns
-all Gold marts. Do not add Spark Streaming or Spark SQL marts without
-revisiting ADR-006.
+Spark runs two batch workloads on the existing EMR cluster: identity
+resolution with GraphFrames (ADR-010) and daily Iceberg maintenance. Flink
+still owns all streaming; dbt still owns all Gold marts. Do not add Spark
+Streaming or Spark SQL marts without revisiting ADR-006.
 
 ## identity_resolution/
 
@@ -16,10 +16,21 @@ revisiting ADR-006.
 - Writes `silver.identity_resolution` (consumed by dbt as a source) and
   `silver.identity_edges` (audit) to the silver Iceberg warehouse. Full
   overwrite per run — recompute is cheap at identifier grain.
-- Replaces `consumer_current/identity_resolution` and
-  `consumer_current/identity_edges` plain-Parquet exports for Spectrum and the
-  local DuckDB bridge. Consumers never glob Iceberg `data/` directories, where
-  superseded snapshot files may remain.
+- Publishes `consumer_current/<name>/` exports for Spectrum (`consumer_exports.py`):
+  identity resolution, identity edges, the canonical event/quarantine/duplicate
+  sets, and `silver.inventory_hourly` read from its committed Iceberg snapshot.
+  Each run writes `run=<utc ts>/` and then atomically replaces `manifest`, which
+  the Spectrum `LOCATION` points at, so a query sees one complete run. The
+  current and previous runs are kept; older ones are deleted. Consumers never
+  glob Iceberg `data/` directories, where superseded snapshot files may remain.
+
+## maintenance/
+
+`iceberg_maintenance.py` — daily `rewrite_data_files` on the Flink streaming
+sinks and `expire_snapshots` on every Bronze/Silver Iceberg table (Bronze 7
+days, Silver 30 days, always the last 5 snapshots). Submitted by
+`lakehouse_daily_iceberg_maintenance`. Iceberg ships these procedures for
+Spark only.
 
 `graph_logic.py` — engine-independent source of truth for the rules (identifier
 normalization, edge

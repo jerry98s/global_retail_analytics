@@ -12,12 +12,16 @@ DAGs: `orchestration/airflow/dags/`. Plugins: `orchestration/airflow/plugins/`.
 
 | DAG | Owns |
 |---|---|
-| `warehouse_daily_batch_pipeline` | POS Parquet, staging/intermediate, **`marts.finance`**, ANALYZE |
-| `marketing_hourly_customer_360_pipeline` | EMR Spark identity step (GraphFrames, ADR-010) → WAP clone → staging/intermediate + **`marts.marketing`** (sessions, RFM, C360) |
-| `streaming_manual_flink_jobs` | EMR Flink submit + duplicate-run guard |
-| `catalog_bihourly_product_scd2_refresh` | `dim_product` SCD2 |
-| `quality_hourly_ge_checkpoint` | Hourly GE `silver_events_daily` (Silver events only) |
-| `lakehouse_daily_iceberg_maintenance` | Iceberg compaction / snapshot expiry |
+| `warehouse_daily_batch_pipeline` | POS Parquet, `WAREHOUSE_LIVE_MODELS`, **`marts.finance`**, ANALYZE |
+| `marketing_hourly_customer_360_pipeline` | EMR Spark identity step (GraphFrames, ADR-010) → WAP clone → `MARKETING_LIVE_MODELS` + **`marts.marketing`** (sessions, RFM, C360) |
+| `streaming_manual_flink_jobs` | EMR Flink submit via `streaming/bin/submit_flink_job.sh` (YARN duplicate guard, checkpoint restore) |
+| `catalog_bihourly_product_scd2_refresh` | `CATALOG_LIVE_MODELS` + `dim_product` SCD2 |
+| `quality_hourly_ge_checkpoint` | Hourly GE `silver_events_daily` (Silver events only) + metadata freshness SLA |
+| `lakehouse_daily_iceberg_maintenance` | Spark Iceberg compaction / snapshot expiry (`spark/maintenance/`) |
+
+Staging/intermediate models build live (not WAP). Each has exactly one building
+DAG, listed in `plugins/dbt_selectors.py`; never select `staging` or
+`intermediate` wholesale.
 
 Do not dual-build `marts.marketing` on the daily warehouse DAG.
 
@@ -36,12 +40,21 @@ Gold marts are clone → write → audit → publish. A failing audit leaves liv
 ## Conventions
 
 - Filename/DAG ID: `{domain}_{frequency}_{description}`.
-- `doc_md`, `catchup=False`, retries, `email_on_failure=True`.
+- `doc_md`, `catchup=False`, retries, `execution_timeout`, and
+  `on_failure_callback: notify_task_failure` (SNS via the `alert_topic_arn`
+  Variable). MWAA has no SMTP: never use `email_on_failure`. CI loads the
+  DagBag (`tests/integration/verify_dagbag.py`) and fails a task without both.
 - Infra endpoints via Airflow Variables — no hardcoded ARNs/passwords/endpoints.
 - Never template a secret into a command: Jinja renders `{{ var.value.* }}` into
-  the stored command, the Rendered Template tab, and task logs. Bash tasks wrap
-  with `dbt_bash_with_metadata` / `ge_bash_with_metadata`, which export
+  the stored command, the Rendered Template tab, and task logs. dbt tasks use
+  `dbt_task_bash` and GE tasks `ge_bash_with_metadata`, which export
   `RS_SECRET_ARN` and fetch the password in the task shell; Python tasks call
   `metadata_airflow.redshift_password()`. Enforced by `tests/unit/test_dag_contract.py`.
+- dbt runs from `$DBT_BIN`, a virtualenv the MWAA startup script builds from
+  `infra/terraform/modules/mwaa/dbt-requirements.txt`; dbt cannot share the
+  Airflow 2.8.1 constraints. `dbt_task_bash` syncs a private project copy per
+  task because consecutive tasks may run on different workers.
+- MWAA `requirements.txt` starts with the Airflow constraints line; do not pin
+  packages the constraints file already pins.
 - Prefer task factories (`_dbt_step`, `_flink_step`).
 - Idempotency: no duplicate Flink submits; partition-safe POS; dbt `delete+insert` uniqueness.

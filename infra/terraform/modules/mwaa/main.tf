@@ -62,9 +62,102 @@ resource "aws_iam_role" "execution" {
   tags               = local.tags
 }
 
-resource "aws_iam_role_policy_attachment" "mwaa_full" {
-  role       = aws_iam_role.execution.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonMWAAFullAccess"
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+locals {
+  account_id = data.aws_caller_identity.current.account_id
+  region     = data.aws_region.current.name
+}
+
+# MWAA execution-role baseline (AWS "Amazon MWAA execution role" policy):
+# metrics, its own log groups, the Celery SQS queues, and the AWS-owned key
+# those queues use. AmazonMWAAFullAccess is a console-user policy and grants
+# far more than the environment needs.
+data "aws_iam_policy_document" "execution" {
+  statement {
+    sid       = "PublishMetrics"
+    effect    = "Allow"
+    actions   = ["airflow:PublishMetrics"]
+    resources = ["arn:aws:airflow:${local.region}:${local.account_id}:environment/${local.env_name}"]
+  }
+
+  statement {
+    sid       = "DenyListAllBuckets"
+    effect    = "Deny"
+    actions   = ["s3:ListAllMyBuckets"]
+    resources = ["arn:aws:s3:::${var.artifacts_bucket}", "arn:aws:s3:::${var.artifacts_bucket}/*"]
+  }
+
+  statement {
+    sid    = "ReadSourceBucket"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject*",
+      "s3:GetBucket*",
+      "s3:List*",
+    ]
+    resources = ["arn:aws:s3:::${var.artifacts_bucket}", "arn:aws:s3:::${var.artifacts_bucket}/*"]
+  }
+
+  statement {
+    sid    = "AirflowLogs"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:CreateLogGroup",
+      "logs:PutLogEvents",
+      "logs:GetLogEvents",
+      "logs:GetLogRecord",
+      "logs:GetLogGroupFields",
+      "logs:GetQueryResults",
+    ]
+    resources = ["arn:aws:logs:${local.region}:${local.account_id}:log-group:airflow-${local.env_name}-*"]
+  }
+
+  statement {
+    sid       = "AccountLevelReads"
+    effect    = "Allow"
+    actions   = ["logs:DescribeLogGroups", "s3:GetAccountPublicAccessBlock", "cloudwatch:PutMetricData"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "CelerySqs"
+    effect = "Allow"
+    actions = [
+      "sqs:ChangeMessageVisibility",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+      "sqs:GetQueueUrl",
+      "sqs:ReceiveMessage",
+      "sqs:SendMessage",
+    ]
+    resources = ["arn:aws:sqs:${local.region}:*:airflow-celery-*"]
+  }
+
+  statement {
+    sid    = "CelerySqsAwsOwnedKey"
+    effect = "Allow"
+    actions = [
+      "kms:Decrypt",
+      "kms:DescribeKey",
+      "kms:GenerateDataKey*",
+      "kms:Encrypt",
+    ]
+    not_resources = ["arn:aws:kms:*:${local.account_id}:key/*"]
+    condition {
+      test     = "StringLike"
+      variable = "kms:ViaService"
+      values   = ["sqs.${local.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "execution" {
+  name   = "${local.name_prefix}-mwaa-execution"
+  role   = aws_iam_role.execution.id
+  policy = data.aws_iam_policy_document.execution.json
 }
 
 data "aws_iam_policy_document" "dag_tasks" {
@@ -94,14 +187,22 @@ data "aws_iam_policy_document" "dag_tasks" {
       "elasticmapreduce:ListSteps",
       "elasticmapreduce:DescribeCluster",
     ]
-    resources = ["*"]
+    resources = ["arn:aws:elasticmapreduce:${local.region}:${local.account_id}:cluster/${var.emr_cluster_id}"]
   }
 
   statement {
-    sid    = "RedshiftDataApi"
+    sid       = "RedshiftDataApiExecute"
+    effect    = "Allow"
+    actions   = ["redshift-data:ExecuteStatement"]
+    resources = [var.redshift_workgroup_arn]
+  }
+
+  # Statement-level calls have no resource ARN; the Data API limits them to
+  # statements this role submitted.
+  statement {
+    sid    = "RedshiftDataApiOwnStatements"
     effect = "Allow"
     actions = [
-      "redshift-data:ExecuteStatement",
       "redshift-data:DescribeStatement",
       "redshift-data:GetStatementResult",
       "redshift-data:CancelStatement",
@@ -110,12 +211,17 @@ data "aws_iam_policy_document" "dag_tasks" {
   }
 
   statement {
-    sid    = "RedshiftServerlessCredentials"
-    effect = "Allow"
-    actions = [
-      "redshift-serverless:GetCredentials",
-    ]
-    resources = ["*"]
+    sid       = "RedshiftServerlessCredentials"
+    effect    = "Allow"
+    actions   = ["redshift-serverless:GetCredentials"]
+    resources = [var.redshift_workgroup_arn]
+  }
+
+  statement {
+    sid       = "PublishAlerts"
+    effect    = "Allow"
+    actions   = ["sns:Publish"]
+    resources = [var.alert_topic_arn]
   }
 
   # Tasks fetch the Redshift password themselves at runtime, so the plaintext
@@ -144,6 +250,14 @@ resource "aws_s3_object" "requirements" {
   etag    = filemd5("${path.module}/requirements.txt")
 }
 
+resource "aws_s3_object" "startup" {
+  bucket = var.artifacts_bucket
+  key    = "mwaa/startup.sh"
+  content = templatefile("${path.module}/startup.sh.tftpl", {
+    dbt_requirements = trimspace(file("${path.module}/dbt-requirements.txt"))
+  })
+}
+
 resource "aws_s3_object" "plugins" {
   bucket = var.artifacts_bucket
   key    = "mwaa/plugins.zip"
@@ -157,13 +271,16 @@ resource "aws_mwaa_environment" "this" {
   environment_class  = var.environment_class
   execution_role_arn = aws_iam_role.execution.arn
 
-  source_bucket_arn    = "arn:aws:s3:::${var.artifacts_bucket}"
-  dag_s3_path          = "mwaa/dags"
-  requirements_s3_path = "mwaa/requirements.txt"
-  plugins_s3_path      = "mwaa/plugins.zip"
+  source_bucket_arn      = "arn:aws:s3:::${var.artifacts_bucket}"
+  dag_s3_path            = "mwaa/dags"
+  requirements_s3_path   = "mwaa/requirements.txt"
+  plugins_s3_path        = "mwaa/plugins.zip"
+  startup_script_s3_path = "mwaa/startup.sh"
 
-  # Pin the uploaded version so a rebuilt zip updates the environment.
-  plugins_s3_object_version = aws_s3_object.plugins.version_id
+  # Pin the uploaded versions so a changed file updates the environment.
+  requirements_s3_object_version   = aws_s3_object.requirements.version_id
+  plugins_s3_object_version        = aws_s3_object.plugins.version_id
+  startup_script_s3_object_version = aws_s3_object.startup.version_id
 
   max_workers = var.max_workers
   min_workers = var.min_workers
@@ -200,5 +317,5 @@ resource "aws_mwaa_environment" "this" {
 
   tags = merge(local.tags, { Name = local.env_name })
 
-  depends_on = [aws_s3_object.requirements, aws_s3_object.plugins]
+  depends_on = [aws_s3_object.requirements, aws_s3_object.plugins, aws_s3_object.startup]
 }

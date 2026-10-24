@@ -147,12 +147,15 @@ module "mwaa" {
   environment = var.environment
   team        = var.team_name
 
-  vpc_id                = var.vpc_id
-  private_subnet_ids    = length(var.mwaa_subnet_ids) > 0 ? var.mwaa_subnet_ids : var.private_subnet_ids
-  artifacts_bucket      = module.s3.artifacts_bucket_name
-  bronze_bucket         = module.s3.bronze_bucket_name
-  environment_class     = var.mwaa_environment_class
-  max_workers           = var.mwaa_max_workers
-  webserver_access_mode = var.mwaa_webserver_access_mode
-  redshift_secret_arn   = aws_secretsmanager_secret.redshift_admin.arn
+  vpc_id                 = var.vpc_id
+  private_subnet_ids     = length(var.mwaa_subnet_ids) > 0 ? var.mwaa_subnet_ids : var.private_subnet_ids
+  artifacts_bucket       = module.s3.artifacts_bucket_name
+  bronze_bucket          = module.s3.bronze_bucket_name
+  environment_class      = var.mwaa_environment_class
+  max_workers            = var.mwaa_max_workers
+  webserver_access_mode  = var.mwaa_webserver_access_mode
+  redshift_secret_arn    = aws_secretsmanager_secret.redshift_admin.arn
+  redshift_workgroup_arn = module.redshift.workgroup_arn
+  emr_cluster_id         = module.emr.cluster_id
+  alert_topic_arn        = aws_sns_topic.alerts.arn
 }

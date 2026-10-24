@@ -253,6 +253,28 @@ For the complete Bronze → Silver → Gold proof—including POS, Spark identit
 Redshift SQL, dbt, GE, evidence capture, and teardown—follow
 `docs/runbooks/dev-cloud-test-run.md` on `main`.
 
+With MWAA enabled (`enable_mwaa = true`):
+
+- Set every Variable that `deploy_platform.ps1 -Action airflow-vars` lists,
+  including `alert_topic_arn`. Task failures, freshness-SLA breaches and Gold
+  row-count warnings publish to that SNS topic; set `alert_email` in tfvars to
+  receive them. Without the Variable, tasks still fail but only their log says
+  `ALERT NOT SENT`.
+- MWAA installs `infra/terraform/modules/mwaa/requirements.txt` under the
+  Airflow 2.8.1 constraints. dbt runs from a separate virtualenv that
+  `startup.sh` builds from the hashed `dbt-requirements.txt` lock; a failed
+  install shows in the startup-script log, and every dbt task then fails with
+  `DBT_BIN ... is not executable`.
+- Each staging/intermediate model is built by one DAG
+  (`orchestration/airflow/plugins/dbt_selectors.py`). On a fresh warehouse,
+  trigger `warehouse_daily_batch_pipeline` before the first marketing and
+  catalog runs, so `stg_pos_transactions` and `stg_inventory_events` exist for
+  RFM and the product catalog.
+- Gold publish is blocked when an owned table cannot be read or shrinks by more
+  than `row_count_delta_threshold` (default 0.20) against the last clean
+  baseline. After a legitimate large deletion, update the
+  `gold_row_counts_baseline` Variable and clear the task.
+
 ### Cost and teardown
 
 `-Task all` creates billable AWS infrastructure — MSK, EMR, Redshift Serverless,

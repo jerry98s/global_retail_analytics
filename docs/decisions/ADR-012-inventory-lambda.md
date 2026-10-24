@@ -22,8 +22,8 @@ The Flink number has limits the Spark number does not:
    the 60 s watermark is dropped from `inventory_hourly` for good.
 2. **Deduplication is bounded.** The dedup state expires after 7 days.
 3. **Recovery depends on Kafka.** Rebuilding means replaying the topic, which
-   is limited by retention, and `inventory_silver_job` starts from
-   `latest-offset`.
+   is limited by retention. A restart restores the newest retained
+   checkpoint, or else resumes from the committed consumer-group offsets.
 
 Gold is rebuilt daily by `warehouse_daily_batch_pipeline`, so Flink's
 low latency does not reach Gold readers for hours that are already closed.

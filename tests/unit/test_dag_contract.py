@@ -20,9 +20,9 @@ The contract enforced here mirrors the 7 checklist items:
      not the DAGs).
   5. Dependencies correct — at least one `>>` chain (single-task DAGs
      are exempt).
-  6. Retries and alerts — DEFAULT_ARGS has `retries >= 1` AND
-     `email_on_failure=True` (Airflow's default is False, which silently
-     disables alerts — this is the most common production gap).
+  6. Retries and alerts — DEFAULT_ARGS has `retries >= 1`, an
+     `execution_timeout`, and `on_failure_callback=notify_task_failure`
+     (SNS). MWAA has no SMTP server, so `email_on_failure` sends nothing.
   7. Templates reused — not statically enforceable; left to code review.
 
 Plus one security invariant that is not from the checklist: no secret may be
@@ -224,7 +224,7 @@ def test_dag_has_retries_configured(dag_path: Path) -> None:
     default_args = _extract_default_args_block(src)
     assert default_args is not None, (
         f"{dag_path.name}: no default_args dict found. Every DAG must "
-        f"declare DEFAULT_ARGS with retries + email_on_failure."
+        f"declare DEFAULT_ARGS with retries + on_failure_callback."
     )
     m = re.search(r"['\"]?retries['\"]?\s*:\s*(\d+)", default_args)
     assert m is not None, (
@@ -239,19 +239,30 @@ def test_dag_has_retries_configured(dag_path: Path) -> None:
 
 
 @pytest.mark.parametrize("dag_path", _DAG_FILES, ids=[_dag_id_param(p) for p in _DAG_FILES])
-def test_dag_has_email_on_failure(dag_path: Path) -> None:
-    """Checklist item 6: DEFAULT_ARGS must set email_on_failure=True.
+def test_dag_alerts_on_task_failure(dag_path: Path) -> None:
+    """Checklist item 6: failed tasks page the on-call through SNS.
 
-    Airflow's default for `email_on_failure` is False, so omitting it
-    silently disables alerts. This is the most common production gap
-    and was the actual finding that triggered this audit (PR9)."""
+    MWAA ships without SMTP, so `email_on_failure` silently sends nothing."""
     src = _load_dag_source(dag_path)
     default_args = _extract_default_args_block(src)
     assert default_args is not None
-    assert _default_args_has(default_args, "email_on_failure", "True"), (
-        f"{dag_path.name}: DEFAULT_ARGS missing `email_on_failure=True`. "
-        f"Airflow defaults this to False, so failures will silently "
-        f"skip alerting — the most common production gap."
+    assert _default_args_has(default_args, "on_failure_callback", "notify_task_failure"), (
+        f"{dag_path.name}: DEFAULT_ARGS must set "
+        f"`on_failure_callback: notify_task_failure` (alerting.py)."
+    )
+    assert "email_on_failure" not in default_args, (
+        f"{dag_path.name}: email_on_failure implies an alert path MWAA does not have."
+    )
+
+
+@pytest.mark.parametrize("dag_path", _DAG_FILES, ids=[_dag_id_param(p) for p in _DAG_FILES])
+def test_dag_tasks_have_execution_timeout(dag_path: Path) -> None:
+    """A hung task must fail (and alert) instead of holding the DAG's only run slot."""
+    src = _load_dag_source(dag_path)
+    default_args = _extract_default_args_block(src)
+    assert default_args is not None
+    assert _default_args_has(default_args, "execution_timeout"), (
+        f"{dag_path.name}: DEFAULT_ARGS missing `execution_timeout`."
     )
 
 

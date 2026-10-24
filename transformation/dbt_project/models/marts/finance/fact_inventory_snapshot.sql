@@ -33,6 +33,11 @@
     delete+insert replaces that row instead of adding a second version.
   - A stored hour that no longer has movement is re-emitted with delta 0 and
     the carried balance, so it cannot keep a stale number.
+  - Hours of a product the catalog DAG has not published yet are held back:
+    product_key is part of the unique key, so an unknown-member key would
+    leave a duplicate behind once the real key exists. Balances are recomputed
+    from full history, so held-back hours land on the first run after the
+    product publishes.
   Crash-resilient: a partial insert is just more rows that already match.
 */
 
@@ -143,7 +148,12 @@ left join existing e
  and f.snapshot_hour = e.snapshot_hour
  and f.product_id = e.product_id
  and f.store_id = e.store_id
-where e.product_key is null
-   or e.quantity_on_hand <> f.quantity_on_hand
-   or e.is_estimated <> f.is_estimated
+where coalesce(e.product_key, p.product_key) is not null
+  and (
+      e.product_key is null
+      or e.quantity_on_hand <> f.quantity_on_hand
+      or e.is_estimated <> f.is_estimated
+  )
+{% else %}
+where p.product_key is not null
 {% endif %}

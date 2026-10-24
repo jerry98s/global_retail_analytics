@@ -3,8 +3,6 @@
 #
 # These settings apply to all three streaming Flink jobs
 # (inventory_bronze_job, clickstream_bronze_job, inventory_silver_job).
-# The maintenance batch job (iceberg_maintenance.py) ignores them —
-# batch jobs have no long-running state.
 #
 # State backend: rocksdb (vs the default hashmap).
 #   - hashmap is faster but JVM-heap-bound — OOMs at ~10GB state.

@@ -195,6 +195,36 @@ jobs:
           pip install pytest==8.4.1
           pytest tests/integration/test_dbt_idempotency.py -v -m integration_duckdb
 
+  airflow-dagbag:
+    name: DAGs load in Airflow 2.8.1 (MWAA constraints)
+    runs-on: ubuntu-latest
+    env:
+      AIRFLOW_HOME: ${{ github.workspace }}/.airflow_ci
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__PLUGINS_FOLDER: ${{ github.workspace }}/.airflow_ci/plugins
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install MWAA requirements under the Airflow constraints
+        run: >
+          pip install "apache-airflow==2.8.1"
+          -r infra/terraform/modules/mwaa/requirements.txt
+
+      - name: extract plugins.zip as MWAA does
+        run: |
+          python scripts/cloud/build_mwaa_plugins.py --output "$RUNNER_TEMP/plugins.zip"
+          mkdir -p "$AIRFLOW__CORE__PLUGINS_FOLDER"
+          python -m zipfile -e "$RUNNER_TEMP/plugins.zip" "$AIRFLOW__CORE__PLUGINS_FOLDER"
+
+      - name: load DagBag
+        run: |
+          airflow db migrate
+          python tests/integration/verify_dagbag.py orchestration/airflow/dags
+
   shell:
     name: shellcheck
     runs-on: ubuntu-latest
@@ -207,6 +237,9 @@ jobs:
           severity: warning
         env:
           SHELLCHECK_OPTS: -e SC2086 -e SC2046
+
+      - name: shellcheck Flink submit script
+        run: shellcheck --severity=warning streaming/bin/submit_flink_job.sh
 
   yaml:
     name: yaml + compose sanity

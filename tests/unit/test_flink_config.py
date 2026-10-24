@@ -122,6 +122,12 @@ class TestResolveConfigPath:
         path = _config.resolve_config_path("flink_conf.yaml")
         assert path.parts[-3:] == ("streaming", "config", "flink_conf.yaml")
 
+    def test_prefers_yaml_shipped_beside_the_job(self, tmp_path, monkeypatch):
+        shipped = tmp_path / "flink_conf.yaml"
+        shipped.write_text("kafka_bootstrap_servers: broker:9092\n", encoding="utf-8")
+        monkeypatch.setattr(_config, "__file__", str(tmp_path / "_config.py"))
+        assert _config.resolve_config_path("flink_conf.yaml") == shipped
+
 
 class TestFlinkConfContract:
     """Pin the topic/consumer-group keys every Flink job depends on.

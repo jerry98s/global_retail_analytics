@@ -45,12 +45,15 @@ must preserve cross-batch deduplication and provide an explicit backfill path.
 Promotion runs before identity resolution in the existing Spark/marketing step.
 `--canonical-only` skips POS and GraphFrames for a standalone replay. dbt staging,
 GE and local dashboard clickstream read canonical Silver. Plain-Parquet
-`consumer_current/*` exports are replaced, never appended; do not scan Iceberg
-`data/` directories because old snapshot files can remain there.
+`consumer_current/<name>/` exports write a new run directory and then
+atomically replace the `manifest` Spectrum reads, so each table switches from
+one complete run to the next; do not scan Iceberg `data/` directories because
+old snapshot files can remain there.
 
-Exports are NOT an atomic multi-table publication. Serialize writers and pause
-readers during replay; resume only after the full job succeeds. Failed exports
-must be rerun before consumption. Gold retains its existing WAP audits/publish.
+Each table switches on its own: the set is NOT an atomic multi-table
+publication. Serialize writers and pause readers during replay; resume only
+after the full job succeeds. A failed run leaves the previous manifests in
+place and must be rerun before consumption. Gold retains its existing WAP audits/publish.
 Fidelity-mode DuckDB requires Spark exports; fixtures are explicit seed mode only.
 
 The independent Flink `silver.inventory_hourly` writer remains the live fast path.

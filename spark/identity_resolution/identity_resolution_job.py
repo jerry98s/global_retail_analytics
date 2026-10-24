@@ -47,8 +47,10 @@ from pyspark.sql import functions as F
 
 try:
     from .canonical_events import promote_events
+    from .consumer_exports import new_run_id, publish
 except ImportError:
     from canonical_events import promote_events
+    from consumer_exports import new_run_id, publish
 
 try:  # package import in tests; script import under spark-submit
     from .graph_logic import (
@@ -99,6 +101,11 @@ BRONZE_CATALOG = "iceberg_bronze"
 SILVER_CATALOG = "iceberg_silver"
 OUTPUT_TABLE = f"{SILVER_CATALOG}.silver.identity_resolution"
 EDGES_TABLE = f"{SILVER_CATALOG}.silver.identity_edges"
+INVENTORY_HOURLY_TABLE = f"{SILVER_CATALOG}.silver.inventory_hourly"
+INVENTORY_HOURLY_SCHEMA = (
+    "snapshot_date_key int, snapshot_hour int, product_id string, store_id string, "
+    "qty_delta_hour bigint, qty_received_hour bigint, is_estimated boolean"
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -248,14 +255,26 @@ def write_consumer_exports(
     edges: DataFrame,
     root: str,
 ) -> None:
-    """Replace plain-Parquet exports consumed outside the Iceberg catalog.
+    """Publish the identity outputs as snapshot-safe exports (consumer_exports)."""
+    run_id = new_run_id()
+    publish(resolution, root, "identity_resolution", run_id)
+    publish(edges, root, "identity_edges", run_id)
 
-    Spectrum and the local DuckDB bridge cannot safely glob an Iceberg table's
-    ``data/`` directory because files from superseded snapshots may remain.
-    These dedicated overwrite locations contain only the latest completed run.
+
+def export_inventory_hourly(spark: SparkSession, root: str) -> None:
+    """Export Flink's committed silver.inventory_hourly snapshot for Spectrum.
+
+    Reading through the Iceberg catalog returns only committed rows; Spectrum
+    globbing the table's data/ dir would also return uncommitted or replaced
+    files. An empty export is written until the Flink job creates the table.
     """
-    resolution.write.mode("overwrite").parquet(f"{root}/identity_resolution")
-    edges.write.mode("overwrite").parquet(f"{root}/identity_edges")
+    empty = spark.createDataFrame([], INVENTORY_HOURLY_SCHEMA)
+    if spark.catalog.tableExists(INVENTORY_HOURLY_TABLE):
+        # Spectrum maps Parquet columns by position: pin the DDL order.
+        frame = spark.table(INVENTORY_HOURLY_TABLE).select(*empty.columns)
+    else:
+        frame = empty
+    publish(frame, root, "inventory_hourly", new_run_id())
 
 
 def assign_resolution(
@@ -371,6 +390,7 @@ def main() -> None:
     if not args.canonical_only and not args.pos_parquet_path:
         raise ValueError('--pos-parquet-path is required unless --canonical-only is set')
     events = promote_events(spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args))
+    export_inventory_hourly(spark, _consumer_root(args))
     if args.canonical_only:
         spark.stop()
         return

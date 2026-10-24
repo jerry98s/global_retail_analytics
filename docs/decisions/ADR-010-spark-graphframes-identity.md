@@ -51,9 +51,10 @@ GraphFrames batch job. Everything downstream stays in dbt.**
     run** (recompute is cheap at identifier grain; matches the old
     `delete+insert` semantics).
   - `silver.identity_edges` — audit copy of the graph edges.
-- Non-Iceberg consumers read dedicated `consumer_current/*` Parquet exports
-  replaced by the same Spark run. They never scan the Iceberg `data/`
-  directory because superseded snapshot/compaction files may remain there.
+- Non-Iceberg consumers read dedicated `consumer_current/<name>/` Parquet
+  exports through a manifest the same Spark run replaces atomically
+  (`consumer_exports.py`). They never scan the Iceberg `data/` directory
+  because superseded snapshot/compaction files may remain there.
 - dbt handoff: `int_identity_resolution` becomes a **thin view** over
   `source('silver', 'identity_resolution')` that only adds the surrogate
   `identity_key`. `int_identity_edges` and `int_identity_components` are

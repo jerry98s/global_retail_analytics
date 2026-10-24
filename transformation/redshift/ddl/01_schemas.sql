@@ -15,8 +15,8 @@ CREATE SCHEMA IF NOT EXISTS summary;
 CREATE SCHEMA IF NOT EXISTS serving;
 
 -- WAP pending schemas (ADR-009). Each owning DAG clones live Gold here, dbt
--- rebuilds with wap_phase='pending', audits pass, then an atomic rename /
--- SET SCHEMA promotes to live. A failing run never touches live.
+-- rebuilds with wap_phase='pending', audits pass, then one transaction
+-- replaces live rows from pending. A failing run never touches live.
 CREATE SCHEMA IF NOT EXISTS finance_pending;
 CREATE SCHEMA IF NOT EXISTS marketing_pending;
 CREATE SCHEMA IF NOT EXISTS summary_pending;

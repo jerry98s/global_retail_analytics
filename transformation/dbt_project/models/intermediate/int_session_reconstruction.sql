@@ -2,6 +2,13 @@
 -- Groups raw clickstream events into sessions.
 -- Session boundary: 30 minutes of inactivity OR new producer session_id.
 -- Grain: one row per session per client_id.
+--
+-- Incremental: events at or after late_cutoff (max session_end_time - 2h)
+-- are new. A session that ended within 30 minutes of late_cutoff can still be
+-- extended by them, so its client's events are re-read from that session's
+-- start; rebuilding it from the new tail only would overwrite the stored
+-- session with a truncated one. Events older than late_cutoff that arrive
+-- later are not picked up (2h late-event window).
 
 {{
   config(
@@ -11,7 +18,31 @@
   )
 }}
 
+{% if is_incremental() %}
+with bounds as (
+    select
+        {{ dateadd_unit(
+            'hour',
+            -2,
+            "coalesce(max(session_end_time), cast('1970-01-01' as timestamp))"
+        ) }} as late_cutoff
+    from {{ this }}
+),
+
+open_sessions as (
+    select
+        t.client_id,
+        min(t.session_start_time) as restart_ts
+    from {{ this }} t
+    cross join bounds b
+    where t.session_end_time >= {{ dateadd_unit('minute', -30, 'b.late_cutoff') }}
+    group by t.client_id
+),
+
+events_with_lag as (
+{% else %}
 with events_with_lag as (
+{% endif %}
     select
         e.event_id,
         e.client_id,
@@ -37,16 +68,14 @@ with events_with_lag as (
          end
      and i.identifier_value = coalesce(e.customer_id, e.client_id)
     {% if is_incremental() %}
-    cross join (
-        select
-            {{ dateadd_unit(
-                'hour',
-                -2,
-                "coalesce(max(session_start_time), cast('1970-01-01' as timestamp))"
-            ) }} as cutoff_ts
-        from {{ this }}
-    ) lookback
-    where e.event_time >= lookback.cutoff_ts
+    cross join bounds b
+    left join open_sessions o
+      on o.client_id = e.client_id
+    where e.event_time >= case
+            when o.restart_ts is not null and o.restart_ts < b.late_cutoff
+            then o.restart_ts
+            else b.late_cutoff
+          end
     {% endif %}
 ),
 

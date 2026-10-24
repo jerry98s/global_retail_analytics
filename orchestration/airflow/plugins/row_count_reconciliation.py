@@ -30,10 +30,14 @@ should be seeded in the MWAA UI per environment — see
 Wiring
 ------
 Imported by ``orchestration/airflow/dags/warehouse_daily_batch_pipeline.py`` as a
-``PythonOperator`` placed after ``dbt_tests`` and before ``ge_checkpoint``.
-The task does NOT fail the DAG on a warning — it logs at WARNING level so
-operators see it in the Airflow UI without breaking the pipeline. Fail-fast
-behavior can be added later by raising an exception when ``warned=True``.
+``PythonOperator`` placed after ``dbt_tests`` and before the WAP publish.
+
+It is a publish gate for the tables the calling DAG owns (``pending_tables``):
+an owned table that cannot be read, or that shrank by more than the threshold,
+fails the task so live keeps the last good publish. Incremental Gold tables
+should never shrink, so that is the data-loss signal. Growth beyond the
+threshold (a backfill) and deltas on tables other DAGs own are warnings that
+alert but do not block.
 """
 
 from __future__ import annotations
@@ -166,13 +170,19 @@ def reconcile_gold_row_counts(
     current = _query_row_counts(conn, pending_tables)
     baseline = _load_baseline(var_get)
     threshold = _resolve_threshold(var_get)
+    owned = set(pending_tables or ())
 
     deltas: dict[str, dict[str, Any]] = {}
     warned = False
+    blocked: list[str] = []
     for mart in current:
         key = f"{mart.schema}.{mart.table}"
         prev = baseline.get(key)
         delta_pct = _delta_pct(prev, mart.row_count)
+        if key in owned and (
+            mart.row_count < 0 or (delta_pct is not None and delta_pct < -threshold)
+        ):
+            blocked.append(key)
         if delta_pct is not None and abs(delta_pct) > threshold:
             warned = True
             log.warning(
@@ -210,7 +220,7 @@ def reconcile_gold_row_counts(
             "status": status,
         }
 
-    if not warned:
+    if not warned and not blocked:
         new_baseline = {f"{m.schema}.{m.table}": m.row_count for m in current}
         _save_baseline(var_set, new_baseline)
         log.info("Baseline updated (no warnings).")
@@ -220,7 +230,7 @@ def reconcile_gold_row_counts(
             "Previous baseline preserved for next comparison."
         )
 
-    return {"warned": warned, "threshold": threshold, "deltas": deltas}
+    return {"warned": warned, "blocked": blocked, "threshold": threshold, "deltas": deltas}
 
 
 def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> None:
@@ -245,6 +255,7 @@ def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> No
                 execution_id=execution_id,
                 deltas=result.get("deltas") or {},
                 warned=bool(result.get("warned")),
+                blocked=result.get("blocked") or [],
             )
         finally:
             writer.close()
@@ -276,6 +287,9 @@ def _airflow_entrypoint(
         user=Variable.get("redshift_user"),
         password=redshift_password(),
     )
+    # One failed COUNT (a mart another DAG has not built yet) must not abort
+    # the transaction and turn every later count into -1.
+    conn.autocommit = True
     try:
         result = reconcile_gold_row_counts(
             conn=conn,
@@ -284,9 +298,27 @@ def _airflow_entrypoint(
             pending_tables=pending_tables,
         )
         _emit_metadata(result, context)
-        return result
     finally:
         conn.close()
+
+    if result["blocked"]:
+        raise RuntimeError(
+            "Row-count gate failed; publish blocked for "
+            + ", ".join(result["blocked"])
+            + f" (unreadable or shrank more than {result['threshold']:.0%})"
+        )
+    if result["warned"]:
+        from alerting import publish_alert
+
+        publish_alert(
+            "[airflow] Gold row-count warning",
+            json.dumps(
+                {k: v for k, v in result["deltas"].items() if v["status"] == "WARN"},
+                indent=2,
+                default=str,
+            ),
+        )
+    return result
 
 
 # Airflow PythonOperator callable — referenced by warehouse_daily_batch_pipeline.py.

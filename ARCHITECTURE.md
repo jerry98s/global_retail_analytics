@@ -220,8 +220,9 @@ The Spark GraphFrames job (ADR-010) writes `silver.identity_resolution` +
 
 Spark pins Bronze snapshots and rebuilds `silver.clickstream_events` and
 `silver.inventory_events`, plus quarantine/duplicate audits, before identity.
-dbt/GE consume canonical Silver exports from `consumer_current`, never Iceberg
-data-file globs. See [ADR-011](docs/decisions/ADR-011-replayable-bronze.md) and
+dbt/GE consume canonical Silver exports from `consumer_current` through
+atomically replaced manifests, never Iceberg data-file globs; the same applies
+to the Flink `silver.inventory_hourly` speed layer. See [ADR-011](docs/decisions/ADR-011-replayable-bronze.md) and
 [cloud rollout/replay](docs/runbooks/bronze-replay.md). The independent live
 inventory aggregate and historical Gold require separate audited backfills.
 

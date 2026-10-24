@@ -69,18 +69,42 @@ function Sync-Artifacts([string]$Bucket) {
     if ($LASTEXITCODE -ne 0) { throw "ingestion sync failed" }
 }
 
+function Invoke-S3Sync([string]$Source, [string]$Target, [string[]]$Extra = @()) {
+    aws s3 sync $Source $Target --exclude "__pycache__/*" --exclude "*.pyc" @Extra
+    if ($LASTEXITCODE -ne 0) { throw "aws s3 sync $Source -> $Target failed" }
+}
+
 function Sync-Mwaa([string]$Bucket) {
     Write-Host "==> Syncing MWAA assets to s3://$Bucket/mwaa/" -ForegroundColor Cyan
-    aws s3 sync (Join-Path $RepoRoot 'orchestration/airflow/dags') "s3://$Bucket/mwaa/dags/" --exclude "__pycache__/*"
-    aws s3 sync (Join-Path $RepoRoot 'scripts/common') "s3://$Bucket/mwaa/scripts/common/" --exclude "__pycache__/*"
-    aws s3 sync (Join-Path $RepoRoot 'metadata/catalog') "s3://$Bucket/mwaa/metadata/catalog/" --exclude "__pycache__/*"
-    aws s3 sync (Join-Path $RepoRoot 'transformation/dbt_project') "s3://$Bucket/mwaa/dbt_project/" `
-        --exclude "target/*" --exclude "dbt_packages/*" --exclude "logs/*" --exclude "*.duckdb"
-    aws s3 sync (Join-Path $RepoRoot 'quality/great_expectations') "s3://$Bucket/mwaa/quality/great_expectations/"
-    aws s3 sync (Join-Path $RepoRoot 'ingestion') "s3://$Bucket/ingestion/" --exclude "__pycache__/*"
-    if ($LASTEXITCODE -ne 0) { throw "MWAA sync failed" }
+    Invoke-S3Sync (Join-Path $RepoRoot 'orchestration/airflow/dags') "s3://$Bucket/mwaa/dags/"
+    Invoke-S3Sync (Join-Path $RepoRoot 'scripts/common') "s3://$Bucket/mwaa/scripts/common/"
+    Invoke-S3Sync (Join-Path $RepoRoot 'metadata/catalog') "s3://$Bucket/mwaa/metadata/catalog/"
+    Invoke-S3Sync (Join-Path $RepoRoot 'transformation/dbt_project') "s3://$Bucket/mwaa/dbt_project/" `
+        @('--exclude', 'target/*', '--exclude', 'dbt_packages/*', '--exclude', 'logs/*', '--exclude', '*.duckdb', '--exclude', 'profiles.yml')
+    Invoke-S3Sync (Join-Path $RepoRoot 'quality/great_expectations') "s3://$Bucket/mwaa/quality/great_expectations/" `
+        @('--exclude', 'uncommitted/*')
+    Invoke-S3Sync (Join-Path $RepoRoot 'ingestion') "s3://$Bucket/ingestion/"
     Write-Host "DAGs synced. MWAA picks up changes within ~5 minutes."
     Write-Host "Plugins ship in plugins.zip: run_terraform.ps1 -Stack platform -Action apply."
+}
+
+function Add-EmrStep([string]$ClusterId, [hashtable]$Step) {
+    # Windows PowerShell 5.1 strips the double quotes from JSON passed as a
+    # native argument, so the step definition goes through a file instead.
+    $stepFile = Join-Path ([IO.Path]::GetTempPath()) ("emr-step-{0}.json" -f [guid]::NewGuid())
+    try {
+        $json = ConvertTo-Json -InputObject @($Step) -Depth 5 -Compress
+        [IO.File]::WriteAllText($stepFile, $json, [Text.UTF8Encoding]::new($false))
+        $response = aws emr add-steps --cluster-id $ClusterId --steps "file://$stepFile" `
+            --region $Region --output json | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or -not $response.StepIds) {
+            throw "add-steps failed for $($Step.Name)"
+        }
+        return [string]$response.StepIds[0]
+    }
+    finally {
+        Remove-Item -LiteralPath $stepFile -ErrorAction SilentlyContinue
+    }
 }
 
 function Sync-SparkCode([string]$Bucket) {
@@ -99,8 +123,8 @@ function Submit-SparkIdentityResolution {
     $silverWarehouse   = $Out.silver_iceberg_warehouse.value
     $posPath           = $Out.pos_bronze_s3_path.value
 
-    if (-not $clusterId -or -not $artifactsBucket -or -not $bronzeWarehouse -or -not $silverWarehouse -or -not $posPath) {
-        throw "Missing terraform outputs for Spark submit (emr_cluster_id, artifacts bucket, warehouses, pos_bronze_s3_path)."
+    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $bronzeWarehouse -or -not $silverWarehouse -or -not $posPath) {
+        throw "Missing terraform outputs for Spark submit (emr_cluster_id, artifacts/checkpoints buckets, warehouses, pos_bronze_s3_path)."
     }
 
     Sync-SparkCode $artifactsBucket
@@ -111,27 +135,20 @@ function Submit-SparkIdentityResolution {
     $cmd = "aws s3 sync s3://$artifactsBucket/spark /opt/spark-identity " +
         "&& cd /opt/spark-identity/identity_resolution " +
         "&& spark-submit --master yarn --deploy-mode cluster --packages $packages " +
-        "--py-files graph_logic.py,canonical_events.py,event_contract.py identity_resolution_job.py " +
+        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py identity_resolution_job.py " +
         "--bronze-warehouse $bronzeWarehouse " +
         "--silver-warehouse $silverWarehouse " +
         "--pos-parquet-path $posPath " +
         "--checkpoint-dir s3://$checkpointsBucket/graphframes/"
 
-    $stepJson = @{
+    Write-Host "==> Submitting step spark-identity-resolution" -ForegroundColor Cyan
+    $stepId = Add-EmrStep $clusterId @{
+        Type            = 'CUSTOM_JAR'
         Name            = 'spark-identity-resolution'
         ActionOnFailure = 'CONTINUE'
-        HadoopJarStep   = @{
-            Jar  = 'command-runner.jar'
-            Args = @('bash', '-lc', $cmd)
-        }
-    } | ConvertTo-Json -Depth 5 -Compress
-
-    Write-Host "==> Submitting step spark-identity-resolution" -ForegroundColor Cyan
-    $response = aws emr add-steps --cluster-id $clusterId --steps $stepJson --region $Region --output json | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or -not $response.StepIds) {
-        throw "add-steps failed for spark-identity-resolution"
+        Jar             = 'command-runner.jar'
+        Args            = @('bash', '-lc', $cmd)
     }
-    $stepId = [string]$response.StepIds[0]
     Write-Host "Submitted EMR step: $stepId" -ForegroundColor DarkGray
 
     $deadline = (Get-Date).AddMinutes(45)
@@ -163,9 +180,11 @@ function Submit-FlinkJobs {
     $artifactsBucket   = $Out.artifacts_bucket_name.value
     $checkpointsBucket = $Out.checkpoints_bucket_name.value
     $mskBootstrap      = $Out.kafka_bootstrap_brokers_sasl_iam.value
+    $bronzeWarehouse   = $Out.bronze_iceberg_warehouse.value
+    $silverWarehouse   = $Out.silver_iceberg_warehouse.value
 
-    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $mskBootstrap) {
-        throw "Missing terraform outputs for Flink deploy (emr_cluster_id, artifacts/checkpoints buckets, MSK brokers)."
+    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $mskBootstrap -or -not $bronzeWarehouse -or -not $silverWarehouse) {
+        throw "Missing terraform outputs for Flink deploy (emr_cluster_id, artifacts/checkpoints buckets, MSK brokers, warehouses)."
     }
 
     $jobsDir         = Join-Path $RepoRoot 'streaming/flink_jobs'
@@ -176,9 +195,11 @@ function Submit-FlinkJobs {
     aws s3 sync $jobsDir "s3://$artifactsBucket/streaming/flink_jobs/" --exclude "__pycache__/*" --exclude "*.pyc"
     if ($LASTEXITCODE -ne 0) { throw "aws s3 sync (jobs) failed" }
 
-    Write-Host "==> Syncing Flink config" -ForegroundColor Cyan
+    Write-Host "==> Syncing Flink config and submit script" -ForegroundColor Cyan
     aws s3 sync $cfgDir "s3://$artifactsBucket/streaming/config/"
     if ($LASTEXITCODE -ne 0) { throw "aws s3 sync (config) failed" }
+    aws s3 sync (Join-Path $RepoRoot 'streaming/bin') "s3://$artifactsBucket/streaming/bin/"
+    if ($LASTEXITCODE -ne 0) { throw "aws s3 sync (bin) failed" }
 
     Write-Host "==> Uploading bootstrap script" -ForegroundColor Cyan
     aws s3 cp $bootstrapScript "s3://$artifactsBucket/bootstrap/install_flink_connectors.sh"
@@ -190,41 +211,33 @@ function Submit-FlinkJobs {
         $stepName = "flink-$JobName"
         Write-Host "==> Submitting step $stepName" -ForegroundColor Cyan
 
-        $bronzePrefix = $artifactsBucket -replace '-artifacts$', '-bronze'
-        $silverPrefix = $artifactsBucket -replace '-artifacts$', '-silver'
         $stepArgs = @(
             'bash', '-lc',
             "export KAFKA_BOOTSTRAP_SERVERS='$mskBootstrap' " +
                 "BRONZE_SOURCE_SYSTEM='$BronzeSourceSystem' " +
                 "KAFKA_SECURITY_PROTOCOL='SASL_SSL' " +
                 "KAFKA_SASL_MECHANISM='AWS_MSK_IAM' " +
-                "ICEBERG_BRONZE_WAREHOUSE='s3://$bronzePrefix/iceberg' " +
-                "ICEBERG_SILVER_WAREHOUSE='s3://$silverPrefix/iceberg' " +
+                "ICEBERG_BRONZE_WAREHOUSE='$bronzeWarehouse' " +
+                "ICEBERG_SILVER_WAREHOUSE='$silverWarehouse' " +
                 # Match Kafka partition counts (ingestion/kafka/topics.py):
                 # inventory.events.v1=12, clickstream.events.v1=24.
                 "INVENTORY_PARALLELISM='12' " +
                 "CLICKSTREAM_PARALLELISM='24' " +
                 "&& aws s3 sync s3://$artifactsBucket/streaming /opt/flink-config-src " +
-                "&& flink run-application -t yarn-application " +
-                "-Dyarn.application.name=$stepName " +
-                "-Dcontainerized.master.env.BRONZE_SOURCE_SYSTEM=$BronzeSourceSystem " +
-                "-Dstate.checkpoints.dir=s3://$checkpointsBucket/flink/checkpoints/$JobName " +
-                "-Dstate.savepoints.dir=s3://$checkpointsBucket/flink/savepoints/$JobName " +
-                "-pyfs /opt/flink-config-src/flink_jobs " +
-                "-py /opt/flink-config-src/flink_jobs/$EntryFile"
+                # A Windows checkout uploads the shell script with CRLF, which
+                # makes bash reject it (`set: pipefail: invalid option name`).
+                "&& sed -i 's/\r$//' /opt/flink-config-src/bin/*.sh " +
+                "&& bash /opt/flink-config-src/bin/submit_flink_job.sh $JobName $EntryFile $checkpointsBucket"
         )
 
-        $stepJson = @{
+        $stepId = Add-EmrStep $clusterId @{
+            Type            = 'CUSTOM_JAR'
             Name            = $stepName
             ActionOnFailure = 'CONTINUE'
-            HadoopJarStep   = @{
-                Jar  = 'command-runner.jar'
-                Args = $stepArgs
-            }
-        } | ConvertTo-Json -Depth 5 -Compress
-
-        aws emr add-steps --cluster-id $clusterId --steps $stepJson | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "add-steps failed for $stepName" }
+            Jar             = 'command-runner.jar'
+            Args            = $stepArgs
+        }
+        Write-Host "Submitted EMR step: $stepId" -ForegroundColor DarkGray
     }
 
     if ($JobSelection -in @('clickstream', 'all')) {
@@ -336,7 +349,10 @@ function Show-AirflowVariables {
     Write-Host ""
     Write-Host "Optional (row-count reconciliation, P2.5 - defaults work if absent):" -ForegroundColor Yellow
     Write-Host "  gold_row_counts_baseline     = {}  (auto-seeds on first clean run)"
-    Write-Host "  row_count_delta_threshold    = 0.20  (warn on >20% day-over-day delta)"
+    Write-Host "  row_count_delta_threshold    = 0.20  (growth above this alerts; a drop above it blocks publish)"
+    Write-Host ""
+    Write-Host "alert_topic_arn (listed above) is required for failure alerts: without it" -ForegroundColor Yellow
+    Write-Host "tasks still fail, but only the task log says 'ALERT NOT SENT'."
     Write-Host ""
     Write-Host "MWAA web UI:" -ForegroundColor Cyan
     if ($Out.mwaa_webserver_url.value) {

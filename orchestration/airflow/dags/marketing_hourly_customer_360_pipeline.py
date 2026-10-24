@@ -17,15 +17,20 @@ Write-Audit-Publish (ADR-009): live marketing/summary Gold is cloned into
 on success. A failing run leaves live `marketing` / `summary` untouched. The
 clone is what lets the incremental models resume from prior state.
 
-The audit gate here is dbt tests; Great Expectations monitors live Gold hourly
-via `quality_hourly_ge_checkpoint`.
+The audit gate here is dbt tests; Great Expectations checks the Silver event
+contract hourly via `quality_hourly_ge_checkpoint`.
 
 Owns marketing Gold: dim_customer, fact_customer_session, identity_graph,
-customer_360_view, serving.customer_360_serving (+ intermediate identity/session/
-RFM/consent). Finance facts remain on warehouse_daily_batch_pipeline
-(`marts.finance` only). dim_product SCD2 + int_product_catalog stay on
-catalog_bihourly_product_scd2_refresh (explicit --exclude).
-Also builds `summary.sessions_daily_platform`.
+customer_360_view, serving.customer_360_serving, plus the live clickstream
+staging and identity/session/RFM/consent intermediates
+(`plugins/dbt_selectors.py`). It reads `stg_pos_transactions`, which the
+warehouse DAG builds. Finance facts remain on warehouse_daily_batch_pipeline;
+dim_product SCD2 + int_product_catalog stay on
+catalog_bihourly_product_scd2_refresh. Also builds
+`summary.sessions_daily_platform`.
+
+Each dbt task syncs its own copy of the project (`dbt_task_bash`). Failed
+tasks alert through SNS (`alert_topic_arn`).
 
 Enable MWAA and set the same Redshift Variables as warehouse_daily_batch_pipeline,
 plus `emr_cluster_id`, `bronze_iceberg_warehouse`, `silver_iceberg_warehouse`,
@@ -40,23 +45,24 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 
+from alerting import notify_task_failure
+from dbt_selectors import MARKETING_LIVE_MODELS, select
 from metadata_airflow import (
-    dbt_bash_with_metadata,
+    dbt_task_bash,
     on_dag_failure,
     on_dag_start,
     on_dag_success,
 )
 from wap_publish import clone_marketing_task, publish_marketing_task
 
-# WAP: staging + intermediate write in place; marketing/summary mart *tables*
-# route to *_pending via wap_phase. Exclusions:
-#   int_product_catalog / dim_product — owned by catalog_bihourly_product_scd2_refresh.
+# WAP: owned staging + intermediate write in place; marketing/summary mart
+# *tables* route to *_pending via wap_phase. Exclusions:
+#   dim_product — owned by catalog_bihourly_product_scd2_refresh.
 #   customer_360_view / customer_360_serving — views are never published, so they
-#   are built after the swap (SELECT_SERVING) against live tables.
+#   are built after publish (SELECT_SERVING) against live tables.
 SELECT_PENDING = (
-    "stg_clickstream_events stg_pos_transactions intermediate "
-    "marts.marketing sessions_daily_platform "
-    "--exclude int_product_catalog dim_product customer_360_view"
+    select(MARKETING_LIVE_MODELS, "marts.marketing sessions_daily_platform")
+    + " --exclude dim_product customer_360_view"
 )
 VARS_PENDING = '{"wap_phase": "pending"}'
 
@@ -76,7 +82,7 @@ def _spark_identity_step() -> dict:
         "aws s3 sync s3://{{ var.value.artifacts_bucket }}/spark /opt/spark-identity "
         "&& cd /opt/spark-identity/identity_resolution "
         f"&& spark-submit --master yarn --deploy-mode cluster --packages {SPARK_PACKAGES} "
-        "--py-files graph_logic.py,canonical_events.py,event_contract.py identity_resolution_job.py "
+        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py identity_resolution_job.py "
         "--bronze-warehouse {{ var.value.bronze_iceberg_warehouse }} "
         "--silver-warehouse {{ var.value.silver_iceberg_warehouse }} "
         "--pos-parquet-path {{ var.value.pos_bronze_s3_path }} "
@@ -93,13 +99,13 @@ def _spark_identity_step() -> dict:
 
 
 DEFAULT_ARGS = {
-    "owner":            "data-platform",
-    "depends_on_past":  False,
-    "start_date":       datetime(2024, 1, 1),
-    "retries":          1,
-    "retry_delay":      timedelta(minutes=5),
-    "email_on_failure": True,
-    "email":            ["data-platform@company.com"],
+    "owner":               "data-platform",
+    "depends_on_past":     False,
+    "start_date":          datetime(2024, 1, 1),
+    "retries":             1,
+    "retry_delay":         timedelta(minutes=5),
+    "execution_timeout":   timedelta(minutes=45),
+    "on_failure_callback": notify_task_failure,
 }
 
 with DAG(
@@ -146,22 +152,16 @@ with DAG(
 
     dbt_run_pending = BashOperator(
         task_id      = "dbt_customer_360_write_pending",
-        bash_command = dbt_bash_with_metadata(f"""
-            aws s3 sync s3://{{{{ var.value.artifacts_bucket }}}}/mwaa/dbt_project /tmp/dbt_project
-            aws s3 sync s3://{{{{ var.value.artifacts_bucket }}}}/mwaa/scripts /tmp/scripts
-            cp /tmp/dbt_project/profiles.yml.example /tmp/dbt_project/profiles.yml
-            cd /tmp/dbt_project && \
-            dbt deps && \
-            dbt run --select {SELECT_PENDING} --vars '{VARS_PENDING}' --target prod
-        """),
+        bash_command = dbt_task_bash(
+            f"run --select {SELECT_PENDING} --vars '{VARS_PENDING}'"
+        ),
     )
 
     dbt_test_pending = BashOperator(
         task_id      = "dbt_customer_360_audit_pending",
-        bash_command = dbt_bash_with_metadata(f"""
-            cd /tmp/dbt_project && \
-            dbt test --select {SELECT_PENDING} --vars '{VARS_PENDING}' --target prod
-        """),
+        bash_command = dbt_task_bash(
+            f"test --select {SELECT_PENDING} --vars '{VARS_PENDING}'"
+        ),
     )
 
     wap_publish = PythonOperator(
@@ -173,10 +173,7 @@ with DAG(
     # Views are not WAP-published, so this is the only place they are created.
     dbt_serving = BashOperator(
         task_id      = "dbt_customer_360_serving_refresh",
-        bash_command = dbt_bash_with_metadata(f"""
-            cd /tmp/dbt_project && \
-            dbt run --select {SELECT_SERVING} --target prod
-        """),
+        bash_command = dbt_task_bash(f"run --select {SELECT_SERVING}"),
     )
 
     (

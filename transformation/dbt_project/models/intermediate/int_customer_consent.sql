@@ -5,42 +5,63 @@
 }}
 
 /*
-  Consent flags per customer_key.
+  Latest explicit consent statement per customer_key.
 
-  Sources:
-    - Explicit marketing_consent in clickstream event properties (login/checkout)
-    - Implicit analytics consent when any authenticated event exists
-  Loyalty holders receive marketing consent in dim_customer (known customers).
+  Source: marketing_consent / analytics_consent in clickstream event
+  properties (login/checkout). Each flag takes the most recent event that
+  states it, so a later opt-out overrides an earlier opt-in. NULL means the
+  customer never stated that preference; dim_customer applies the defaults.
 */
 
-with explicit_consent as (
+with statements as (
     select
         i.customer_key,
-        max(
-            case
-                when lower(coalesce({{ json_path_text('e.properties', 'marketing_consent') }}, '')) in ('true', '1', 'yes')
-                then true
-                else false
-            end
-        ) as explicit_marketing_consent,
-        max(
-            case
-                when lower(coalesce({{ json_path_text('e.properties', 'analytics_consent') }}, '')) in ('false', '0', 'no')
-                then false
-                else true
-            end
-        ) as explicit_analytics_consent
+        e.event_time,
+        e.event_id,
+        lower({{ json_path_text('e.properties', 'marketing_consent') }}) as marketing_raw,
+        lower({{ json_path_text('e.properties', 'analytics_consent') }}) as analytics_raw
     from {{ ref('stg_clickstream_events') }} e
     inner join {{ ref('int_identity_resolution') }} i
       on (
             (i.identifier_type = 'customer_id' and i.identifier_value = e.customer_id)
          or (i.identifier_type = 'client_id' and i.identifier_value = e.client_id)
          )
-    group by i.customer_key
+),
+
+marketing as (
+    select
+        customer_key,
+        marketing_raw in ('true', '1', 'yes') as explicit_marketing_consent,
+        row_number() over (
+            partition by customer_key order by event_time desc, event_id desc
+        ) as rn
+    from statements
+    where marketing_raw in ('true', '1', 'yes', 'false', '0', 'no')
+),
+
+analytics as (
+    select
+        customer_key,
+        analytics_raw in ('true', '1', 'yes') as explicit_analytics_consent,
+        row_number() over (
+            partition by customer_key order by event_time desc, event_id desc
+        ) as rn
+    from statements
+    where analytics_raw in ('true', '1', 'yes', 'false', '0', 'no')
+),
+
+customers as (
+    select distinct customer_key from statements
 )
 
 select
-    customer_key,
-    coalesce(explicit_marketing_consent, false) as explicit_marketing_consent,
-    coalesce(explicit_analytics_consent, true) as explicit_analytics_consent
-from explicit_consent
+    c.customer_key,
+    m.explicit_marketing_consent,
+    a.explicit_analytics_consent
+from customers c
+left join marketing m
+  on c.customer_key = m.customer_key
+ and m.rn = 1
+left join analytics a
+  on c.customer_key = a.customer_key
+ and a.rn = 1

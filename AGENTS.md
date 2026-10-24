@@ -145,9 +145,14 @@ across normal restarts and change it after Kafka topic/cluster recreation.
 - `spark/identity_resolution/identity_resolution_job.py` (PySpark +
   GraphFrames) builds edges + connected components and writes
   `silver.identity_resolution` / `silver.identity_edges` (Iceberg), plus
-  replace-only `consumer_current/*` plain-Parquet exports for Spectrum and the
-  local DuckDB bridge (never glob Iceberg `data/` dirs — superseded snapshot
-  files can linger). Blank identifiers are normalized away before graph build.
+  `consumer_current/<name>/` exports for Spectrum: a new `run=<ts>/` directory
+  per run and an atomically replaced `manifest` that Spectrum `LOCATION`s point
+  at (`consumer_exports.py`). `silver.inventory_hourly` is exported the same way
+  from its committed Iceberg snapshot. Never glob Iceberg `data/` dirs —
+  superseded snapshot files can linger. Blank identifiers are normalized away
+  before graph build.
+- Iceberg maintenance (compaction, snapshot expiry) is a Spark step
+  (`spark/maintenance/iceberg_maintenance.py`); Flink 1.17 has no `CALL`.
 - `spark/identity_resolution/graph_logic.py` is the rules source of truth;
   `generate_fixture.py` regenerates the dbt seed fixture (CI `--check`).
   CI also runs the real DataFrame/GraphFrames path via

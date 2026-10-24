@@ -119,8 +119,10 @@ returns a non-zero exit instead of allowing stale identity data downstream.
 ```
 
 The job writes Iceberg `silver.identity_resolution` / `identity_edges` plus
-replace-only `consumer_current/*` Parquet exports. Spectrum reads the exports,
-never a raw Iceberg `data/` directory containing superseded snapshots.
+`consumer_current/<name>/` Parquet exports (including `inventory_hourly`, read
+from its committed Iceberg snapshot). Spectrum reads each export's `manifest`,
+which the job replaces atomically, never a raw Iceberg `data/` directory
+containing superseded snapshots.
 
 ## Step 7 — Redshift DDL + Spectrum
 

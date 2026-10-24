@@ -236,15 +236,6 @@ class TestJobsCallApplyStateConfig:
             f"in run() — F-STATE contract."
         )
 
-    def test_maintenance_job_does_not_call_apply_state_config(self) -> None:
-        # The maintenance batch job has no long-running state — calling
-        # apply_state_config on it would be a no-op but also misleading.
-        src = _read(_FLINK_JOBS / "iceberg_maintenance.py")
-        assert "apply_state_config" not in src, (
-            "iceberg_maintenance.py: must NOT call apply_state_config — "
-            "batch jobs have no long-running state."
-        )
-
 
 # --- F-SRC: Kafka source DDLs declare partition.discovery.interval.ms --- #
 

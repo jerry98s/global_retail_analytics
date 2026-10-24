@@ -3,6 +3,11 @@ output "workgroup_name" {
   value       = aws_redshiftserverless_workgroup.this.workgroup_name
 }
 
+output "workgroup_arn" {
+  description = "Redshift Serverless workgroup ARN (IAM scoping for Data API callers)."
+  value       = aws_redshiftserverless_workgroup.this.arn
+}
+
 output "namespace_name" {
   description = "Redshift Serverless namespace name."
   value       = aws_redshiftserverless_namespace.this.namespace_name
