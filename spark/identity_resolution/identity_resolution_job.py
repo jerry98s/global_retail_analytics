@@ -246,9 +246,8 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    # Single partition to ensure exactly one output file per write
-    resolution.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_resolution")
-    edges.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_edges")
+    resolution.write.mode("overwrite").parquet(f"{root}/identity_resolution")
+    edges.write.mode("overwrite").parquet(f"{root}/identity_edges")
 
 
 def assign_resolution(
