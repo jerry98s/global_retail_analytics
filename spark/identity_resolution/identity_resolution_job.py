@@ -246,24 +246,21 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    from py4j.java_gateway import java_import
-    
     spark = resolution.sparkSession
-    sc = spark.sparkContext
     
-    # Use Hadoop FileSystem API for reliable directory deletion
-    java_import(sc._jvm, "org.apache.hadoop.fs.FileSystem")
-    java_import(sc._jvm, "org.apache.hadoop.fs.Path")
+    # Ensure static partition overwrite mode for complete replacement
+    original_mode = spark.conf.get("spark.sql.sources.partitionOverwriteMode", "static")
+    spark.conf.set("spark.sql.sources.partitionOverwriteMode", "static")
     
-    fs = sc._jvm.FileSystem.get(sc._jsc.hadoopConfiguration())
-    
-    for subdir in ["identity_resolution", "identity_edges"]:
-        path = sc._jvm.Path(f"{root}/{subdir}")
-        if fs.exists(path):
-            fs.delete(path, True)  # True = recursive
-    
-    resolution.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_resolution")
-    edges.coalesce(1).write.mode("overwrite").parquet(f"{root}/identity_edges")
+    try:
+        # Write with explicit single partition to ensure clean single-file output
+        resolution.repartition(1).write.mode("overwrite").parquet(f"{root}/identity_resolution")
+        edges.repartition(1).write.mode("overwrite").parquet(f"{root}/identity_edges")
+        
+        # Clear any cached data to ensure fresh reads
+        spark.catalog.clearCache()
+    finally:
+        spark.conf.set("spark.sql.sources.partitionOverwriteMode", original_mode)
 
 
 def assign_resolution(
