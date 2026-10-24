@@ -256,6 +256,9 @@ def write_consumer_exports(
     resolution_path = f"{root}/identity_resolution"
     edges_path = f"{root}/identity_edges"
     
+    # Clear any cached data from previous reads of these paths
+    resolution.sparkSession.catalog.clearCache()
+    
     #Use Hadoop FileSystem to forcibly remove existing directories before write.
     # Spark's mode("overwrite") can leave stale partfiles across multiple writes.
     sc = resolution.sparkSession.sparkContext
