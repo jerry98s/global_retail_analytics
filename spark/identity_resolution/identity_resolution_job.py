@@ -40,6 +40,7 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
+from urllib.parse import urlparse
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
