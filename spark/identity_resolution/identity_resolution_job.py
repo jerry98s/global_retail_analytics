@@ -137,6 +137,7 @@ def _build_session(args: argparse.Namespace) -> SparkSession:
         .config(f"spark.sql.catalog.{SILVER_CATALOG}.type", "hadoop")
         .config(f"spark.sql.catalog.{SILVER_CATALOG}.warehouse", args.silver_warehouse)
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
+        .config("spark.sql.sources.partitionOverwriteMode", "static")
     )
     if args.local:
         builder = builder.master(args.master or "local[*]")
@@ -251,8 +252,12 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    resolution.write.mode("overwrite").parquet(f"{root}/identity_resolution")
-    edges.write.mode("overwrite").parquet(f"{root}/identity_edges")
+    resolution.write.mode("overwrite").option("overwriteSchema", "true").parquet(
+        f"{root}/identity_resolution"
+    )
+    edges.write.mode("overwrite").option("overwriteSchema", "true").parquet(
+        f"{root}/identity_edges"
+    )
 
 
 def assign_resolution(
