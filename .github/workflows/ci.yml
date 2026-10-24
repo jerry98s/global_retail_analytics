@@ -76,7 +76,7 @@ jobs:
           java-version: "11"
 
       - name: install Spark
-        run: pip install "pyspark==3.4.1"
+        run: pip install "pyspark==3.4.1" "numpy<2"
 
       - name: execute DataFrame + GraphFrames parity smoke test
         run: >
