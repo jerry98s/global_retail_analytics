@@ -259,6 +259,12 @@ def write_consumer_exports(
     # Clear any cached data from previous reads of these paths
     resolution.sparkSession.catalog.clearCache()
     
+    # Diagnostic: verify input row counts before write
+    resolution_count = resolution.count()
+    edges_count = edges.count()
+    if resolution_count == 0 or edges_count == 0:
+        raise RuntimeError(f"Attempting to write empty data: resolution={resolution_count}, edges={edges_count}")
+    
     #Use Hadoop FileSystem to forcibly remove existing directories before write.
     # Spark's mode("overwrite") can leave stale partfiles across multiple writes.
     sc = resolution.sparkSession.sparkContext
