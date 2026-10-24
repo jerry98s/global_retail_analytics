@@ -109,15 +109,24 @@ def main() -> None:
             write_consumer_exports(actual_frame, edges, consumer_root)
             second_resolution = actual_frame.filter("identifier_value = 'L1001'")
             second_edges = edges.limit(1)
+            expected_resolution_count = second_resolution.count()
+            expected_edges_count = second_edges.count()
             write_consumer_exports(second_resolution, second_edges, consumer_root)
             exported_resolution = spark.read.parquet(
                 f"{consumer_root}/identity_resolution"
             )
             exported_edges = spark.read.parquet(f"{consumer_root}/identity_edges")
-            if exported_resolution.count() != 1 or exported_edges.count() != 1:
-                raise SystemExit("consumer_current export retained superseded run files")
-            if exported_resolution.first().identifier_value != "L1001":
-                raise SystemExit("consumer_current export did not expose the latest run")
+            actual_resolution_count = exported_resolution.count()
+            actual_edges_count = exported_edges.count()
+            if actual_resolution_count != expected_resolution_count or actual_edges_count != expected_edges_count:
+                raise SystemExit(
+                    f"consumer_current export retained superseded run files: "
+                    f"expected resolution={expected_resolution_count}, edges={expected_edges_count}, "
+                    f"got resolution={actual_resolution_count}, edges={actual_edges_count}"
+                )
+            wrong_identifiers = exported_resolution.filter("identifier_value != 'L1001'").count()
+            if wrong_identifiers > 0:
+                raise SystemExit(f"consumer_current export exposed {wrong_identifiers} rows with wrong identifier_value")
         finally:
             spark.stop()
 

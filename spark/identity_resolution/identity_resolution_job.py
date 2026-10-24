@@ -251,60 +251,8 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    from py4j.java_gateway import java_import
-    
-    resolution_path = f"{root}/identity_resolution"
-    edges_path = f"{root}/identity_edges"
-    
-    # Clear any cached data from previous reads of these paths
-    resolution.sparkSession.catalog.clearCache()
-    
-    # Diagnostic: verify input row counts before write
-    resolution_count = resolution.count()
-    edges_count = edges.count()
-    if resolution_count == 0 or edges_count == 0:
-        raise RuntimeError(f"Attempting to write empty data: resolution={resolution_count}, edges={edges_count}")
-    
-    #Use Hadoop FileSystem to forcibly remove existing directories before write.
-    # Spark's mode("overwrite") can leave stale partfiles across multiple writes.
-    sc = resolution.sparkSession.sparkContext
-    java_import(sc._jvm, "org.apache.hadoop.fs.Path")
-    java_import(sc._jvm, "org.apache.hadoop.fs.FileSystem")
-    hadoop_conf = sc._jsc.hadoopConfiguration()
-    
-    for path_str in [resolution_path, edges_path]:
-        hadoop_path = sc._jvm.org.apache.hadoop.fs.Path(path_str)
-        fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_path.toUri(), hadoop_conf)
-        if fs.exists(hadoop_path):
-            deleted = fs.delete(hadoop_path, True)
-            if not deleted:
-                raise RuntimeError(f"Failed to delete {path_str} before overwrite")
-            # Verify deletion succeeded
-            if fs.exists(hadoop_path):
-                raise RuntimeError(f"Directory {path_str} still exists after delete")
-    
-    # Coalesce to single partition for predictable single-file output.
-    resolution.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(resolution_path)
-    edges.coalesce(1).write.mode("overwrite").option("overwriteSchema", "true").parquet(edges_path)
-    
-    # Verify write created exactly what we expect (single directory with parquet files)
-    import sys
-    for path_str in [resolution_path, edges_path]:
-        hadoop_path = sc._jvm.org.apache.hadoop.fs.Path(path_str)
-        fs = sc._jvm.org.apache.hadoop.fs.FileSystem.get(hadoop_path.toUri(), hadoop_conf)
-        if not fs.exists(hadoop_path):
-            raise RuntimeError(f"Write failed to create {path_str}")
-        status = fs.listStatus(hadoop_path)
-        all_files = [s.getPath().getName() for s in status]
-        parquet_files = [name for name in all_files if name.startswith("part-") and name.endswith(".parquet")]
-        sys.stderr.write(f"DEBUG write_consumer_exports: {path_str} has {len(all_files)} files: {all_files}\n")
-        sys.stderr.write(f"DEBUG write_consumer_exports: {len(parquet_files)} parquet files: {parquet_files}\n")
-        sys.stderr.flush()
-        if len(parquet_files) != 1:
-            raise RuntimeError(f"Expected exactly 1 parquet file in {path_str}, found {len(parquet_files)}: {all_files}")
-    
-    # Clear any cached metadata to ensure subsequent reads see the new data.
-    resolution.sparkSession.catalog.clearCache()
+    resolution.write.mode("overwrite").parquet(f"{root}/identity_resolution")
+    edges.write.mode("overwrite").parquet(f"{root}/identity_edges")
 
 
 def assign_resolution(
