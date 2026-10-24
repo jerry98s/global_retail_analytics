@@ -12,13 +12,14 @@
 /*
   SCD Type 2 product dimension.
 
-  - Source attributes: int_product_catalog (POS-weighted)
+  - Source attributes: int_product_catalog (reference.product_master)
   - Closes prior version (effective_to, is_current=false) when record_hash changes
   - Inserts new current row on change with effective_from = catalog
-    last_seen_date (when the new attribute state was observed). Never reuse the
-    catalog's effective_from for a changed product: it equals the existing
-    version's effective_from, and product_key (product_id + effective_from)
-    would collide. Brand-new products keep effective_from = earliest activity.
+    last_seen_date (when the new attribute state was observed), but never on
+    or before the existing version's effective_from: product_key
+    (product_id + effective_from) would collide when a product changes on the
+    day it was first seen. Brand-new products keep effective_from = earliest
+    activity.
 */
 
 with source_products as (
@@ -34,7 +35,10 @@ existing as (
 changed_products as (
     select
         s.product_id,
-        s.last_seen_date as new_effective_from,
+        greatest(
+            s.last_seen_date,
+            cast({{ dateadd_unit('day', 1, 'e.effective_from') }} as date)
+        ) as new_effective_from,
         s.sku,
         s.product_name,
         s.brand,
@@ -99,7 +103,10 @@ new_and_updated_current as (
         select
             sp.*,
             case
-                when ec.product_id is not null then sp.last_seen_date
+                when ec.product_id is not null then greatest(
+                    sp.last_seen_date,
+                    cast({{ dateadd_unit('day', 1, 'ec.effective_from') }} as date)
+                )
                 else sp.effective_from
             end as version_effective_from
         from source_products sp

@@ -26,8 +26,6 @@ alwaysApply: false
 - Iceberg → DuckDB: `scripts/local/load_iceberg_to_duckdb.py` (local branch only).
 - POS local Parquet: `python -m ingestion.batch.generate_pos_parquet --output-dir ...`.
 - POS cloud upload: `generate_pos_parquet.py --output-s3 s3://<bronze>/iceberg/bronze/pos_transactions/` (boto3 lazy-imported).
-- Unit tests: `.\.venv\Scripts\python.exe -m pytest tests/unit/ -q`.
-
 ## Tests
 
 - Unit (default, offline): `.\.venv\Scripts\python.exe -m pytest tests/unit/ -q -m unit`

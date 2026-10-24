@@ -51,10 +51,11 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts, with a
    only those three schemas; `staging`, `intermediate`, `serving`, and `bronze`
    are never redirected. Gold *views* (`customer_360_view`) stay in the live
    schema — they are not published.
-3. **Audit pending.** `dbt test`, row-count reconciliation, and GE run against
-   an explicit `schema.table` list owned by that DAG (`pending_tables` /
-   `--pending-tables`). A blanket schema suffix would point at pending twins
-   the calling DAG never cloned.
+3. **Audit pending.** `dbt test` and row-count reconciliation run against an
+   explicit `schema.table` list owned by that DAG (`pending_tables`). A blanket
+   schema suffix would point at pending twins the calling DAG never cloned.
+   Great Expectations does not audit Gold; it checks the Silver event
+   contract only, so dbt tests are the single Gold gate.
 4. **Publish atomically.** After every audit passes, preflight that every
    DAG-owned pending table exists, then promote the **entire set** in one
    transaction: Redshift `ALTER TABLE pending.x SET SCHEMA live` (rename swap
@@ -103,9 +104,10 @@ OIDs. Gold models declare `dist` / `sort` matching
 | `marketing_hourly_customer_360_pipeline` | marketing marts + `sessions_daily_platform` |
 | `catalog_bihourly_product_scd2_refresh` | `dim_product` only |
 
-The hourly `quality_hourly_ge_checkpoint` DAG intentionally stays on **live** —
-it monitors the published Gold that consumers actually read. The warehouse DAG's
-GE task is the pending audit gate (`--pending-tables` = that DAG's owned list).
+The hourly `quality_hourly_ge_checkpoint` DAG checks the canonical Silver
+events (`silver_events_daily`). Earlier versions also ran Gold GE suites as a
+second pending gate; they repeated the dbt tests on the same tables and were
+removed.
 
 ## Alternatives considered
 

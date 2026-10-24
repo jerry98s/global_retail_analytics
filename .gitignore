@@ -66,3 +66,6 @@ Thumbs.db
 
 # Notebooks checkpoints
 notebooks/.ipynb_checkpoints/
+
+# Built by scripts/cloud/build_mwaa_plugins.py (run_terraform.ps1, CI)
+infra/terraform/modules/mwaa/plugins.zip

@@ -31,6 +31,12 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive
 
+      # The MWAA module reads the built plugins.zip (not committed).
+      - name: build MWAA plugins.zip
+        if: matrix.stack == '.'
+        working-directory: .
+        run: python3 scripts/cloud/build_mwaa_plugins.py
+
       # validate without contacting the backend or provider APIs
       - name: terraform init -backend=false
         run: terraform init -backend=false -input=false
@@ -84,6 +90,12 @@ jobs:
           --packages graphframes:graphframes:0.8.3-spark3.4-s_2.12
           tests/integration/verify_spark_identity.py
 
+      - name: replay raw Bronze and reconcile canonical Silver
+        run: >
+          spark-submit --master local[2]
+          --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3
+          tests/integration/verify_bronze_replay.py --iceberg
+
   unit-tests:
     name: pytest unit (offline)
     runs-on: ubuntu-latest
@@ -100,7 +112,8 @@ jobs:
         # no creds). Everything else third-party is stubbed by tests/unit/conftest.py.
         # pyarrow: local-testing-version bridge tests import generate_pos_parquet
         # (module-level pyarrow import) during collection, even when deselected.
-        run: pip install pytest==8.4.1 pyyaml==6.0.2 "duckdb>=1.5,<2.0" "pyarrow>=15,<23" && pytest tests/unit/ -v --tb=short -m unit
+        # jinja2: test_replayable_bronze renders the cloud Flink step template.
+        run: pip install pytest==8.4.1 pyyaml==6.0.2 "duckdb>=1.5,<2.0" "pyarrow>=15,<23" "jinja2>=3.1,<4" && pytest tests/unit/ -v --tb=short -m unit
 
   dbt-duckdb:
     name: dbt identity chain on DuckDB (no cloud creds)
@@ -115,8 +128,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: install dbt-duckdb + duckdb
-        run: pip install "dbt-core==1.11.*" "dbt-duckdb>=1.10,<2.0" "duckdb>=1.5,<2.0"
+      - name: install dbt-duckdb + duckdb + MetricFlow
+        run: >
+          pip install "dbt-core==1.11.*" "dbt-duckdb>=1.10,<2.0" "duckdb>=1.5,<2.0"
+          "dbt-metricflow[dbt-duckdb]==0.15.0" "metricflow==0.213.0"
 
       - name: create local dbt profile
         run: cp profiles.yml.example profiles.yml
@@ -126,6 +141,12 @@ jobs:
 
       - name: dbt compile full project
         run: dbt compile --no-partial-parse --profiles-dir . --target local
+
+      # Must run before the pending compiles below: they overwrite
+      # target/semantic_manifest.json with *_pending relations.
+      - name: dashboard SQL matches the semantic layer (ADR-013)
+        working-directory: ${{ github.workspace }}
+        run: python scripts/common/generate_semantic_queries.py --check
 
       - name: dbt compile pending finance and catalog
         run: >
@@ -145,6 +166,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python spark/identity_resolution/generate_fixture.py --check
 
+      - name: reference seeds match simulator entities
+        working-directory: ${{ github.workspace }}
+        run: python -m ingestion.batch.generate_product_master --check
+
       - name: dbt seed
         run: dbt seed --profiles-dir . --target local
 
@@ -155,7 +180,10 @@ jobs:
         run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_public_devices --full-refresh
 
       - name: dbt test identity graph chain
-        run: dbt test --profiles-dir . --target local --select int_identity_public_devices int_identity_resolution identity_graph
+        # cautious: skip tests that also read unbuilt marts (fact_sales).
+        run: >
+          dbt test --profiles-dir . --target local --indirect-selection cautious
+          --select int_identity_public_devices int_identity_resolution identity_graph
 
       - name: verify identity scenarios (loyalty match, session link, multi-hop, public device, singleton)
         working-directory: ${{ github.workspace }}

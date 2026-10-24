@@ -3,7 +3,7 @@ Iceberg maintenance DAG.
 
 Submits a one-shot Flink batch job that runs Iceberg `rewrite_data_files`
 (compaction) and `expire_snapshots` on all three Iceberg tables
-(bronze.inventory_events, bronze.clickstream_events, silver.inventory_hourly).
+(bronze.inventory_records, bronze.clickstream_records, silver.inventory_hourly).
 
 Closes DL-D from the data lake checklist applied 2026-07-05.
 

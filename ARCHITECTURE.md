@@ -68,11 +68,11 @@ flowchart LR
 
   subgraph STREAM["Stream processing — Flink"]
 
-    FINV_B["inventory_bronze<br/>dedup → bronze raw"]
+    FINV_B["inventory_bronze<br/>raw bytes + Kafka metadata"]
 
     FINV["inventory_silver<br/>watermark + hourly agg"]
 
-    FCLK["clickstream_events<br/>validate + dedup + DLQ"]
+    FCLK["clickstream_bronze<br/>raw bytes + Kafka metadata"]
 
   end
 
@@ -84,7 +84,7 @@ flowchart LR
 
     C360["marketing_hourly_customer_360_pipeline<br/>hourly :00 UTC"]
 
-    SPK["identity_resolution_job<br/>Spark GraphFrames on EMR (ADR-010)"]
+    SPK["Raw promotion + identity<br/>Spark on EMR (ADR-010/011)"]
 
   end
 
@@ -92,9 +92,9 @@ flowchart LR
 
   subgraph LAKE["Lake — Iceberg / Parquet on S3"]
 
-    BRZ["Bronze<br/>clickstream_events<br/>inventory_events<br/>pos_transactions"]
+    BRZ["Bronze<br/>clickstream_records<br/>inventory_records<br/>pos_transactions"]
 
-    SLV["Silver<br/>inventory_hourly<br/>identity_resolution · identity_edges"]
+    SLV["Silver<br/>canonical events + quarantine + duplicates<br/>inventory_hourly<br/>identity_resolution · identity_edges"]
 
   end
 
@@ -102,7 +102,7 @@ flowchart LR
 
   subgraph SPEC["Redshift Spectrum — external"]
 
-    EXT["bronze.* external tables"]
+    EXT["POS Bronze + canonical Silver<br/>Spectrum external tables"]
 
   end
 
@@ -122,7 +122,7 @@ flowchart LR
 
   subgraph ORCH["Orchestration — MWAA"]
 
-    DAG["warehouse_daily_batch_pipeline<br/>POS → dbt finance → GE"]
+    DAG["warehouse_daily_batch_pipeline<br/>POS → dbt finance → WAP publish"]
 
   end
 
@@ -152,7 +152,6 @@ flowchart LR
 
   KCLK --> FCLK
 
-  FCLK -.invalid.-> KDLQ
 
 
 
@@ -202,7 +201,9 @@ flowchart LR
 
 **Bronze:** Raw, append-only, schema-on-read. Full fidelity. Iceberg on S3.
 
-Invalid clickstream rows route to Kafka DLQ topics (see `clickstream_bronze_job.py`).
+Raw `*_records` retain binary keys/values, malformed payloads, nulls and repeated
+deliveries plus Kafka coordinates. No validation, deduplication or event-time
+watermark applies before landing. Legacy `bronze.*_events` is filtered history.
 
 Retention: 90 days Standard, 1yr IA, 3yr+ Glacier via Intelligent-Tiering.
 
@@ -210,13 +211,19 @@ Retention: 90 days Standard, 1yr IA, 3yr+ Glacier via Intelligent-Tiering.
 
 **Silver:** Cleaned, deduplicated, schema-enforced. Iceberg on S3 (MoR for
 
-inventory upserts). Flink writes `silver.inventory_hourly`; dbt marts rebuild
-
-inventory facts from **bronze** `inventory_events` (Spectrum) by design.
+inventory upserts). Flink writes `silver.inventory_hourly`; Spark rebuilds
+`silver.inventory_events` from the Bronze ledger. `fact_inventory_snapshot`
+uses Spark's events for hours Spark has covered and Flink's hours after that
+(ADR-012).
 The Spark GraphFrames job (ADR-010) writes `silver.identity_resolution` +
 `silver.identity_edges` hourly from bronze clickstream + POS.
 
-Clickstream has no separate silver table — bronze feeds dbt directly.
+Spark pins Bronze snapshots and rebuilds `silver.clickstream_events` and
+`silver.inventory_events`, plus quarantine/duplicate audits, before identity.
+dbt/GE consume canonical Silver exports from `consumer_current`, never Iceberg
+data-file globs. See [ADR-011](docs/decisions/ADR-011-replayable-bronze.md) and
+[cloud rollout/replay](docs/runbooks/bronze-replay.md). The independent live
+inventory aggregate and historical Gold require separate audited backfills.
 
 
 
@@ -225,7 +232,7 @@ Clickstream has no separate silver table — bronze feeds dbt directly.
 via Spectrum over S3). Finance on **daily** batch; Customer 360 on **hourly** batch.
 Gold marts ship with Write-Audit-Publish ([ADR-009](docs/decisions/ADR-009-write-audit-publish.md)):
 live Gold is cloned into `finance_pending` / `marketing_pending` /
-`summary_pending`, dbt rebuilds tables there, dbt tests + GE audit the pending
+`summary_pending`, dbt rebuilds tables there, dbt tests audit the pending
 copies, and an atomic rename promotes the DAG-owned set to live only on success.
 `marketing.dim_product` is catalog-owned; warehouse facts join the live table.
 A failing run never touches the tables consumers read.
@@ -240,7 +247,15 @@ fact (no fact-to-fact joins). See `docs/data-model/platform-layers.md`.
 
 **Serving:** App Runner dashboard reads **Gold** tables on Redshift (and local
 
-Iceberg in dev). A dedicated Redis sub-5s path is **deferred** (see ADR-002).
+DuckDB or Iceberg in dev). A dedicated Redis sub-5s path is **deferred** (see ADR-002).
+
+
+
+**Semantic layer:** dbt Semantic Layer (MetricFlow) over the `summary.*` tables.
+
+The dashboard runs SQL MetricFlow compiled per dialect, so metrics are defined
+
+once. On-hand is semi-additive and reads the dense `summary.inventory_position_daily`. See ADR-013.
 
 
 
@@ -276,7 +291,7 @@ pipeline runs, freshness, and DQ history — same workgroup, not Glue. See ADR-0
 
 | Orchestration | Airflow (MWAA) | Daily finance + hourly marketing DAGs |
 
-| Quality | GE + pytest | Column-level (GE) + set-level SCD2 (pytest) |
+| Quality | dbt tests + GE + pytest | Gold gate (dbt tests), Silver event contract (GE), code contracts (pytest) |
 
 | IaC | Terraform | Reproducible infra, maps to existing team skills |
 
@@ -302,7 +317,7 @@ Full rationale per decision: see `docs/decisions/` ADRs.
 
 | Inventory → Dashboard | Batch (daily/hourly Gold) | App Runner → Redshift `fact_inventory_snapshot` |
 
-| Clickstream → Bronze | < 30 seconds | Flink continuous → Iceberg + DLQ |
+| Clickstream → Bronze | < 30 seconds | Flink raw capture → Iceberg |
 
 | POS → Gold (fact_sales) | T + 8 hours | `warehouse_daily_batch_pipeline` → dbt |
 

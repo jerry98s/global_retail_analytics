@@ -1,8 +1,8 @@
 # Data Model ERD
 
 This diagram is the repo-native ERD for the Global Retail Analytics dimensional
-model. It can be viewed directly in Cursor/GitHub as Mermaid, while
-`erd.dbml` can be pasted into dbdiagram.io for a Lucidchart-style canvas.
+model, rendered as Mermaid in Cursor and GitHub. It is the only ERD file, so
+there is one diagram to keep in step with the dbt models.
 
 ```mermaid
 erDiagram
@@ -118,8 +118,3 @@ erDiagram
       varchar platform
     }
 ```
-
-## Diagram Files
-
-- `erd.md`: Mermaid ERD for Cursor/GitHub rendering.
-- `erd.dbml`: DBML version for dbdiagram.io or Lucidchart-style editing.

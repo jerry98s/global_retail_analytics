@@ -5,53 +5,64 @@
 }}
 
 /*
-  Current product attribute snapshot from POS (primary) plus inventory-only SKUs.
-  Feeds dim_product SCD2 change detection via record_hash.
+  Current product attribute snapshot for dim_product SCD2 change detection.
+
+  - Product set: every product_id observed in POS (non-voided) or inventory.
+  - Attributes: reference.product_master (catalog source of truth). Products
+    missing from the master keep their id and get UNKNOWN / NULL attributes
+    rather than disappearing, so fact joins never lose a product_key.
+  - record_hash covers catalog attributes only. Never hash values derived
+    from sales (e.g. average selling price): they move with every new sale
+    and would open a new SCD2 version for nearly every product each day.
 */
 
-with pos_products as (
+with pos_activity as (
     select
         cast(product_id as varchar) as product_id,
-        min(transaction_date) as effective_from,
-        max(transaction_date) as last_seen_date,
-        cast(
-            sum(net_revenue) / nullif(sum(quantity_sold), 0) as decimal(18, 4)
-        ) as unit_cost
+        min(transaction_date) as first_seen_date,
+        max(transaction_date) as last_seen_date
     from {{ ref('stg_pos_transactions') }}
     where not is_voided
     group by 1
 ),
 
-inventory_only as (
+inventory_activity as (
     select
-        cast(i.product_id as varchar) as product_id,
-        min(cast(cast(i.event_time as timestamp) as date)) as effective_from,
-        max(cast(cast(i.event_time as timestamp) as date)) as last_seen_date,
-        cast(0 as decimal(18, 4)) as unit_cost
-    from {{ ref('stg_inventory_events') }} i
-    where cast(i.product_id as varchar) not in (select product_id from pos_products)
+        cast(product_id as varchar) as product_id,
+        min(cast(cast(event_time as timestamp) as date)) as first_seen_date,
+        max(cast(cast(event_time as timestamp) as date)) as last_seen_date
+    from {{ ref('stg_inventory_events') }}
     group by 1
 ),
 
-combined as (
-    select * from pos_products
-    union all
-    select * from inventory_only
+activity as (
+    select
+        product_id,
+        min(first_seen_date) as effective_from,
+        max(last_seen_date) as last_seen_date
+    from (
+        select * from pos_activity
+        union all
+        select * from inventory_activity
+    ) observed
+    group by product_id
 ),
 
 prepared as (
     select
-        product_id,
-        product_id as sku,
-        product_id as product_name,
-        case when unit_cost > 0 then 'PRIVATE_LABEL' else 'RETAIL' end as brand,
-        'GENERAL' as category_l1,
-        'MERCHANDISE' as category_l2,
-        coalesce(unit_cost, cast(0 as decimal(18, 4))) as unit_cost,
-        'UNKNOWN' as supplier_id,
-        effective_from,
-        last_seen_date
-    from combined
+        a.product_id,
+        coalesce(m.sku, a.product_id) as sku,
+        coalesce(m.product_name, a.product_id) as product_name,
+        coalesce(m.brand, 'UNKNOWN') as brand,
+        coalesce(m.category_l1, 'UNKNOWN') as category_l1,
+        coalesce(m.category_l2, 'UNKNOWN') as category_l2,
+        cast(m.unit_cost as decimal(18, 4)) as unit_cost,
+        coalesce(m.supplier_id, 'UNKNOWN') as supplier_id,
+        a.effective_from,
+        a.last_seen_date
+    from activity a
+    left join {{ ref('product_master') }} m
+      on a.product_id = m.product_id
 )
 
 select
@@ -66,8 +77,12 @@ select
     effective_from,
     last_seen_date,
     {{ record_hash_sha256(
-        "coalesce(product_id, '')"
+        "coalesce(sku, '')"
+        ~ " || '|' || coalesce(product_name, '')"
         ~ " || '|' || coalesce(brand, '')"
+        ~ " || '|' || coalesce(category_l1, '')"
+        ~ " || '|' || coalesce(category_l2, '')"
         ~ " || '|' || coalesce(cast(unit_cost as varchar), '')"
+        ~ " || '|' || coalesce(supplier_id, '')"
     ) }} as record_hash
 from prepared

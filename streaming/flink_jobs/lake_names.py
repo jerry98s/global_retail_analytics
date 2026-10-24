@@ -16,6 +16,8 @@ SILVER_NAMESPACE = "silver"
 # Bronze — table name = Spectrum name = dbt source name
 CLICKSTREAM_EVENTS = "clickstream_events"
 INVENTORY_EVENTS = "inventory_events"
+CLICKSTREAM_RECORDS = "clickstream_records"
+INVENTORY_RECORDS = "inventory_records"
 POS_TRANSACTIONS = "pos_transactions"
 
 # Silver — grain in the table name

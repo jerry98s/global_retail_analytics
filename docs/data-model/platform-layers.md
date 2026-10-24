@@ -27,8 +27,8 @@ Kafka / POS batch
 
 | Platform layer | Schemas / systems | Role |
 |----------------|-------------------|------|
-| Bronze | `bronze.*` (Iceberg + Spectrum) | Raw landed events / POS |
-| Silver | `silver.*` | Stream aggregates (e.g. inventory hourly) |
+| Bronze | `bronze.*` (Iceberg; POS also Spectrum) | Append-only `*_records` binary Kafka ledgers / POS |
+| Silver | `silver.*` | Canonical `*_events`, quarantine/duplicate audits, identity, live inventory aggregate |
 | Detail transform | `staging.*`, `intermediate.*` | dbt detail prep |
 | Gold | `finance.*`, `marketing.*` | Atomic Kimball facts/dims |
 | Summary | `summary.*` | Reusable aggregates from **one** Gold fact |
@@ -36,6 +36,10 @@ Kafka / POS batch
 | Metadata | `metadata.meta.*` | Catalog + pipeline/DQ/freshness history |
 
 ## Analytics database vs metadata database
+
+Streaming validation and business deduplication happen in Silver, never before
+raw Bronze capture. See [ADR-011](../decisions/ADR-011-replayable-bronze.md).
+Legacy Bronze `*_events` are filtered history, not replay-complete records.
 
 | Database | Cloud | Local | Contents |
 |----------|-------|-------|----------|
@@ -53,6 +57,7 @@ See [ADR-008](../decisions/ADR-008-metadata-database.md).
 |----------|-------|-------------|
 | `summary.sales_daily_store` | `(date_key, store_key)` | `finance.fact_sales` |
 | `summary.inventory_daily_product_store` | `(snapshot_date_key, product_key, store_key)` | `finance.fact_inventory_snapshot` |
+| `summary.inventory_position_daily` | `(snapshot_date_key, product_id, store_id)`, dense: every product/store every day, carried forward | `finance.fact_inventory_snapshot` |
 | `summary.sessions_daily_platform` | `(session_date_key, platform)` | `marketing.fact_customer_session` |
 
 No fact-to-fact joins. Conformed dimensions only when needed for attributes
@@ -63,7 +68,7 @@ already present on the fact (keys).
 | Table | Purpose |
 |-------|---------|
 | `meta.layer_catalog` | Object registry (YAML-seeded) |
-| `meta.metric_catalog` | Metric definitions (YAML-seeded) |
+| `meta.metric_catalog` | Metric definitions: operational from `metric_catalog.yml`, analytics from the dbt semantic layer |
 | `meta.pipeline_run` | One row per run/attempt |
 | `meta.table_freshness` | Append-only freshness / row counts |
 | `meta.dq_check_result` | Append-only dbt / GE / reconciliation outcomes |

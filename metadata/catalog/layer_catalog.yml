@@ -2,9 +2,29 @@
 # Collector upserts by object_fqn (idempotent).
 
 objects:
-  - object_fqn: bronze.clickstream_events
-    object_type: external
+  - object_fqn: bronze.clickstream_records
+    object_type: iceberg
     platform_layer: bronze
+    domain: digital
+    owner: data-platform
+    grain: one row per captured Kafka delivery (transport repeats retained)
+    timestamp_column: ingested_at
+    freshness_sla_minutes: 60
+    is_active: true
+
+  - object_fqn: bronze.inventory_records
+    object_type: iceberg
+    platform_layer: bronze
+    domain: supply
+    owner: data-platform
+    grain: one row per captured Kafka delivery (transport repeats retained)
+    timestamp_column: ingested_at
+    freshness_sla_minutes: 60
+    is_active: true
+
+  - object_fqn: silver.clickstream_events
+    object_type: external
+    platform_layer: silver
     domain: digital
     owner: data-platform
     grain: one row per clickstream event
@@ -12,9 +32,9 @@ objects:
     freshness_sla_minutes: 60
     is_active: true
 
-  - object_fqn: bronze.inventory_events
+  - object_fqn: silver.inventory_events
     object_type: external
-    platform_layer: bronze
+    platform_layer: silver
     domain: supply
     owner: data-platform
     grain: one row per inventory event
@@ -37,9 +57,29 @@ objects:
     platform_layer: silver
     domain: supply
     owner: data-platform
-    grain: (store_id, product_id, hour_ts)
-    timestamp_column: hour_ts
+    grain: (snapshot_date_key, snapshot_hour, product_id, store_id) per Flink window
+    timestamp_column: snapshot_date_key
     freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: intermediate.int_inventory_batch_coverage
+    object_type: view
+    platform_layer: intermediate
+    domain: supply
+    owner: analytics-engineering
+    grain: one row (batch_start_hour_key, batch_end_hour_key)
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: intermediate.int_inventory_hourly
+    object_type: view
+    platform_layer: intermediate
+    domain: supply
+    owner: analytics-engineering
+    grain: (snapshot_date_key, snapshot_hour, product_id, store_id)
+    timestamp_column: snapshot_date_key
+    freshness_sla_minutes: null
     is_active: true
 
   - object_fqn: finance.fact_sales
@@ -57,7 +97,7 @@ objects:
     platform_layer: gold
     domain: supply
     owner: analytics-engineering
-    grain: (snapshot_date_key, product_key, store_key)
+    grain: (snapshot_date_key, snapshot_hour, product_key, store_key)
     timestamp_column: snapshot_date_key
     freshness_sla_minutes: 1440
     is_active: true
@@ -128,6 +168,16 @@ objects:
     domain: supply
     owner: analytics-engineering
     grain: (snapshot_date_key, product_key, store_key)
+    timestamp_column: snapshot_date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: summary.inventory_position_daily
+    object_type: table
+    platform_layer: summary
+    domain: supply
+    owner: analytics-engineering
+    grain: (snapshot_date_key, product_id, store_id)
     timestamp_column: snapshot_date_key
     freshness_sla_minutes: 1440
     is_active: true

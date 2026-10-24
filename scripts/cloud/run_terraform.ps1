@@ -42,7 +42,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $stackDir = switch ($Stack) {
     "bootstrap" { Join-Path $repoRoot "infra/terraform/bootstrap" }
     "platform"  { Join-Path $repoRoot "infra/terraform" }
@@ -82,6 +82,17 @@ function Invoke-Tf {
     }
 }
 
+function Build-MwaaPlugins {
+    # The MWAA module uploads modules/mwaa/plugins.zip; it is built, not committed.
+    if ($Stack -ne "platform") { return }
+    $python = Join-Path $repoRoot ".venv/Scripts/python.exe"
+    if (-not (Test-Path $python)) { $python = "python" }
+    & $python (Join-Path $repoRoot "scripts/cloud/build_mwaa_plugins.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "build_mwaa_plugins.py failed (exit $LASTEXITCODE)"
+    }
+}
+
 function Initialize-Backend {
     if ($Stack -eq "bootstrap") {
         Invoke-Tf -TfArgs @("init", "-upgrade")
@@ -93,6 +104,8 @@ function Initialize-Backend {
 Push-Location $stackDir
 try {
     Write-Host "==> Stack: $Stack   Env: $(if ($Env) { $Env } else { 'n/a' })   Action: $Action" -ForegroundColor Cyan
+
+    if ($Action -in @("validate", "plan", "apply", "destroy")) { Build-MwaaPlugins }
 
     switch ($Action) {
         "init"     { Initialize-Backend }

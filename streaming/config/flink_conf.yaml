@@ -12,6 +12,8 @@
 # Defaults below are the local docker-compose values so the same file works
 # in both environments.
 kafka_bootstrap_servers: ${KAFKA_BOOTSTRAP_SERVERS:-127.0.0.1:9092}
+# Stable Kafka cluster/topic incarnation; change after destructive topic recreation.
+bronze_source_system: ${BRONZE_SOURCE_SYSTEM:-retail-v1}
 kafka_security_protocol: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
 kafka_sasl_mechanism:    ${KAFKA_SASL_MECHANISM:-AWS_MSK_IAM}
 inventory_topic:         inventory.events.v1
@@ -39,9 +41,9 @@ clickstream_parallelism: ${CLICKSTREAM_PARALLELISM:-1}
 # Cloud (EMR) ignores these — parallelism comes from core instance group.
 #
 # Watermark delays (P3.2 asymmetry — see docs/runbooks/dw-checklist-audit.md):
-# bronze is intentionally tight (30s) to keep the Iceberg table small; silver
-# is wider (60s) because hourly aggregation can absorb more lateness. Producers
-# may emit up to ~300s late; events beyond the watermark are dropped.
+# Raw Bronze has NO event-time watermark. The legacy bronze setting below is
+# unused, retained for old deployment configurations. Only the live inventory
+# aggregate uses a watermark; replay of canonical events has no lateness cutoff.
 inventory_bronze_watermark_delay_seconds: ${INVENTORY_BRONZE_WATERMARK_DELAY_SECONDS:-30}
 inventory_silver_watermark_delay_seconds: ${INVENTORY_SILVER_WATERMARK_DELAY_SECONDS:-60}
 iceberg_catalog_name:    iceberg_catalog

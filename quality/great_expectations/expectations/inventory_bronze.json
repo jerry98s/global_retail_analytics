@@ -1,7 +1,7 @@
 {
   "expectation_suite_name": "inventory_bronze",
   "meta": {
-    "description": "Bronze inventory events baseline quality checks. Closes P2.8 from docs/runbooks/dw-checklist-audit.md. Bronze is the raw stream layer written by Flink inventory_bronze_job (Kafka -> schema validate -> dedup -> Iceberg). event_type enum matches streaming/flink_jobs/event_types.py INVENTORY_EVENT_TYPES and the JSON Schema enum in ingestion/schemas/inventory_event.json. Note: post-kappa (ADR-007), no Gold mart reads from bronze.inventory_events — it is audit-only. These expectations still hold because the Flink bronze job validates before insert."
+    "description": "Canonical Silver inventory quality checks (legacy suite name). Raw Bronze retains every delivery. Spark validates and deduplicates into silver.inventory_events; the independent inventory_hourly fast path retains its own watermark (ADR-011)."
   },
   "expectations": [
     {

@@ -1,5 +1,7 @@
 -- ===========================================================================
--- Register Spectrum external schema + bronze tables over S3 Iceberg parquet
+-- Register Spectrum schema, POS, and LEGACY filtered event tables.
+-- ADR-011: new raw *_records ledgers are read through Spark/Iceberg, never
+-- globbed here. Current analytics sources are silver.*_events in the Silver DDL.
 -- ===========================================================================
 -- Existing deployments: re-run after rename (clickstream_bronze → clickstream_events).
 -- Old S3 prefixes are not migrated automatically; copy data or backfill from Kafka.
@@ -61,7 +63,7 @@ LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/inventory_events/data/';
 --   ALTER TABLE bronze.pos_transactions ADD IF NOT EXISTS PARTITION (dt='{{ ds }}')
 --   LOCATION '<pos_bronze_s3_path>data/dt={{ ds }}/'
 -- Without that, the new directory is invisible. Filter Gold on `dt` (not only
--- transaction_date) so Spectrum can prune. See docs/runbooks/iceberg-maintenance.md.
+-- transaction_date) so Spectrum can prune.
 DROP TABLE IF EXISTS bronze.pos_transactions;
 CREATE EXTERNAL TABLE bronze.pos_transactions (
     transaction_id    varchar(64),

@@ -24,6 +24,16 @@ KAFKA_CONFIG = build_producer_config("inventory-producer-sim")
 
 TOPIC = TOPIC_INVENTORY
 
+EVENT_TYPE_WEIGHTS = {"sale_deduction": 70, "receipt": 20, "adjustment": 5, "transfer": 5}
+# Sign follows the movement: sales and outbound transfers remove stock,
+# receipts add case quantities, cycle-count adjustments go either way.
+QTY_BY_EVENT_TYPE = {
+    "sale_deduction": (-1, -1, -1, -2, -3),
+    "receipt": (5, 10),
+    "adjustment": (-2, -1, 1, 2),
+    "transfer": (-5, -3, -2),
+}
+
 
 @dataclass
 class InventoryEvent:
@@ -45,16 +55,16 @@ class InventoryEvent:
         event_id: Optional[str] = None
     ) -> "InventoryEvent":
         event_time = datetime.now(timezone.utc) - timedelta(seconds=late_seconds)
+        event_type = random.choices(
+            list(EVENT_TYPE_WEIGHTS), weights=list(EVENT_TYPE_WEIGHTS.values())
+        )[0]
         return cls(
             event_id   = event_id or str(uuid.uuid4()),
             event_time = event_time.isoformat(),
             store_id   = random.choice(STORES),
             product_id = random.choice(PRODUCTS),
-            qty_delta  = random.choice([-3, -2, -1, -1, -1, 5, 10, 20]),
-            event_type = random.choices(
-                ["sale_deduction", "receipt", "adjustment", "transfer"],
-                weights=[70, 20, 5, 5]
-            )[0],
+            qty_delta  = random.choice(QTY_BY_EVENT_TYPE[event_type]),
+            event_type = event_type,
             scanner_id = f"SCANNER-{random.randint(1, 10):02d}",
             schema_version = "2.0.0",
             is_late    = late_seconds > 60

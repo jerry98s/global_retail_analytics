@@ -36,15 +36,16 @@ sources:
     schema: "{{ env_var('BRONZE_SCHEMA', 'bronze') }}"
     tables:
       - name: pos_transactions
-      - name: clickstream_events
-      - name: inventory_events
   - name: silver
     database: "{% if target.type != 'duckdb' %}{{ env_var('SILVER_DB', 'dev') }}{% endif %}"
     schema: "{{ env_var('SILVER_SCHEMA', 'silver') }}"
     tables:
-      # Flink inventory_silver_job writes silver.inventory_hourly (kappa path).
-      # Gold fact_inventory_snapshot reads from here — see ADR-002 and the
-      # kappa conversion in fact_inventory_snapshot.sql.
+      # Replayable Bronze is interpreted by Spark; analytics uses canonical events.
+      - name: clickstream_events
+      - name: inventory_events
+      # Flink inventory_silver_job writes silver.inventory_hourly, the speed
+      # layer. int_inventory_hourly uses it only for hours Spark has not
+      # covered yet (ADR-012).
       - name: inventory_hourly
       # Spark GraphFrames identity_resolution_job writes
       # silver.identity_resolution (ADR-010). int_identity_resolution is a

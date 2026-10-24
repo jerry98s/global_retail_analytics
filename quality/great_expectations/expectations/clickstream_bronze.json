@@ -1,7 +1,7 @@
 {
   "expectation_suite_name": "clickstream_bronze",
   "meta": {
-    "description": "Bronze clickstream baseline quality checks. Bronze is written by Flink clickstream_bronze_job (Kafka -> schema validate -> business validate -> dedup -> Iceberg). event_type enum matches streaming/flink_jobs/event_types.py CLICKSTREAM_EVENT_TYPES and ingestion/schemas/clickstream_envelope.json."
+    "description": "Canonical Silver clickstream quality checks (legacy suite name). Raw Bronze retains all deliveries; Spark validates and deduplicates downstream (ADR-011). event_type enum matches streaming/flink_jobs/event_types.py CLICKSTREAM_EVENT_TYPES and ingestion/schemas/clickstream_envelope.json."
   },
   "expectations": [
     {

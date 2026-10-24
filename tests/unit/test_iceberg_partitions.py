@@ -36,7 +36,7 @@ _ICEBERG_CREATE_RE = re.compile(
     # `{catalog}.{BRONZE_NAMESPACE}.{INVENTORY_EVENTS}`). Capture the tail
     # after the closing paren of the column list, up to the closing `"""`
     # of the Python f-string.
-    r"CREATE TABLE IF NOT EXISTS\s+\{catalog\}\.\{[A-Z_]+\}\.\{[A-Z_]+\}\s*"
+    r"CREATE TABLE IF NOT EXISTS\s+(?:\{catalog\}\.\{[A-Z_]+\}\.\{[A-Z_]+\}|\{target\})\s*"
     r"\((?:[^()]|\([^()]*\))*\)"  # balanced column list (allows nested casts)
     r"(.*?)\"\"\"",  # tail: non-greedy up to the closing triple-quote
     re.DOTALL,
@@ -57,27 +57,27 @@ class TestIcebergPartitionSpecs:
     """All three Iceberg sinks must declare a daily partition spec."""
 
     def test_inventory_events_has_daily_partition(self) -> None:
-        src = _read(_FLINK_JOBS / "inventory_bronze_job.py")
-        tail = _iceberg_tail(src, "inventory_bronze_job.py")
+        src = _read(_FLINK_JOBS / "raw_bronze.py")
+        tail = _iceberg_tail(src, "raw_bronze.py")
         assert "PARTITIONED BY" in tail.upper(), (
             "bronze.inventory_events Iceberg DDL is missing PARTITIONED BY — "
             "data lake checklist DL-A regression."
         )
-        assert re.search(r"PARTITIONED BY\s*\(\s*event_date\s*\)", tail, re.IGNORECASE), (
-            "bronze.inventory_events should partition by event_date "
+        assert re.search(r"PARTITIONED BY\s*\(\s*ingestion_date\s*\)", tail, re.IGNORECASE), (
+            "bronze.inventory_events should partition by ingestion_date "
             "(derived CAST(event_time AS DATE) identity column — Flink SQL "
             "Hadoop catalog does not accept days(event_time) transform)."
         )
 
     def test_clickstream_events_has_daily_partition(self) -> None:
-        src = _read(_FLINK_JOBS / "clickstream_bronze_job.py")
-        tail = _iceberg_tail(src, "clickstream_bronze_job.py")
+        src = _read(_FLINK_JOBS / "raw_bronze.py")
+        tail = _iceberg_tail(src, "raw_bronze.py")
         assert "PARTITIONED BY" in tail.upper(), (
             "bronze.clickstream_events Iceberg DDL is missing PARTITIONED BY — "
             "data lake checklist DL-A regression."
         )
-        assert re.search(r"PARTITIONED BY\s*\(\s*event_date\s*\)", tail, re.IGNORECASE), (
-            "bronze.clickstream_events should partition by event_date "
+        assert re.search(r"PARTITIONED BY\s*\(\s*ingestion_date\s*\)", tail, re.IGNORECASE), (
+            "bronze.clickstream_events should partition by ingestion_date "
             "(derived CAST(event_time AS DATE) identity column — Flink SQL "
             "Hadoop catalog does not accept days(event_time) transform)."
         )
@@ -100,8 +100,8 @@ class TestIcebergPartitionSpecs:
         explosion per the data lake checklist item 1.2."""
         forbidden = ["event_id", "client_id", "customer_id", "session_id", "scanner_id"]
         for job_file, table in [
-            ("inventory_bronze_job.py", "inventory_events"),
-            ("clickstream_bronze_job.py", "clickstream_events"),
+            ("raw_bronze.py", "inventory_events"),
+            ("raw_bronze.py", "clickstream_events"),
             ("inventory_silver_job.py", "inventory_hourly"),
         ]:
             src = _read(_FLINK_JOBS / job_file)

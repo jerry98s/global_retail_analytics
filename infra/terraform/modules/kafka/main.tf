@@ -129,7 +129,7 @@ resource "aws_cloudwatch_metric_alarm" "consumer_lag" {
     "Topic"          = each.value.topic
   }
 
-  alarm_description = "Flink consumer group ${each.value.group} on topic ${each.value.topic} is more than ${var.consumer_lag_alarm_threshold_pct}% behind the max offset."
+  alarm_description = "Flink consumer group ${each.value.group} on topic ${each.value.topic} is more than ${var.consumer_lag_alarm_threshold_pct}% behind the max offset. See docs/runbooks/kafka-operations.md#high-consumer-lag."
 
   alarm_actions = [var.alert_topic_arn]
   ok_actions    = [var.alert_topic_arn]

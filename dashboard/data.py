@@ -8,6 +8,10 @@ Two modes, selected by the ``DASHBOARD_MODE`` environment variable:
 * ``local`` — read the Parquet files written by the local Flink jobs into the
   Iceberg warehouse directory (``LOCAL_ICEBERG_DIR``, default ``/tmp/iceberg``).
 
+Sales, inventory and session metrics come from the dbt semantic layer: the SQL
+in ``semantic_queries.py`` is compiled by MetricFlow (ADR-013), so the
+dashboard never re-defines a metric.
+
 This module deliberately avoids importing Streamlit so it can be unit-tested
 and reused outside the UI.
 """
@@ -19,6 +23,8 @@ import os
 from typing import Optional
 
 import pandas as pd
+
+from semantic_queries import QUERIES as SEMANTIC_QUERIES
 
 MODE_REDSHIFT = "redshift"
 MODE_LOCAL = "local"
@@ -90,6 +96,11 @@ def run_query(sql: str) -> pd.DataFrame:
         conn.close()
 
 
+def semantic_query(name: str) -> pd.DataFrame:
+    """Run a MetricFlow-compiled dashboard query (see semantic_queries.py)."""
+    return run_query(SEMANTIC_QUERIES[MODE_REDSHIFT][name])
+
+
 def redshift_healthcheck() -> Optional[str]:
     """Return None when Redshift is reachable, else a short error string."""
     try:
@@ -99,54 +110,9 @@ def redshift_healthcheck() -> Optional[str]:
         return str(exc)
 
 
-# Named analytical queries over the Gold/serving layer. Each is defensive: the
-# UI wraps calls in try/except so a missing table (dbt not yet run) degrades to
-# an informational message rather than a crash.
-SALES_BY_DAY = """
-    SELECT date_key,
-           SUM(net_revenue)  AS net_revenue,
-           SUM(quantity_sold) AS units,
-           COUNT(*)          AS line_items
-    FROM finance.fact_sales
-    WHERE is_voided = FALSE
-    GROUP BY date_key
-    ORDER BY date_key
-"""
-
-SALES_BY_STORE = """
-    SELECT s.store_id,
-           s.store_name,
-           SUM(f.net_revenue) AS net_revenue
-    FROM finance.fact_sales f
-    JOIN finance.dim_store s ON f.store_key = s.store_key
-    WHERE f.is_voided = FALSE
-    GROUP BY s.store_id, s.store_name
-    ORDER BY net_revenue DESC
-    LIMIT 20
-"""
-
-INVENTORY_LATEST = """
-    SELECT snapshot_date_key,
-           snapshot_hour,
-           SUM(quantity_on_hand)   AS quantity_on_hand,
-           SUM(quantity_available) AS quantity_available
-    FROM finance.fact_inventory_snapshot
-    GROUP BY snapshot_date_key, snapshot_hour
-    ORDER BY snapshot_date_key, snapshot_hour
-"""
-
-SESSION_FUNNEL = """
-    SELECT platform,
-           COUNT(*)                                       AS sessions,
-           SUM(page_view_count)                           AS page_views,
-           SUM(product_view_count)                        AS product_views,
-           SUM(add_to_cart_count)                         AS add_to_carts,
-           SUM(CASE WHEN converted THEN 1 ELSE 0 END)     AS conversions
-    FROM marketing.fact_customer_session
-    GROUP BY platform
-    ORDER BY sessions DESC
-"""
-
+# Row-level Gold/serving queries that are not metrics. Metric queries live in
+# semantic_queries.py. The UI wraps calls in try/except so a missing table (dbt
+# not yet run) degrades to an informational message rather than a crash.
 CUSTOMER_360 = """
     SELECT customer_key,
            loyalty_tier,

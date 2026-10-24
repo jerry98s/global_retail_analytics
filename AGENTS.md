@@ -4,15 +4,10 @@ Instructions for AI agents and automation working in this repository.
 
 ## Guidance Hierarchy
 
-Do not duplicate long instructions across files.
-
-| File | Purpose |
-|---|---|
-| `.cursor/rules/*.mdc` | Cursor's active scoped agent rules |
-| `.cursor/README.md` | Explains the Cursor rule layout |
-| `AGENTS.md` | Cross-agent and human-readable operating guide |
-| `.cursorrules` | Legacy compatibility pointer only |
-| `ARCHITECTURE.md` | Current platform architecture authority |
+This file is the single cross-agent guide: branches, commands, and do-nots live
+here only. `.cursor/rules/*.mdc` hold path-scoped facts (dbt, Flink, Spark,
+Airflow, quality, Python) and must not repeat this file. `ARCHITECTURE.md` is the
+architecture authority.
 
 Use `ARCHITECTURE.md`, `docs/ENVIRONMENTS.md`, `docs/data-model/`, and
 `docs/decisions/ADR-*.md` for design decisions. Use `docs/runbooks/` for
@@ -32,6 +27,7 @@ Docker Kafka/Flink/Spark and DuckDB.
 |---|---|
 | **`main`** | Fully cloud-deployed platform (dev/prod AWS). |
 | **`local-testing-version`** | Local Docker/Flink/DuckDB testing and demos. |
+| **`showcase`** | Trimmed laptop run of the critical flow. Do not copy its deletions onto `main`. |
 
 Do **not** merge local-only compose bind-mounts, short Flink windows, or
 DuckDB-only wiring into `main` as a blanket merge. Cherry-pick shared cloud
@@ -82,7 +78,7 @@ uv sync --group dev
 - Start **Flink before simulate** (`latest-offset`). Task `all` does this.
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
-- `-Task quality`: `dbt test` + GE `gold_layer_local` (DuckDB) + `pytest tests/unit`.
+- `-Task quality`: `dbt test` (the Gold WAP gate) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
   `.local/iceberg/silver/identity_resolution`. `-Task all` (iceberg source)
@@ -138,6 +134,14 @@ dbt/GE, evidence capture, destroy checklist), follow
 
 ## Spark (identity resolution, ADR-010)
 
+Raw Bronze capture is append-only `bronze.clickstream_records` /
+`bronze.inventory_records` (ADR-011): no validation, business dedup or watermark.
+Spark first promotes committed Bronze snapshots into canonical Silver events,
+quarantine and duplicate audits, then computes identity. dbt/GE read Silver events.
+Cloud rollout must complete Spark and apply Silver Spectrum DDL before consumers
+resume. See `docs/runbooks/bronze-replay.md`; preserve stable source incarnation
+across normal restarts and change it after Kafka topic/cluster recreation.
+
 - `spark/identity_resolution/identity_resolution_job.py` (PySpark +
   GraphFrames) builds edges + connected components and writes
   `silver.identity_resolution` / `silver.identity_edges` (Iceberg), plus
@@ -165,10 +169,18 @@ dbt/GE, evidence capture, destroy checklist), follow
   cloud-safe summary/metadata/Airflow wiring to `main` without local compose
   bind-mounts.
 
+## Model Rules
+
+- Kimball facts and dims with surrogate integer keys. No fact-to-fact joins
+  (drill across conformed dims instead).
+- Gate PII with `marketing_consent`.
+- Event contract changes bump `schema_version` (`ingestion/schemas/`).
+- POS lands as Parquet in Bronze; there is no POS Kafka topic.
+
 ## Do Not
 
-- Commit secrets (`.env`, `profiles.yml`, real `*.tfvars`, credentials JSON).
-- Commit generated caches (`__pycache__/`, dbt `target/`, `.terraform/`, `.local/iceberg` data).
+- Commit secrets (`.env`, `transformation/dbt_project/profiles.yml`, real `*.tfvars` / `*.tfstate*`, `*_credentials.json`), placeholders, or TODOs.
+- Commit runtime output (`__pycache__/`, dbt `target/`, `**/.terraform/`, `.local/**`, `quality/great_expectations/uncommitted/`).
 - Replace Iceberg with Delta/Hudi or raw Parquet-only lake tables.
 - Add SCD Type 2 to dimensions other than `dim_product`.
 - Hardcode warehouse, Kafka, Redshift, or EMR endpoints.
@@ -193,4 +205,4 @@ dbt/GE, evidence capture, destroy checklist), follow
 - Operations: `docs/runbooks/`
 - Cloud: `scripts/cloud/run_cloud_stack.ps1` (wrapper), `scripts/cloud/run_terraform.ps1`, `scripts/cloud/deploy_platform.ps1`, `scripts/cloud/bootstrap_redshift.ps1`, `scripts/cloud/run_msk_producers.ps1`
 - Local (`local-testing-version` only): `scripts/local/run_local_stack.ps1` (wrapper), `scripts/local/load_iceberg_to_duckdb.py`, `scripts/local/run_ge_local.py`; shared: `scripts/common/metadata_observer.py`
-- Cursor: `.cursor/README.md`, `.cursor/rules/*.mdc`
+- Cursor: `.cursor/rules/*.mdc` (scoped)

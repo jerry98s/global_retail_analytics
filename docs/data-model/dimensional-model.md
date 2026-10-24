@@ -5,7 +5,6 @@ This project uses a three-source Kimball model with shared conformed dimensions.
 ## Diagrams
 
 - [Mermaid ERD](./erd.md) - view directly in Cursor/GitHub.
-- [DBML ERD](./erd.dbml) - paste into dbdiagram.io or import into visual diagramming tools.
 - [Naming conventions](./naming-conventions.md) - Kafka → Iceberg → Spectrum → dbt object names.
 - [Identity resolution](./identity-resolution.md) - Customer 360 identifier mapping.
 

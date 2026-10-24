@@ -25,7 +25,7 @@ import random
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -33,7 +33,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import structlog
 
-from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCTS, STORES
+from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCT_CATALOG, PRODUCTS, STORES
 
 log = structlog.get_logger()
 
@@ -69,26 +69,37 @@ class PosLine:
     is_voided: bool
 
     @classmethod
-    def generate(cls, transaction_id: str, line_item_number: int, txn_date: date) -> "PosLine":
+    def generate(
+        cls,
+        transaction_id: str,
+        line_item_number: int,
+        txn_date: date,
+        store_id: str,
+        loyalty_id: Optional[str],
+    ) -> "PosLine":
+        product = PRODUCT_CATALOG[random.choice(PRODUCTS)]
         quantity = random.randint(1, 4)
-        unit_price = round(random.uniform(4.0, 120.0), 2)
-        gross = round(quantity * unit_price, 2)
-        discount = round(gross * random.uniform(0.0, 0.2), 2)
-        net = round(gross - discount, 2)
-        margin = round(net * random.uniform(0.1, 0.35), 2)
+        gross = _money(product.list_price * quantity)
+        discount_rate = Decimal(str(round(random.uniform(0.0, 0.2), 4)))
+        net = _money(gross * (1 - discount_rate))
+        margin = _money(net - product.unit_cost * quantity)
         return cls(
             transaction_id=transaction_id,
             line_item_number=line_item_number,
             transaction_date=txn_date,
-            store_id=random.choice(STORES),
-            product_id=random.choice(PRODUCTS),
-            loyalty_id=random.choice(LOYALTY_IDS) if random.random() < 0.7 else None,
+            store_id=store_id,
+            product_id=product.product_id,
+            loyalty_id=loyalty_id,
             quantity_sold=quantity,
-            gross_revenue=Decimal(str(gross)),
-            net_revenue=Decimal(str(net)),
-            gross_margin=Decimal(str(margin)),
+            gross_revenue=gross,
+            net_revenue=net,
+            gross_margin=margin,
             is_voided=random.random() < 0.01,
         )
+
+
+def _money(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 # Fixed namespace for uuid5 — arbitrary but must be valid UUID and stable
@@ -124,8 +135,10 @@ def generate_rows(
         # partitions can be regenerated exactly. (uuid4 would give a fresh
         # id per run and break the "same input -> same output" contract.)
         txn_id = str(uuid.uuid5(_TXN_NAMESPACE, f"{txn_date.isoformat()}#{n}"))
+        store_id = random.choice(STORES)
+        loyalty_id = random.choice(LOYALTY_IDS) if random.random() < 0.7 else None
         for line_no in range(1, random.randint(1, max_lines) + 1):
-            rows.append(PosLine.generate(txn_id, line_no, txn_date))
+            rows.append(PosLine.generate(txn_id, line_no, txn_date, store_id, loyalty_id))
     return rows
 
 

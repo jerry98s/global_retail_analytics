@@ -7,9 +7,6 @@ worth pinning down precisely.
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 
 from streaming.flink_jobs import _config
@@ -161,62 +158,23 @@ class TestFlinkConfContract:
         assert cfg["inventory_dlq_topic"] == "dlq.inventory.schema_violations"
 
 
-class TestDlqSqlContract:
-    """P1.5 regression guard: the DLQ WHERE clause must NOT filter out
-    null-event_id rows.
+class TestReplayQuarantineContract:
+    """Malformed IDs and invalid checkout data remain auditable after raw capture."""
 
-    The DLQ's error_reason CASE already handles `WHEN event_id IS NULL THEN
-    'missing_event_id'`, so the intent is clearly to route null-event_id
-    rows to the DLQ. The buggy pattern was:
+    @pytest.mark.parametrize('stream', ['inventory', 'clickstream'])
+    def test_missing_event_id_is_quarantined(self, stream):
+        from spark.identity_resolution.event_contract import parse_event
 
-        WHERE event_id IS NOT NULL
-          AND NOT (valid_predicate)
-
-    which silently dropped null-event_id rows before they reached the DLQ.
-    The fix is `WHERE NOT (valid_predicate)` — De Morgan's gives us
-    `event_id IS NULL OR ...other failures...`, which selects every row
-    that fails any predicate, including null-event_id.
-    """
-
-    _BUGGY_PATTERN = re.compile(
-        r"WHERE\s+event_id\s+IS\s+NOT\s+NULL\s+AND\s+NOT",
-        re.MULTILINE | re.DOTALL,
-    )
-
-    @staticmethod
-    def _read_job_source(filename: str) -> str:
-        # tests/unit/test_flink_config.py -> repo_root / streaming / flink_jobs / filename
-        repo_root = Path(__file__).resolve().parents[2]
-        return (repo_root / "streaming" / "flink_jobs" / filename).read_text(encoding="utf-8")
-
-    def test_inventory_dlq_does_not_filter_null_event_id(self):
-        src = self._read_job_source("inventory_bronze_job.py")
-        match = self._BUGGY_PATTERN.search(src)
-        assert match is None, (
-            "inventory_bronze_job.py DLQ WHERE clause filters out null-event_id "
-            "rows instead of routing them to the DLQ (P1.5 regression). "
-            "Expected: `WHERE NOT (valid_predicate)` in the dlq_sql section."
-        )
-
-    def test_clickstream_dlq_does_not_filter_null_event_id(self):
-        src = self._read_job_source("clickstream_bronze_job.py")
-        match = self._BUGGY_PATTERN.search(src)
-        assert match is None, (
-            "clickstream_bronze_job.py DLQ WHERE clause filters out null-event_id "
-            "rows instead of routing them to the DLQ (P1.5 regression). "
-            "Expected: `WHERE NOT (valid_predicate)` in the dlq_sql section."
-        )
+        assert parse_event(b'{}', stream)['error_reason'] == 'missing_event_id'
 
     def test_clickstream_routes_checkout_business_violations(self):
-        src = self._read_job_source("clickstream_bronze_job.py")
-        assert "clickstream_business_dlq" in src, (
-            "clickstream_bronze_job.py must declare a business DLQ Kafka sink"
-        )
-        assert "dlq.clickstream.business_violations" in src or (
-            "clickstream_business_dlq_topic" in src
-        ), "business DLQ topic must be wired from flink_conf / default"
-        assert "checkout_missing_order_id" in src
-        assert "JSON_VALUE(properties, '$.order_id')" in src
-        assert "business_predicate" in src or "AND NOT (" in src
-        # Bronze must require both schema + business predicates
-        assert "business_predicate" in src or "cart_value" in src
+        from spark.identity_resolution.event_contract import parse_event
+        import json
+
+        event = dict(event_id='e', event_type='checkout', event_time='2026-09-17T00:00:00Z',
+                     session_id='s', client_id='c', platform='web', app_version='1.0.0',
+                     schema_version='1.0.0', properties={'cart_value': 12})
+        assert parse_event(json.dumps(event).encode(), 'clickstream')['error_reason'] == 'checkout_invalid_order_id'
+        event['properties']['order_id'] = 'ORDER-123456789ABC'
+        event['properties']['cart_value'] = -1
+        assert parse_event(json.dumps(event).encode(), 'clickstream')['error_reason'] == 'checkout_invalid_cart_value'

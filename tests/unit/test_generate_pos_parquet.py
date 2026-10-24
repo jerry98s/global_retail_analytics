@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -86,3 +87,27 @@ def test_seed_is_deterministic_for_same_override(gen_module) -> None:
         assert ra.quantity_sold == rb.quantity_sold
         assert ra.gross_revenue == rb.gross_revenue
         assert ra.store_id == rb.store_id
+
+
+def test_store_and_loyalty_are_transaction_level(gen_module) -> None:
+    """Every line in a ticket shares one store and one (possibly absent) loyalty ID."""
+    rows = gen_module.generate_rows(date(2026, 7, 4), transaction_count=200, max_lines=5)
+    by_txn: dict[str, set[tuple[str, object]]] = {}
+    for row in rows:
+        by_txn.setdefault(row.transaction_id, set()).add((row.store_id, row.loyalty_id))
+    assert any(len([r for r in rows if r.transaction_id == t]) > 1 for t in by_txn)
+    assert all(len(header) == 1 for header in by_txn.values())
+
+
+def test_line_measures_follow_product_catalog(gen_module) -> None:
+    """gross = qty x list price, net within a 0-20% discount, margin = net - qty x cost."""
+    from ingestion.kafka.sim_entities import PRODUCT_CATALOG
+
+    rows = gen_module.generate_rows(date(2026, 7, 4), transaction_count=100, max_lines=4)
+    for row in rows:
+        product = PRODUCT_CATALOG[row.product_id]
+        qty = row.quantity_sold
+        assert row.gross_revenue == (product.list_price * qty).quantize(Decimal("0.01"))
+        assert row.gross_revenue * Decimal("0.79") <= row.net_revenue <= row.gross_revenue
+        assert row.gross_margin == (row.net_revenue - product.unit_cost * qty).quantize(Decimal("0.01"))
+        assert row.gross_margin > 0

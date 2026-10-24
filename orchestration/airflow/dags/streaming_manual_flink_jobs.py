@@ -30,10 +30,11 @@ Bronze vs silver parallel safety (P1.6):
   `inventory_silver_job` — both read Kafka directly with separate
   consumer groups and write to independent Iceberg tables
   (`bronze.inventory_events` and `silver.inventory_hourly`).
-  After the kappa conversion (ADR-007), `fact_inventory_snapshot`
-  reads from silver, so bronze is purely the audit/replay layer;
-  a delayed bronze job does not block the gold mart. Sequential
-  submission would add coupling without correctness benefit.
+  `fact_inventory_snapshot` takes hours Spark has covered from the
+  Bronze ledger and later hours from silver (ADR-012), so a delayed
+  bronze job only keeps more hours on the Flink numbers; it does not
+  block the gold mart. Sequential submission would add coupling
+  without correctness benefit.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 from airflow.models import Variable
+import shlex
 
 from metadata_airflow import on_dag_failure, on_dag_start, on_dag_success
 
@@ -65,6 +67,7 @@ def _flink_step(name: str, entry: str) -> dict:
     """Build an EMR step that runs a PyFlink job in YARN application mode."""
     cmd = (
         "export KAFKA_BOOTSTRAP_SERVERS='{{ var.value.msk_bootstrap_brokers }}' "
+        "BRONZE_SOURCE_SYSTEM={{ var.value.get('bronze_source_system', 'retail-v1') | shellquote }} "
         "KAFKA_SECURITY_PROTOCOL='SASL_SSL' "
         "KAFKA_SASL_MECHANISM='AWS_MSK_IAM' "
         "ICEBERG_BRONZE_WAREHOUSE='{{ var.value.bronze_iceberg_warehouse }}' "
@@ -76,6 +79,7 @@ def _flink_step(name: str, entry: str) -> dict:
         "&& aws s3 sync s3://{{ var.value.artifacts_bucket }}/streaming /opt/flink-config-src "
         "&& flink run-application -t yarn-application "
         f"-Dyarn.application.name=flink-{name} "
+        "-Dcontainerized.master.env.BRONZE_SOURCE_SYSTEM={{ var.value.get('bronze_source_system', 'retail-v1') | shellquote }} "
         "-Dstate.checkpoints.dir=s3://{{ var.value.checkpoints_bucket }}/flink/checkpoints/"
         f"{name} "
         "-Dstate.savepoints.dir=s3://{{ var.value.checkpoints_bucket }}/flink/savepoints/"
@@ -125,6 +129,7 @@ with DAG(
     dag_id            = "streaming_manual_flink_jobs",
     default_args      = DEFAULT_ARGS,
     schedule_interval = None,
+    user_defined_filters = {"shellquote": shlex.quote},
     catchup           = False,
     tags              = ["streaming", "flink", "emr"],
     doc_md            = __doc__,

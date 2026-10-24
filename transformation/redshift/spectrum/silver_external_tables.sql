@@ -75,3 +75,50 @@ STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_edges/';
 
 SELECT COUNT(*) AS identity_resolution_rows FROM silver.identity_resolution;
+
+-- Canonical replay outputs (ADR-011). Never glob Iceberg data/ files here.
+-- Spark replaces these exports before downstream dbt/GE tasks start.
+DROP TABLE IF EXISTS silver.clickstream_events;
+CREATE EXTERNAL TABLE silver.clickstream_events (
+    event_id varchar(256),
+    event_type varchar(64),
+    event_time timestamp,
+    session_id varchar(256),
+    client_id varchar(256),
+    customer_id varchar(256),
+    platform varchar(16),
+    app_version varchar(32),
+    properties varchar(65535),
+    schema_version varchar(32),
+    event_date date,
+    source_system varchar(256),
+    kafka_topic varchar(256),
+    kafka_partition integer,
+    kafka_offset bigint,
+    kafka_timestamp timestamp,
+    ingested_at timestamp
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/clickstream_events/';
+
+DROP TABLE IF EXISTS silver.inventory_events;
+CREATE EXTERNAL TABLE silver.inventory_events (
+    event_id varchar(256),
+    event_time timestamp,
+    store_id varchar(256),
+    product_id varchar(256),
+    qty_delta integer,
+    event_type varchar(64),
+    scanner_id varchar(256),
+    is_late boolean,
+    schema_version varchar(32),
+    event_date date,
+    source_system varchar(256),
+    kafka_topic varchar(256),
+    kafka_partition integer,
+    kafka_offset bigint,
+    kafka_timestamp timestamp,
+    ingested_at timestamp
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_events/';

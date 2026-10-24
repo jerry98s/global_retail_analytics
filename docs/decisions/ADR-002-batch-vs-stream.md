@@ -63,3 +63,6 @@ Only the inventory dashboard has a real-time action tied to it.
 - [ADR-007 — Inventory kappa conversion](ADR-007-inventory-kappa.md): `fact_inventory_snapshot`
   reads from **silver** rather than re-aggregating from bronze, so the inventory
   flow is a single-path kappa pipeline rather than split-brain lambda.
+- [ADR-012 — Inventory lambda](ADR-012-inventory-lambda.md): supersedes that
+  Gold input; Spark-covered hours come from canonical events, later hours
+  from `silver.inventory_hourly`.

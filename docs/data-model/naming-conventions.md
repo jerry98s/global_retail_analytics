@@ -7,7 +7,7 @@ Spectrum/dbt**, except where the layer is already implied by schema (`staging.st
 
 | Layer | Redshift | Iceberg namespace | Example table |
 |-------|----------|-------------------|---------------|
-| Bronze (lake) | `bronze.*` (Spectrum external) | `bronze` | `bronze.clickstream_events` |
+| Bronze (lake) | POS Spectrum; raw ledgers via Spark/Iceberg | `bronze` | `bronze.clickstream_records` |
 | Silver (lake) | `silver.*` (Spectrum external) | `silver` | `silver.inventory_hourly` |
 | Staging (dbt) | `staging.*` | — | `staging.stg_clickstream_events` |
 | Intermediate | `intermediate.*` | — | `intermediate.int_session_reconstruction` |
@@ -26,8 +26,8 @@ workgroup — see [platform-layers.md](platform-layers.md) and
 
 | Kafka topic | Iceberg table | S3 path suffix | Spectrum / dbt source |
 |-------------|---------------|----------------|------------------------|
-| `clickstream.events.v1` | `bronze.clickstream_events` | `iceberg/bronze/clickstream_events/data/` | `bronze.clickstream_events` |
-| `inventory.events.v1` | `bronze.inventory_events` | `iceberg/bronze/inventory_events/data/` | `bronze.inventory_events` |
+| `clickstream.events.v1` | `bronze.clickstream_records` | Iceberg-managed; read snapshots | None (raw binary ledger) |
+| `inventory.events.v1` | `bronze.inventory_records` | Iceberg-managed; read snapshots | None (raw binary ledger) |
 | *(batch POS)* | *(Parquet only)* | `iceberg/bronze/pos_transactions/data/` | `bronze.pos_transactions` |
 
 POS is a **batch exception**: grain is line items, not events, so the name stays
@@ -38,11 +38,16 @@ POS is a **batch exception**: grain is line items, not events, so the name stays
 | Kafka topic | Iceberg table | S3 path suffix |
 |-------------|---------------|----------------|
 | `inventory.events.v1` | `silver.inventory_hourly` | `iceberg/silver/inventory_hourly/data/` |
+| Bronze clickstream records | `silver.clickstream_events` | `iceberg/consumer_current/clickstream_events/` |
+| Bronze inventory records | `silver.inventory_events` | `iceberg/consumer_current/inventory_events/` |
 
-`finance.fact_inventory_snapshot` reads from **silver** `inventory_hourly`
-(kappa architecture — see [ADR-007](../decisions/ADR-007-inventory-kappa.md)).
-Bronze `inventory_events` is the audit/replay layer; no Gold model reads it
-directly. Silver is exposed in Redshift via Spectrum
+`finance.fact_inventory_snapshot` reads `int_inventory_hourly`: **silver**
+`inventory_events` for hours Spark has covered, **silver** `inventory_hourly`
+after that (see [ADR-012](../decisions/ADR-012-inventory-lambda.md)).
+Bronze `*_records` is the audit/replay layer (ADR-011); legacy `bronze.*_events`
+is filtered historical data. Canonical Silver event exports replace on each
+successful Spark run; quarantine and duplicates use sibling `*_quarantine` and
+`*_duplicates` Iceberg tables and exports. Silver events are exposed via Spectrum
 (`transformation/redshift/spectrum/silver_external_tables.sql`).
 
 ## S3 layout

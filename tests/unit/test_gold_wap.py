@@ -22,7 +22,6 @@ _REPO = Path(__file__).resolve().parents[2]
 _DBT = _REPO / "transformation" / "dbt_project"
 _DAGS = _REPO / "orchestration" / "airflow" / "dags"
 _PLUGINS = _REPO / "orchestration" / "airflow" / "plugins"
-
 WAP_GOLD_SCHEMAS = ("finance", "marketing", "summary")
 GOLD_INCREMENTAL_MODELS = [
     "models/marts/finance/fact_sales.sql",
@@ -31,6 +30,7 @@ GOLD_INCREMENTAL_MODELS = [
     "models/marts/marketing/fact_customer_session.sql",
     "models/marts/summary/sales_daily_store.sql",
     "models/marts/summary/inventory_daily_product_store.sql",
+    "models/marts/summary/inventory_position_daily.sql",
     "models/marts/summary/sessions_daily_platform.sql",
 ]
 GOLD_DIST_SORT = {
@@ -118,9 +118,99 @@ class TestIncrementalSelfRefsUseThis:
         # activity), it would collide with the existing version's key — the
         # 2026-08-31 pending-audit failure (938 duplicate product_key rows).
         src = _read(_DBT / "models/marts/marketing/dim_product.sql")
-        assert "s.last_seen_date as new_effective_from" in src
         assert "s.effective_from as new_effective_from" not in src
-        assert "when ec.product_id is not null then sp.last_seen_date" in src
+        compact = " ".join(src.split())
+        assert (
+            "greatest( s.last_seen_date, cast({{ dateadd_unit('day', 1, 'e.effective_from') }} as date) )"
+            " as new_effective_from" in compact
+        )
+        assert (
+            "when ec.product_id is not null then greatest( sp.last_seen_date, "
+            "cast({{ dateadd_unit('day', 1, 'ec.effective_from') }} as date) )" in compact
+        )
+
+    def test_product_catalog_attributes_come_from_master(self) -> None:
+        # Sales-derived attributes (average selling price) change on every
+        # load and would open a new SCD2 version per product per day.
+        src = _read(_DBT / "models/intermediate/int_product_catalog.sql")
+        assert "ref('product_master')" in src
+        assert "net_revenue" not in src
+        assert "quantity_sold" not in src
+
+    def test_fact_sales_customer_key_drift_test_present(self) -> None:
+        src = _read(_DBT / "tests/fact_sales_customer_key_matches_identity.sql")
+        assert "severity='warn'" in src
+        assert "ref('int_identity_resolution')" in src
+        assert "i.customer_key <> f.customer_key" in src
+
+    def test_inventory_on_hand_starts_from_opening_balance(self) -> None:
+        # Without an opening count every product/store starts at zero and
+        # the first sale reads as negative stock.
+        src = _read(_DBT / "models/marts/finance/fact_inventory_snapshot.sql")
+        assert "ref('inventory_opening_balance')" in src
+        assert "coalesce(cast(o.opening_qty as numeric(38, 0)), 0)" in src
+
+    def test_inventory_reconciliation_test_present(self) -> None:
+        model = _read(_DBT / "models/intermediate/int_inventory_reconciliation_hourly.sql")
+        assert "source('silver', 'inventory_events')" in model
+        assert "source('silver', 'inventory_hourly')" in model
+        assert "late_dropped_events" in model
+        test = _read(_DBT / "tests/inventory_hourly_reconciles_canonical_events.sql")
+        assert "severity='warn'" in test
+        assert "unexplained_qty <> 0" in test
+        # The open hour is incomplete on the Spark side; comparing it is noise.
+        assert "is_batch_covered" in test
+        assert "ref('int_inventory_batch_coverage')" in model
+
+
+class TestInventoryLambda:
+    """ADR-012: Spark owns covered hours, Flink only the hours after."""
+
+    def test_fact_reads_combined_hourly_not_flink_directly(self) -> None:
+        src = _read(_DBT / "models/marts/finance/fact_inventory_snapshot.sql")
+        assert "ref('int_inventory_hourly')" in src
+        assert "source('silver', 'inventory_hourly')" not in src
+
+    def test_hourly_splits_on_batch_coverage(self) -> None:
+        src = _read(_DBT / "models/intermediate/int_inventory_hourly.sql")
+        assert "source('silver', 'inventory_events')" in src
+        assert "source('silver', 'inventory_hourly')" in src
+        assert "ref('int_inventory_batch_coverage')" in src
+        compact = " ".join(src.split())
+        assert "false as is_estimated from batch_hourly" in compact
+        assert "true as is_estimated from speed_hourly" in compact
+        # No coverage yet (Spark never ran) must keep every Flink hour.
+        assert "c.batch_start_hour_key is null" in compact
+
+    def test_coverage_closes_hours_with_flink_watermark(self) -> None:
+        src = _read(_DBT / "models/intermediate/int_inventory_batch_coverage.sql")
+        assert "var('inventory_silver_watermark_delay_seconds', 60)" in src
+        assert "min(cast(kafka_timestamp as timestamp))" in src
+        assert "max(cast(kafka_timestamp as timestamp))" in src
+
+    def test_fact_rewrites_changed_past_hours(self) -> None:
+        # An append-only "hours after max" filter would never apply a Spark
+        # correction to an hour that is already loaded.
+        src = _read(_DBT / "models/marts/finance/fact_inventory_snapshot.sql")
+        compact = " ".join(src.split())
+        assert "max(snapshot_date_key * 100 + snapshot_hour)" not in compact
+        assert "e.quantity_on_hand <> f.quantity_on_hand" in compact
+        assert "e.is_estimated <> f.is_estimated" in compact
+        # Keep the stored key so delete+insert replaces the row in place.
+        assert "coalesce(e.product_key, p.product_key)" in compact
+        # Stored hours that lost their movement are re-emitted, not left stale.
+        assert "cast(0 as numeric(38, 0)) as qty_delta_hour" in compact
+
+    def test_inventory_summary_rewrites_changed_days(self) -> None:
+        src = _read(_DBT / "models/marts/summary/inventory_daily_product_store.sql")
+        compact = " ".join(src.split())
+        assert "max(snapshot_date_key)" not in compact
+        assert "t.ending_on_hand_qty <> d.ending_on_hand_qty" in compact
+        assert "t.stockout_hour_count <> d.stockout_hour_count" in compact
+
+    def test_is_estimated_allows_speed_layer_hours(self) -> None:
+        yml = _read(_DBT / "tests/fact_sales.yml")
+        assert "values: [false, true]" in yml
 
 
 class TestGoldDistSortPreserved:
@@ -367,58 +457,6 @@ class TestWapPublishHelper:
         assert conn.commits >= 1
 
 
-class TestGePendingRetarget:
-    def test_parse_table_list(self) -> None:
-        from scripts.common.run_ge_checkpoint import parse_table_list
-
-        assert parse_table_list("finance.fact_sales, summary.sales_daily_store") == [
-            ("finance", "fact_sales"),
-            ("summary", "sales_daily_store"),
-        ]
-        assert parse_table_list("") == []
-        with pytest.raises(ValueError):
-            parse_table_list("finance")
-
-    def test_retarget_only_listed_tables(self) -> None:
-        from scripts.common.run_ge_checkpoint import retarget_query
-
-        q = (
-            "SELECT * FROM finance.fact_sales WHERE x = 1; "
-            "SELECT * FROM finance.dim_date; "
-            "SELECT * FROM marketing.dim_product; "
-            "SELECT * FROM marketing.customer_360_view; "
-            "SELECT * FROM bronze.clickstream_events"
-        )
-        out = retarget_query(q, [("finance", "fact_sales"), ("marketing", "dim_product")])
-        assert "finance_pending.fact_sales" in out
-        assert "marketing_pending.dim_product" in out
-        assert "finance.dim_date" in out
-        assert "marketing.customer_360_view" in out
-        assert "bronze.clickstream_events" in out
-        assert "finance_pending.dim_date" not in out
-
-    def test_prepare_validations_filters_and_retargets(self) -> None:
-        from scripts.common.run_ge_checkpoint import prepare_validations
-
-        validations = [
-            {"suite": "fact_sales", "query": "SELECT * FROM finance.fact_sales", "asset": "a", "datasource": "d"},
-            {"suite": "dim_date", "query": "SELECT * FROM finance.dim_date", "asset": "b", "datasource": "d"},
-            {"suite": "c360", "query": "SELECT * FROM marketing.customer_360_view", "asset": "c", "datasource": "d"},
-        ]
-        selected = prepare_validations(validations, [("finance", "fact_sales")])
-        assert len(selected) == 1
-        assert selected[0]["suite"] == "fact_sales"
-        assert "finance_pending.fact_sales" in selected[0]["query"]
-
-    def test_empty_pending_tables_is_live_mode(self) -> None:
-        from scripts.common.run_ge_checkpoint import prepare_validations
-
-        validations = [
-            {"suite": "fact_sales", "query": "SELECT * FROM finance.fact_sales", "asset": "a", "datasource": "d"},
-        ]
-        assert prepare_validations(validations, []) == validations
-
-
 class TestDagWapContract:
     def test_warehouse_clone_then_pending_then_publish(self) -> None:
         src = _read(_DAGS / "warehouse_daily_batch_pipeline.py")
@@ -426,7 +464,9 @@ class TestDagWapContract:
         assert '"wap_phase": "pending"' in src
         assert "wap_publish" in src
         assert "pending_tables" in src
-        assert "--pending-tables" in src
+        # dbt tests are the publish gate; GE no longer re-audits Gold.
+        assert "--pending-tables" not in src
+        assert src.index("dbt_tests") < src.index("wap_publish_gold")
         assert src.index("wap_clone") < src.index("dbt_marts")
         assert src.index("wap_publish") < src.index("redshift_analyze")
         # Warehouse no longer builds or publishes dim_product.
@@ -461,6 +501,9 @@ class TestDagWapContract:
 
     def test_hourly_ge_stays_on_live(self) -> None:
         src = _read(_DAGS / "quality_hourly_ge_checkpoint.py")
+        assert "run_ge_checkpoint.py" in src
+        assert "--checkpoint silver_events_daily" in src
+        assert "great_expectations checkpoint run" not in src
         assert "--pending-tables" not in src
         assert "--schema-suffix" not in src
         assert "wap_phase" not in src

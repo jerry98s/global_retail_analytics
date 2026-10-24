@@ -1,7 +1,7 @@
-"""Canonical event-type enums and platform values for Flink bronze jobs.
+"""Canonical event-type enums and platform values for typed event processing.
 
-Single source of truth for the SQL `valid_predicate` filters in
-`inventory_bronze_job.py` and `clickstream_bronze_job.py`. The values MUST
+Raw Bronze never filters by these enums (ADR-011). Spark's separately packaged
+replay parser is parity-tested against these constants. The values MUST
 match the JSON Schema enums in `ingestion/schemas/*.json` —
 `tests/unit/test_event_types.py` pins that contract.
 

@@ -37,8 +37,7 @@ _FLINK_JOBS = _STREAMING / "flink_jobs"
 _CONFIG = _STREAMING / "config"
 
 _STREAMING_JOB_FILES = [
-    "inventory_bronze_job.py",
-    "clickstream_bronze_job.py",
+    "raw_bronze.py",
     "inventory_silver_job.py",
 ]
 
@@ -230,7 +229,7 @@ class TestJobsCallApplyStateConfig:
     def test_calls_apply_state_config(self, job_file: str) -> None:
         src = _read(_FLINK_JOBS / job_file)
         assert re.search(
-            r"apply_state_config\s*\(\s*env\s*,\s*t_env\s*,\s*state_cfg\s*\)",
+            r"apply_state_config\s*\(\s*env\s*,\s*(?:t_env|table_env)\s*,",
             src,
         ), (
             f"{job_file}: must call apply_state_config(env, t_env, state_cfg) "
@@ -347,9 +346,8 @@ class TestResolveParallelism:
 
     def test_jobs_call_resolve_parallelism(self) -> None:
         for job_file, topic_key in [
-            ("inventory_bronze_job.py", "inventory_parallelism"),
+            ("raw_bronze.py", "stream + '_parallelism'"),
             ("inventory_silver_job.py", "inventory_parallelism"),
-            ("clickstream_bronze_job.py", "clickstream_parallelism"),
         ]:
             src = _read(_FLINK_JOBS / job_file)
             assert "resolve_parallelism" in src, (
@@ -384,7 +382,6 @@ class TestWatermarkIntervalSql:
 
     def test_inventory_jobs_use_watermark_helper(self) -> None:
         for job_file, key in [
-            ("inventory_bronze_job.py", "inventory_bronze_watermark_delay_seconds"),
             ("inventory_silver_job.py", "inventory_silver_watermark_delay_seconds"),
         ]:
             src = _read(_FLINK_JOBS / job_file)

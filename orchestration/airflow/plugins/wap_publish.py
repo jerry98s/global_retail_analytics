@@ -92,6 +92,7 @@ WAP_TABLES: list[tuple[str, str]] = [
     ("marketing", "identity_graph"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
+    ("summary", "inventory_position_daily"),
     ("summary", "sessions_daily_platform"),
 ]
 
@@ -102,6 +103,7 @@ FINANCE_SUMMARY_TABLES: list[tuple[str, str]] = [
     ("finance", "fact_inventory_snapshot"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
+    ("summary", "inventory_position_daily"),
 ]
 
 MARKETING_TABLES: list[tuple[str, str]] = [
@@ -346,6 +348,7 @@ def publish_gold(
         # Separate transaction: the swap is already durable, so failing to
         # drop the old copies must not roll the publish back.
         try:
+            _begin(conn, dialect)
             for old_fqn in old_copies:
                 _exec(conn, f"DROP TABLE IF EXISTS {old_fqn}", dialect)
             _commit(conn, dialect)

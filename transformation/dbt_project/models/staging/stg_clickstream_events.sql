@@ -12,4 +12,4 @@ select
     cast(properties as varchar(65535)) as properties,
     cast(schema_version as varchar) as schema_version,
     cast(event_date as date) as event_date
-from {{ source('bronze', 'clickstream_events') }}
+from {{ source('silver', 'clickstream_events') }}

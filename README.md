@@ -8,6 +8,11 @@
 
 # Global Retail Analytics Platform
 
+Cloud Bronze now retains raw Kafka bytes and transport metadata; Spark performs
+validation and deduplication in Silver. Before upgrading an existing deployment,
+follow the [cloud rollout/replay guide](docs/runbooks/bronze-replay.md).
+No infrastructure deployment is performed by this code migration.
+
 A runnable data-engineering portfolio project: real-time inventory and
 clickstream ingestion, governed finance and Customer 360 marts, and a local
 Docker/DuckDB path that does not require an AWS account.
@@ -25,8 +30,8 @@ From the latest full local run (2026-08-31, fresh volumes — raw evidence in
 | Streaming ingestion | 40,990 clickstream + 9,001 inventory events → **landed in Iceberg Bronze** (0 lost, 0 DLQ) |
 | Batch | 1,453 POS line items → 1,453 `finance.fact_sales` rows (exact 1:1) |
 | Spark identity | GraphFrames connected components (Docker Spark) → **19,633 identifier→identity rows** in `silver.identity_resolution` |
-| Transformation | **18/18 dbt models built** via Write-Audit-Publish (pending → audit → publish) · **122/122 dbt tests pass** |
-| Data quality | **11/11 Great Expectations checks pass · 325/325 unit tests pass** (153/153 recorded DQ results) |
+| Transformation | **18/18 dbt models built** via Write-Audit-Publish (pending → audit → publish); dbt tests gate every publish |
+| Data quality | Current unit, dbt and Great Expectations results are in the [CI runs](https://github.com/jerry98s/global_retail_analytics/actions) for each commit |
 | Identity / C360 | Consent-gated Customer 360: **3,431 rows** in `customer_360_view` / `customer_360_serving` |
 
 | | |
@@ -68,7 +73,7 @@ or one latency target.
 | Analytics engineering | dbt staging → intermediate → finance/marketing marts |
 | Dimensional modelling | Kimball facts/dims; SCD Type 2 only on `dim_product` |
 | Identity / C360 | Spark GraphFrames connected components (ADR-010), public-device exclusion, consent gate |
-| Data quality | JSON Schema contracts, dbt tests, Great Expectations, pytest |
+| Data quality | JSON Schema contracts, dbt tests (Gold gate), Great Expectations (Silver events), pytest |
 | Orchestration | Six Airflow DAGs (batch, C360, Flink, SCD2, GE, Iceberg maintenance) |
 | Infrastructure | Terraform: S3, MSK, EMR, Redshift Serverless, MWAA, App Runner |
 | Operations | ADRs + runbooks (replay, backfill, DLQ, consent, Kafka, Flink, Iceberg) |
@@ -169,7 +174,7 @@ DuckDB — no Redshift credentials required.
 | `spark/` | GraphFrames identity-resolution job + deterministic reference rules |
 | `transformation/` | dbt project + Redshift DDL / Spectrum / serving views |
 | `orchestration/` | Airflow DAGs + plugins |
-| `quality/` | Great Expectations suites |
+| `quality/` | Great Expectations Silver event contract checks |
 | `tests/` | Offline unit + DuckDB integration tests |
 | `metadata/` | Governed object + metric catalog (YAML) for `metadata.meta.*` |
 | `infra/` | Docker Compose, Flink + Spark images, Terraform, EMR bootstrap |
@@ -189,10 +194,13 @@ DuckDB — no Redshift credentials required.
 | [ADR-004](./docs/decisions/ADR-004-cost-model.md) | Illustrative cost model |
 | [ADR-005](./docs/decisions/ADR-005-warehouse-redshift.md) | Why Redshift Serverless |
 | [ADR-006](./docs/decisions/ADR-006-flink-vs-spark.md) | Why Flink vs Spark Streaming |
-| [ADR-007](./docs/decisions/ADR-007-inventory-kappa.md) | Inventory kappa path |
+| [ADR-007](./docs/decisions/ADR-007-inventory-kappa.md) | Inventory kappa path (superseded in part by ADR-012) |
 | [ADR-008](./docs/decisions/ADR-008-metadata-database.md) | Operational metadata DB |
 | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) | Write-Audit-Publish for Gold |
 | [ADR-010](./docs/decisions/ADR-010-spark-graphframes-identity.md) | Spark GraphFrames for identity resolution |
+| [ADR-011](./docs/decisions/ADR-011-replayable-bronze.md) | Replayable raw Bronze, Spark canonical Silver |
+| [ADR-012](./docs/decisions/ADR-012-inventory-lambda.md) | Inventory lambda: Spark owns covered hours |
+| [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) | dbt Semantic Layer (MetricFlow) for metrics |
 
 Cost figures are planning scenarios, not observed cloud bills.
 
@@ -297,7 +305,7 @@ AWS production deployment or a measured 10k events/s load test.
 ## Suggested portfolio walkthrough
 
 1. Start with the three business latency requirements.
-2. Explain why inventory has a kappa path while finance remains batch.
+2. Explain why inventory streams through Flink with Spark correcting closed hours, while finance remains batch.
 3. Show one invalid event reaching a DLQ.
 4. Walk through product SCD2 and identity-resolution tests.
 5. Open the Streamlit dashboard and Flink checkpoint view.

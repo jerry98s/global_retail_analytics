@@ -121,12 +121,13 @@ def test_all_incremental_models_covered() -> None:
     incremental materialization itself)."""
     # Known count as of 2026-08-29 (ADR-010: int_identity_resolution became a
     # view over the Spark silver.identity_resolution source, dropping the
-    # count from 12 to 11):
+    # count from 12 to 11; inventory_position_daily brought it back to 12):
     #   fact_sales, fact_inventory_snapshot, fact_customer_session,
     #   dim_customer, dim_product, identity_graph,
     #   int_rfm_scoring, int_session_reconstruction,
-    #   sales_daily_store, inventory_daily_product_store, sessions_daily_platform
-    assert len(_INCREMENTAL_MODELS) == 11, (
-        f"Expected 11 incremental models, found {len(_INCREMENTAL_MODELS)}: "
+    #   sales_daily_store, inventory_daily_product_store,
+    #   inventory_position_daily, sessions_daily_platform
+    assert len(_INCREMENTAL_MODELS) == 12, (
+        f"Expected 12 incremental models, found {len(_INCREMENTAL_MODELS)}: "
         f"{[str(p.relative_to(_REPO_ROOT)) for p in _INCREMENTAL_MODELS]}"
     )

@@ -32,7 +32,10 @@ param(
     [string]$Action = 'all',
 
     [ValidateSet('clickstream', 'inventory-bronze', 'inventory-snapshot', 'inventory', 'all')]
-    [string]$Job = 'all'
+    [string]$Job = 'all',
+
+    [ValidatePattern('^[A-Za-z0-9_.:-]{1,128}$')]
+    [string]$BronzeSourceSystem = 'retail-v1'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,12 +71,7 @@ function Sync-Artifacts([string]$Bucket) {
 
 function Sync-Mwaa([string]$Bucket) {
     Write-Host "==> Syncing MWAA assets to s3://$Bucket/mwaa/" -ForegroundColor Cyan
-    # Keep plugins copy of metadata_observer in sync with scripts/common.
-    Copy-Item -Force `
-        (Join-Path $RepoRoot 'scripts/common/metadata_observer.py') `
-        (Join-Path $RepoRoot 'orchestration/airflow/plugins/metadata_observer.py')
     aws s3 sync (Join-Path $RepoRoot 'orchestration/airflow/dags') "s3://$Bucket/mwaa/dags/" --exclude "__pycache__/*"
-    aws s3 sync (Join-Path $RepoRoot 'orchestration/airflow/plugins') "s3://$Bucket/mwaa/plugins/" --exclude "__pycache__/*"
     aws s3 sync (Join-Path $RepoRoot 'scripts/common') "s3://$Bucket/mwaa/scripts/common/" --exclude "__pycache__/*"
     aws s3 sync (Join-Path $RepoRoot 'metadata/catalog') "s3://$Bucket/mwaa/metadata/catalog/" --exclude "__pycache__/*"
     aws s3 sync (Join-Path $RepoRoot 'transformation/dbt_project') "s3://$Bucket/mwaa/dbt_project/" `
@@ -82,6 +80,7 @@ function Sync-Mwaa([string]$Bucket) {
     aws s3 sync (Join-Path $RepoRoot 'ingestion') "s3://$Bucket/ingestion/" --exclude "__pycache__/*"
     if ($LASTEXITCODE -ne 0) { throw "MWAA sync failed" }
     Write-Host "DAGs synced. MWAA picks up changes within ~5 minutes."
+    Write-Host "Plugins ship in plugins.zip: run_terraform.ps1 -Stack platform -Action apply."
 }
 
 function Sync-SparkCode([string]$Bucket) {
@@ -112,7 +111,7 @@ function Submit-SparkIdentityResolution {
     $cmd = "aws s3 sync s3://$artifactsBucket/spark /opt/spark-identity " +
         "&& cd /opt/spark-identity/identity_resolution " +
         "&& spark-submit --master yarn --deploy-mode cluster --packages $packages " +
-        "--py-files graph_logic.py identity_resolution_job.py " +
+        "--py-files graph_logic.py,canonical_events.py,event_contract.py identity_resolution_job.py " +
         "--bronze-warehouse $bronzeWarehouse " +
         "--silver-warehouse $silverWarehouse " +
         "--pos-parquet-path $posPath " +
@@ -196,6 +195,7 @@ function Submit-FlinkJobs {
         $stepArgs = @(
             'bash', '-lc',
             "export KAFKA_BOOTSTRAP_SERVERS='$mskBootstrap' " +
+                "BRONZE_SOURCE_SYSTEM='$BronzeSourceSystem' " +
                 "KAFKA_SECURITY_PROTOCOL='SASL_SSL' " +
                 "KAFKA_SASL_MECHANISM='AWS_MSK_IAM' " +
                 "ICEBERG_BRONZE_WAREHOUSE='s3://$bronzePrefix/iceberg' " +
@@ -207,6 +207,7 @@ function Submit-FlinkJobs {
                 "&& aws s3 sync s3://$artifactsBucket/streaming /opt/flink-config-src " +
                 "&& flink run-application -t yarn-application " +
                 "-Dyarn.application.name=$stepName " +
+                "-Dcontainerized.master.env.BRONZE_SOURCE_SYSTEM=$BronzeSourceSystem " +
                 "-Dstate.checkpoints.dir=s3://$checkpointsBucket/flink/checkpoints/$JobName " +
                 "-Dstate.savepoints.dir=s3://$checkpointsBucket/flink/savepoints/$JobName " +
                 "-pyfs /opt/flink-config-src/flink_jobs " +
@@ -264,7 +265,7 @@ function Invoke-PlatformVerify {
     if (-not $bronze) {
         Write-Host "  S3 bronze: skipped (no bronze_bucket_name output)" -ForegroundColor Yellow
     } else {
-        foreach ($prefix in @('iceberg/bronze/clickstream_events/', 'iceberg/bronze/inventory_events/', 'iceberg/bronze/pos_transactions/')) {
+        foreach ($prefix in @('iceberg/bronze/clickstream_records/', 'iceberg/bronze/inventory_records/', 'iceberg/bronze/pos_transactions/')) {
             $count = (aws s3 ls "s3://$bronze/$prefix" --recursive --summarize --region $Region 2>$null |
                 Select-String 'Total Objects:' | ForEach-Object { ($_ -split ':')[-1].Trim() })
             $objCount = if ($count) { [int]$count } else { 0 }
@@ -326,6 +327,7 @@ function Show-AirflowVariables {
 
     Write-Host ""
     Write-Host "Manual (from tfvars, not in outputs):" -ForegroundColor Yellow
+    Write-Host "  bronze_source_system         = $BronzeSourceSystem (match -BronzeSourceSystem; change after topic recreation)"
     Write-Host "  redshift_user                = rs_admin (or your admin user)"
     Write-Host ""
     Write-Host "Do NOT set a redshift_password Variable. Tasks read the password" -ForegroundColor Yellow

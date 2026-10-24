@@ -14,7 +14,7 @@ import re
 import pytest
 
 from ingestion.kafka.producer_sim.clickstream_producer import ClickstreamEvent
-from ingestion.kafka.producer_sim.inventory_producer import InventoryEvent
+from ingestion.kafka.producer_sim.inventory_producer import QTY_BY_EVENT_TYPE, InventoryEvent
 from ingestion.kafka.producer_sim.pos_producer import PosTransactionLine
 from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCTS, STORES
 from streaming.flink_jobs.event_types import (
@@ -81,7 +81,6 @@ class TestPosTransactionLine:
 
 
 class TestInventoryEvent:
-    ALLOWED_DELTAS = {-3, -2, -1, 5, 10, 20}
     ALLOWED_TYPES = set(INVENTORY_EVENT_TYPES)
 
     def test_schema_version_pinned(self):
@@ -104,9 +103,18 @@ class TestInventoryEvent:
     def test_invariants_over_sample(self):
         for _ in range(500):
             ev = InventoryEvent.generate()
-            assert ev.qty_delta in self.ALLOWED_DELTAS
             assert ev.event_type in self.ALLOWED_TYPES
+            assert ev.qty_delta in QTY_BY_EVENT_TYPE[ev.event_type]
             assert ev.store_id in STORES
             assert ev.product_id in PRODUCTS
             assert re.match(r"^SCANNER-\d{2}$", ev.scanner_id)
             assert re.match(r"^\d+\.\d+\.\d+$", ev.schema_version)
+
+    def test_quantity_sign_follows_event_type(self):
+        events = [InventoryEvent.generate() for _ in range(2000)]
+        by_type = {t: [e.qty_delta for e in events if e.event_type == t] for t in self.ALLOWED_TYPES}
+        assert all(q < 0 for q in by_type["sale_deduction"])
+        assert all(q < 0 for q in by_type["transfer"])
+        assert all(q > 0 for q in by_type["receipt"])
+        assert {q > 0 for q in by_type["adjustment"]} == {True, False}
+        assert set(QTY_BY_EVENT_TYPE) == self.ALLOWED_TYPES

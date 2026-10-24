@@ -65,7 +65,7 @@ models:
               - line_item_number
 
   - name: fact_inventory_snapshot
-    description: "Inventory snapshot fact at hourly grain. Kappa path: reads from silver.inventory_hourly (Flink output) and adds running-balance + surrogate-key joins."
+    description: "Inventory snapshot fact at hourly grain. Lambda path (ADR-012): reads int_inventory_hourly (Spark canonical events for covered hours, Flink silver.inventory_hourly after) and adds running-balance + surrogate-key joins."
     columns:
       - name: snapshot_date_key
         description: "Snapshot date key (YYYYMMDD)."
@@ -103,14 +103,18 @@ models:
         tests: [not_null]
       - name: quantity_available
         description: "max(quantity_on_hand, 0) — floored so temporary over-ship reads as 0, not negative."
-        tests: [not_null]
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
       - name: is_estimated
-        description: "Whether this hour's delta was estimated. Currently always FALSE; propagated from silver for forward compatibility."
+        description: "TRUE when the hour still comes from the Flink speed layer and can change once Spark covers it; FALSE once it comes from Spark canonical events."
         tests:
           - not_null
           - accepted_values:
               arguments:
-                values: [false]
+                values: [false, true]
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:

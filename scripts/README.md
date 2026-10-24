@@ -9,7 +9,8 @@ right order; run a sibling directly only when you need its full flag set.
 | Script | Purpose |
 |--------|---------|
 | **`run_cloud_stack.ps1`** | **Wrapper** — cloud lifecycle tasks: `apply` / `bootstrap` / `deploy` / `producers` / `spark` / `verify` / `status` / `all`. `-Task all` is infrastructure + streaming smoke only; the Gold E2E remains the guided runbook. |
-| `run_terraform.ps1` | Terraform — bootstrap + platform apply/plan/destroy/**output** |
+| `run_terraform.ps1` | Terraform — bootstrap + platform apply/plan/destroy/**output**. Platform validate/plan/apply/destroy first builds the MWAA `plugins.zip` |
+| `build_mwaa_plugins.py` | Builds gitignored `infra/terraform/modules/mwaa/plugins.zip`: Airflow plugins + `metadata_observer.py` + `metadata_catalog/` (catalog and semantic YAML). Plugin changes reach MWAA through `run_terraform.ps1 -Action apply`, not `mwaa-sync` |
 | `bootstrap_redshift.ps1` | Generate combined Redshift DDL + seeds + Spectrum SQL (+ optional metadata DB) |
 | `deploy_platform.ps1` | Post-apply — sync MWAA, submit Flink, Airflow vars, status, **verify** (smoke checks) |
 | `run_msk_producers.ps1` | Publish clickstream/inventory to MSK via EMR step (MSK IAM) |
@@ -30,7 +31,7 @@ Airflow; see `docs/runbooks/dev-cloud-test-run.md`.
 |--------|---------|
 | **`run_local_stack.ps1`** | **Wrapper** — local Docker stack: `up` / `topics` / `simulate` / `flink` / `flink-stop` / `pos-parquet` / `spark` / `load-duckdb` / `dbt` / `quality` / `all`. Default `-DbtSource iceberg` reuses Flink/Spark Parquet for dbt; `-DbtSource seeds` uses CSV fixtures. Uses repo **`.venv`** (create with `uv sync --group dev`). |
 | `load_iceberg_to_duckdb.py` | Sub-script invoked by `run_local_stack -Task load-duckdb` (and `-Task dbt` in iceberg mode). Materializes Flink Iceberg Parquet + POS Parquet into `local_retail.duckdb` as `bronze.*` / `silver.*` tables matching dbt `source()` names. |
-| `run_ge_local.py` | Sub-script invoked by `run_local_stack -Task quality`. Runs the GE `gold_layer_local` checkpoint against DuckDB (Pandas-batch port of the cloud Redshift checkpoint) + records the run via `metadata_observer`. |
+| `run_ge_local.py` | Sub-script invoked by `run_local_stack -Task quality`. Runs the GE `silver_events_local` checkpoint (Silver event contract) against DuckDB (Pandas-batch port of the cloud Redshift checkpoint) + records the run via `metadata_observer`. |
 
 ## `scripts/common/` — shared Python (imported, not run directly)
 
@@ -89,7 +90,7 @@ Equivalent manual sequence (when you need per-script flags):
 .\scripts\local\run_local_stack.ps1 -Task pos-parquet
 .\scripts\local\run_local_stack.ps1 -Task spark      # GraphFrames identity; writes current-run export
 .\scripts\local\run_local_stack.ps1 -Task dbt        # Iceberg -> DuckDB + dim seeds
-.\scripts\local\run_local_stack.ps1 -Task quality    # dbt test + GE gold_layer_local + pytest
+.\scripts\local\run_local_stack.ps1 -Task quality    # dbt test + GE silver_events_local + pytest
 .\scripts\local\run_local_stack.ps1 -Task all        # includes POS + Spark before dbt
 ```
 

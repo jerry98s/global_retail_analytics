@@ -76,7 +76,7 @@ def _spark_identity_step() -> dict:
         "aws s3 sync s3://{{ var.value.artifacts_bucket }}/spark /opt/spark-identity "
         "&& cd /opt/spark-identity/identity_resolution "
         f"&& spark-submit --master yarn --deploy-mode cluster --packages {SPARK_PACKAGES} "
-        "--py-files graph_logic.py identity_resolution_job.py "
+        "--py-files graph_logic.py,canonical_events.py,event_contract.py identity_resolution_job.py "
         "--bronze-warehouse {{ var.value.bronze_iceberg_warehouse }} "
         "--silver-warehouse {{ var.value.silver_iceberg_warehouse }} "
         "--pos-parquet-path {{ var.value.pos_bronze_s3_path }} "

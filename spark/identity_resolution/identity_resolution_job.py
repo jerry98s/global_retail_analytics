@@ -2,7 +2,7 @@
 
 Replaces the dbt bounded N-hop connected-components models
 (``int_identity_edges`` / ``int_identity_components``) with a true graph
-computation. Reads bronze clickstream (Iceberg) and POS loyalty IDs
+computation. Promotes raw Bronze into canonical Silver and reads canonical clickstream (Iceberg) and POS loyalty IDs
 (Parquet), builds the identity graph, runs GraphFrames connected
 components, and writes:
 
@@ -44,6 +44,11 @@ from urllib.parse import urlparse
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
+
+try:
+    from .canonical_events import promote_events
+except ImportError:
+    from canonical_events import promote_events
 
 try:  # package import in tests; script import under spark-submit
     from .graph_logic import (
@@ -98,11 +103,13 @@ EDGES_TABLE = f"{SILVER_CATALOG}.silver.identity_edges"
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GraphFrames identity resolution")
+    parser.add_argument('--canonical-only', action='store_true',
+                        help='Replay Bronze into canonical Silver and audit tables; skip identity/POS')
     parser.add_argument("--bronze-warehouse", required=True,
-                        help="Iceberg Hadoop catalog warehouse holding bronze.clickstream_events")
+                        help="Iceberg Hadoop catalog warehouse holding bronze.*_records")
     parser.add_argument("--silver-warehouse", required=True,
                         help="Iceberg Hadoop catalog warehouse for silver.identity_* output")
-    parser.add_argument("--pos-parquet-path", required=True,
+    parser.add_argument("--pos-parquet-path",
                         help="POS batch Parquet path (plain Parquet, not Iceberg)")
     parser.add_argument("--checkpoint-dir", default="/tmp/graphframes-checkpoints",
                         help="GraphFrames checkpoint dir (S3 on EMR, local path otherwise)")
@@ -139,6 +146,7 @@ def _build_session(args: argparse.Namespace) -> SparkSession:
     elif args.master:
         builder = builder.master(args.master)
     spark = builder.getOrCreate()
+    spark.conf.set('spark.sql.session.timeZone', 'UTC')
     spark.sparkContext.setCheckpointDir(args.checkpoint_dir)
     return spark
 
@@ -360,7 +368,13 @@ def main() -> None:
     args = _parse_args()
     spark = _build_session(args)
 
-    clickstream = spark.table(f"{BRONZE_CATALOG}.bronze.clickstream_events")
+    if not args.canonical_only and not args.pos_parquet_path:
+        raise ValueError('--pos-parquet-path is required unless --canonical-only is set')
+    events = promote_events(spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args))
+    if args.canonical_only:
+        spark.stop()
+        return
+    clickstream = events['clickstream']
     pos = spark.read.parquet(args.pos_parquet_path)
 
     edges, public_devices = build_edges(clickstream, pos, args.public_device_threshold)

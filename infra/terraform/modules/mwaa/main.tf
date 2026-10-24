@@ -162,6 +162,9 @@ resource "aws_mwaa_environment" "this" {
   requirements_s3_path = "mwaa/requirements.txt"
   plugins_s3_path      = "mwaa/plugins.zip"
 
+  # Pin the uploaded version so a rebuilt zip updates the environment.
+  plugins_s3_object_version = aws_s3_object.plugins.version_id
+
   max_workers = var.max_workers
   min_workers = var.min_workers
 

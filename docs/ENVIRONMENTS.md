@@ -119,27 +119,31 @@ For querying the local Iceberg warehouse: see
 
 ```
 MSK topics
-  ├─ inventory.events.v1  → Flink inventory_bronze  → s3://…-bronze/iceberg/bronze/inventory_events/
+  ├─ inventory.events.v1  → Flink inventory_bronze  → s3://…-bronze/iceberg/bronze/inventory_records/
   ├─ (same topic)         → Flink inventory_hourly   → s3://…-silver/iceberg/silver/inventory_hourly/
-  └─ clickstream.events.v1 → Flink clickstream_bronze → s3://…-bronze/iceberg/bronze/clickstream_events/
+  └─ clickstream.events.v1 → Flink clickstream_bronze → s3://…-bronze/iceberg/bronze/clickstream_records/
 
 Airflow warehouse_daily_batch_pipeline (00:15 UTC)
   └─ generate_pos_parquet → s3://…-bronze/iceberg/bronze/pos_transactions/data/dt=…/
 
 Redshift Spectrum (transformation/redshift/spectrum/bronze_external_tables.sql)
-  └─ bronze.{inventory_events, clickstream_events, pos_transactions}
+  ├─ bronze.pos_transactions (batch)
+  └─ silver.{inventory_events, clickstream_events} (Spark canonical exports)
 
 dbt (staging → intermediate → marts) → finance.* / marketing.* / summary.*
 
-GE checkpoint gold_layer_daily → validates fact_sales + dim_product + dim_customer + customer_360_view + fact_inventory_snapshot + inventory_bronze
+GE checkpoint silver_events_daily → validates silver.{inventory_events, clickstream_events} (Gold is gated by dbt tests in WAP)
 
 metadata DB (same Redshift workgroup; local branch: local_metadata.duckdb)
   └─ meta.{layer_catalog, metric_catalog, pipeline_run, table_freshness, dq_check_result}
 ```
 
-**Deploy order:** `tf apply` → `deploy_platform.ps1 -Env dev` → `bronze_external_tables.sql` →
-`bootstrap_redshift.ps1 -MetadataOnly` → `deploy_platform.ps1 -Action airflow-vars`
-(+ password, `redshift_metadata_database`) → wait for or trigger `warehouse_daily_batch_pipeline`.
+**Data rollout order:** infrastructure via `run_terraform.ps1`, raw Flink jobs,
+committed Bronze snapshots + POS, Spark promotion/identity, then Spectrum SQL
+generated with `bootstrap_redshift.ps1 -IncludeSilver -IncludeMetadata`.
+Apply that SQL and audit before enabling dbt/catalog/GE consumers. Preserve
+`BronzeSourceSystem` across ordinary restarts; match the `bronze_source_system`
+MWAA variable to the CLI setting. See [the cloud replay runbook](runbooks/bronze-replay.md).
 
 ---
 

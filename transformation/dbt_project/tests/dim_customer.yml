@@ -19,8 +19,12 @@ models:
               arguments:
                 values: ['platinum', 'gold', 'standard']
       - name: rfm_segment
-        description: "RFM segment label from int_rfm_scoring (e.g., champion, loyal, at_risk, general)."
-        tests: [not_null]
+        description: "RFM segment label from int_rfm_scoring; general when RFM is unavailable."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['champions', 'loyal', 'at_risk', 'general']
       - name: churn_risk_score
         description: "Churn risk score in [0, 1]. Higher = more likely to churn. Derived from recency_days."
         tests:
@@ -31,7 +35,11 @@ models:
                 max_value: 1
       - name: total_lifetime_value
         description: "Total lifetime value (monetary_value from int_rfm_scoring); 0 when RFM is unavailable."
-        tests: [not_null]
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
       - name: marketing_consent
         description: "Marketing consent flag. True if loyalty_id is known OR explicit_marketing_consent is recorded."
         tests: [not_null]
@@ -158,7 +166,11 @@ models:
                   - 'unknown'
       - name: is_public_device
         description: "True for client_ids that hit the public-device threshold (excluded from identity merge but kept for audit). Always false in identity_graph (filtered out upstream in int_identity_resolution)."
-        tests: [not_null]
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [false]
       - name: is_active
         description: "Row activity flag for future soft-delete support. Currently always true."
         tests: [not_null]

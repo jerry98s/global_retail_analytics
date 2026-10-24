@@ -45,21 +45,21 @@ models:
         description: "Natural product id (POS or inventory-only SKU)."
         tests: [not_null]
       - name: sku
-        description: "Stock-keeping unit; equals product_id for simulator-generated products."
+        description: "Stock-keeping unit from reference.product_master; product_id when the product is missing from the master."
       - name: product_name
-        description: "Product name; equals product_id for simulator-generated products."
+        description: "Product name from reference.product_master; product_id when missing from the master."
       - name: brand
-        description: "Brand classification: PRIVATE_LABEL (inventory-only) or RETAIL (POS-known)."
+        description: "Brand from reference.product_master; UNKNOWN when missing from the master."
       - name: category_l1
-        description: "Top-level category; currently always GENERAL."
+        description: "Top-level category from reference.product_master; UNKNOWN when missing."
       - name: category_l2
-        description: "Second-level category; currently always MERCHANDISE."
+        description: "Second-level category from reference.product_master; UNKNOWN when missing."
       - name: unit_cost
-        description: "POS-weighted average unit cost (net_revenue / quantity_sold). Zero for inventory-only SKUs."
+        description: "Catalog purchase cost per unit from reference.product_master; NULL when missing. Not derived from sales."
       - name: supplier_id
-        description: "Supplier identifier; currently always UNKNOWN."
+        description: "Supplier from reference.product_master; UNKNOWN when missing."
       - name: effective_from
-        description: "SCD2 validity start (date). First version: earliest POS transaction date or earliest inventory event date. Later versions: catalog last_seen_date when the attribute change was observed."
+        description: "SCD2 validity start (date). First version: earliest POS or inventory activity date. Later versions: catalog last_seen_date when the attribute change was observed, moved to the day after the prior version's effective_from if needed to keep product_key unique."
         tests: [not_null]
       - name: effective_to
         description: "SCD2 validity end (date). NULL for the current version; non-NULL for closed (historical) versions."
@@ -67,7 +67,7 @@ models:
         description: "Current record marker for SCD2. Exactly one true per product_id."
         tests: [not_null]
       - name: record_hash
-        description: "SHA-256 of (product_id || brand || unit_cost). Change detection signal for SCD2."
+        description: "SHA-256 of the catalog attributes (sku, product_name, brand, categories, unit_cost, supplier_id). Change detection signal for SCD2."
         tests: [not_null]
     tests:
       - no_scd2_overlaps:

@@ -40,8 +40,7 @@ _FLINK_JOBS = _REPO_ROOT / "streaming" / "flink_jobs"
 # Files containing a Kafka *source* table (one per job). DLQ sinks are
 # Kafka producers and don't need the consumer reliability props.
 _KAFKA_SOURCE_FILES = [
-    "inventory_bronze_job.py",
-    "clickstream_bronze_job.py",
+    "raw_bronze.py",
     "inventory_silver_job.py",
 ]
 

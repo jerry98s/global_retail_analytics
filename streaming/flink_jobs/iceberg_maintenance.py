@@ -5,7 +5,7 @@ Runs as a one-shot Flink batch job (not streaming) via the
 `lakehouse_daily_iceberg_maintenance` Airflow DAG. Closes DL-D from the data lake
 checklist applied 2026-07-05.
 
-Operations per table (bronze.inventory_events, bronze.clickstream_events,
+Operations per table (bronze.inventory_records, bronze.clickstream_records,
 silver.inventory_hourly):
 
   1. rewrite_data_files  — merges small files into target-size files
@@ -47,8 +47,8 @@ from _config import (  # noqa: E402
 )
 from lake_names import (  # noqa: E402
     BRONZE_NAMESPACE,
-    CLICKSTREAM_EVENTS,
-    INVENTORY_EVENTS,
+    CLICKSTREAM_RECORDS,
+    INVENTORY_RECORDS,
     INVENTORY_HOURLY,
     SILVER_NAMESPACE,
 )
@@ -145,8 +145,8 @@ def run() -> None:
 
     # (catalog, namespace.table, retention_days, label)
     targets = [
-        (bronze_catalog, f"{BRONZE_NAMESPACE}.{INVENTORY_EVENTS}", BRONZE_SNAPSHOT_RETENTION_DAYS, "bronze.inventory_events"),
-        (bronze_catalog, f"{BRONZE_NAMESPACE}.{CLICKSTREAM_EVENTS}", BRONZE_SNAPSHOT_RETENTION_DAYS, "bronze.clickstream_events"),
+        (bronze_catalog, f"{BRONZE_NAMESPACE}.{INVENTORY_RECORDS}", BRONZE_SNAPSHOT_RETENTION_DAYS, "bronze.inventory_records"),
+        (bronze_catalog, f"{BRONZE_NAMESPACE}.{CLICKSTREAM_RECORDS}", BRONZE_SNAPSHOT_RETENTION_DAYS, "bronze.clickstream_records"),
         (silver_catalog, f"{SILVER_NAMESPACE}.{INVENTORY_HOURLY}", SILVER_SNAPSHOT_RETENTION_DAYS, "silver.inventory_hourly"),
     ]
 

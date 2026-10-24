@@ -10,4 +10,4 @@ select
     cast(scanner_id as varchar) as scanner_id,
     coalesce(cast(is_late as boolean), false) as is_late,
     cast(schema_version as varchar) as schema_version
-from {{ source('bronze', 'inventory_events') }}
+from {{ source('silver', 'inventory_events') }}

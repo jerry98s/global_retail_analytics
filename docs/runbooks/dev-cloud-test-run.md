@@ -100,7 +100,15 @@ $env:POS_BRONZE_S3_PATH = "<pos_bronze_s3_path from terraform output>"
 .\.venv\Scripts\python.exe ingestion/batch/generate_pos_parquet.py --transaction-count 1000
 ```
 
-## Step 6 — Spark GraphFrames identity
+## Step 6 — Bronze promotion and Spark GraphFrames identity
+
+ADR-011: first confirm both `bronze.*_records` tables have committed Iceberg
+snapshots from the raw Flink jobs. Spark rebuilds canonical `silver.*_events`,
+quarantine and duplicate audits before identity resolution. Require logged
+`input_rows = canonical_rows + invalid_rows + duplicate_rows` for both streams.
+Do not resume catalog, dbt or GE consumers on a failed or incomplete export.
+For existing deployments, use [the migration procedure](bronze-replay.md),
+including the source-incarnation setting and fresh initial raw-job state.
 
 POS must exist before this step. The command submits the real GraphFrames job
 and blocks until the EMR step reaches `COMPLETED`; a failed or timed-out step
@@ -150,22 +158,19 @@ $Dbt = (Resolve-Path .venv-cloud\Scripts\dbt.exe)
 Push-Location transformation\dbt_project
 if (-not (Test-Path profiles.yml)) { Copy-Item profiles.yml.example profiles.yml }
 & $Dbt deps
-& $Dbt seed --target dev --select dim_date dim_store
+& $Dbt seed --target dev --select dim_date dim_store product_master inventory_opening_balance
 & $Dbt run --target dev --select staging intermediate
 Pop-Location
 ```
 
 Do not run every mart directly into live schemas. The commands below reuse the
 same ownership lists and clone/publish implementation as the Airflow DAGs.
-Each set is cloned, built under `wap_phase=pending`, tested, audited by Great
-Expectations, and only then published. On a first run the DDL-created empty live
+Each set is cloned, built under `wap_phase=pending`, tested by dbt, and only
+then published. On a first run the DDL-created empty live
 tables provide the clone shape.
 
 ```powershell
 $Wap = "orchestration/airflow/plugins/wap_publish.py"
-$Ge = "scripts/common/run_ge_checkpoint.py"
-$GeRoot = "quality/great_expectations"
-$env:RS_SQLALCHEMY_URL = "redshift+psycopg2://rs_admin:<password>@<redshift_endpoint>:5439/dev"
 
 # Catalog owner: marketing.dim_product only.
 .\.venv-cloud\Scripts\python.exe $Wap clone catalog
@@ -173,7 +178,6 @@ Push-Location transformation\dbt_project
 & $Dbt run --target dev --select dim_product --vars '{"wap_phase":"pending"}'
 & $Dbt test --target dev --select dim_product --vars '{"wap_phase":"pending"}'
 Pop-Location
-.\.venv-cloud\Scripts\python.exe $Ge --ge-root $GeRoot --checkpoint gold_layer_daily --pending-tables marketing.dim_product
 .\.venv-cloud\Scripts\python.exe $Wap publish catalog
 
 # Finance owner plus its summary rollups.
@@ -182,7 +186,6 @@ Push-Location transformation\dbt_project
 & $Dbt run --target dev --select marts.finance sales_daily_store inventory_daily_product_store --vars '{"wap_phase":"pending"}'
 & $Dbt test --target dev --select staging intermediate marts.finance sales_daily_store inventory_daily_product_store --vars '{"wap_phase":"pending"}'
 Pop-Location
-.\.venv-cloud\Scripts\python.exe $Ge --ge-root $GeRoot --checkpoint gold_layer_daily --pending-tables finance.fact_sales,finance.fact_inventory_snapshot,summary.sales_daily_store,summary.inventory_daily_product_store
 .\.venv-cloud\Scripts\python.exe $Wap publish finance
 
 # Marketing owner plus sessions summary; dim_product remains catalog-owned.
@@ -191,7 +194,6 @@ Push-Location transformation\dbt_project
 & $Dbt run --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
 & $Dbt test --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
 Pop-Location
-.\.venv-cloud\Scripts\python.exe $Ge --ge-root $GeRoot --checkpoint gold_layer_daily --pending-tables marketing.dim_customer,marketing.fact_customer_session,marketing.identity_graph,summary.sessions_daily_platform
 .\.venv-cloud\Scripts\python.exe $Wap publish marketing
 
 # Views resolve the freshly published live tables.
@@ -202,19 +204,18 @@ Pop-Location
 
 `int_identity_resolution` is a thin view over the Spark-built Silver source;
 dbt owns sessions, RFM, consent, Finance/Marketing Gold, and summary rollups.
-If any test or GE command fails, stop: do not issue that set's `publish` command.
+If any dbt test fails, stop: do not issue that set's `publish` command.
 
-## Step 9 — Great Expectations live monitor
+## Step 9 — Great Expectations Silver event checks
 
 ```powershell
 $env:RS_SQLALCHEMY_URL = "redshift+psycopg2://rs_admin:<password>@<redshift_endpoint>:5439/dev"
-cd quality\great_expectations
-..\..\.venv-cloud\Scripts\great_expectations.exe checkpoint run gold_layer_daily
-cd ..\..
+.\.venv-cloud\Scripts\python.exe scripts\common\run_ge_checkpoint.py --ge-root quality\great_expectations --checkpoint silver_events_daily
 ```
 
-All 11 suites should validate against Redshift (Gold marts + last-24h bronze
-windows).
+Both suites (`inventory_bronze`, `clickstream_bronze`) should validate the
+last 24 hours of `silver.*_events` in Redshift. Gold is covered by the dbt
+tests in Step 8.
 
 ## Step 10 — Verify + capture evidence
 
