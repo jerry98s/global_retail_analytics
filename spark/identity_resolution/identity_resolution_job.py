@@ -252,12 +252,22 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    resolution.write.mode("overwrite").option("overwriteSchema", "true").parquet(
-        f"{root}/identity_resolution"
-    )
-    edges.write.mode("overwrite").option("overwriteSchema", "true").parquet(
-        f"{root}/identity_edges"
-    )
+    import shutil
+    from pathlib import Path
+    from urllib.parse import urlparse
+    
+    resolution_path = f"{root}/identity_resolution"
+    edges_path = f"{root}/identity_edges"
+    
+    for path_str in [resolution_path, edges_path]:
+        parsed = urlparse(path_str)
+        if parsed.scheme in ("", "file"):
+            local_path = Path(parsed.path if parsed.path else path_str)
+            if local_path.exists():
+                shutil.rmtree(local_path)
+    
+    resolution.write.mode("overwrite").option("overwriteSchema", "true").parquet(resolution_path)
+    edges.write.mode("overwrite").option("overwriteSchema", "true").parquet(edges_path)
 
 
 def assign_resolution(
