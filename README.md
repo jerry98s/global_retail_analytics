@@ -8,17 +8,30 @@
 
 # Global Retail Analytics Platform
 
-Cloud Bronze now retains raw Kafka bytes and transport metadata; Spark performs
-validation and deduplication in Silver. Before upgrading an existing deployment,
-follow the [cloud rollout/replay guide](docs/runbooks/bronze-replay.md).
-No infrastructure deployment is performed by this code migration.
+A data platform for a retailer's finance, store-operations and marketing
+teams, built from three sources: daily POS sales, a live inventory-scanner
+stream, and web/app clickstream. Each team gets its own latency and its own
+guarantees: reconciled daily sales, hourly stock on hand, and a consent-gated
+Customer 360.
 
-A runnable data-engineering portfolio project: real-time inventory and
-clickstream ingestion, governed finance and Customer 360 marts, and a local
-Docker/DuckDB path that does not require an AWS account.
+**Status: cloud-deployable and locally verified.** The whole pipeline runs end
+to end on a laptop (Docker Kafka, Flink and Spark, DuckDB for the warehouse).
+The AWS version is fully coded in Terraform and validated in CI, but no
+completed cloud run is recorded yet. [What is and isn't proven](#what-is-not-proven-yet)
+is spelled out below.
 
 **Stack:** Kafka · Flink · Spark GraphFrames · Iceberg · Redshift · dbt · Airflow · Great
 Expectations · Terraform · Streamlit
+
+| At a glance | |
+|---|---|
+| Pipeline | 3 sources → Kafka → Flink → Iceberg Bronze/Silver → Spark identity graph → dbt Gold → dashboard |
+| Modelling | 25 dbt models, Kimball star schema, SCD Type 2 on `dim_product`, MetricFlow semantic layer |
+| Governance | Write-Audit-Publish: Gold is built in a staging copy, audited by dbt tests, then published in one transaction |
+| Orchestration | 6 Airflow DAGs, one owner per Gold table, SNS alerts and timeouts on every task |
+| Infrastructure | Terraform modules for S3, MSK, EMR, Redshift Serverless, MWAA, App Runner |
+| Testing | 388 unit tests, DuckDB integration tests, Spark GraphFrames parity test, Airflow DagBag load, 9 CI jobs |
+| Documentation | 13 architecture decision records, 6 runbooks, dated evidence ledger |
 
 ## Verified end-to-end
 
@@ -40,6 +53,39 @@ From the latest full local run (2026-08-31, fresh volumes — raw evidence in
 | ![DuckDB queries over Iceberg Bronze/Silver Parquet](docs/evidence/screenshots/03-iceberg-query.png) | ![dbt lineage graph with identity_graph highlighted](docs/evidence/screenshots/04-dbt-lineage.png) |
 
 Screenshots captured from the earlier 2026-08-01 run (pre-ADR-010).
+
+Latest regression run (2026-10-24, local Iceberg data loaded into a scratch
+DuckDB): two consecutive Write-Audit-Publish rounds each built 23 models,
+passed 158 dbt audit tests and published 10 Gold tables; the second round left
+every Gold row count unchanged, so reruns are idempotent.
+
+## What is not proven yet
+
+Stated plainly so the claims above can be trusted:
+
+- **No completed AWS run.** Terraform validates and CI checks the cloud wiring,
+  but the [evidence ledger](./docs/evidence/README.md#cloud-execution-evidence)
+  has no recorded cloud deployment yet.
+- **No load test.** The producer's 10,000 events/s setting is a target; the
+  [benchmark table](./docs/evidence/README.md#throughput-benchmark-protocol)
+  is empty until a repeatable run fills it.
+- **Costs are estimates.** [ADR-004](./docs/decisions/ADR-004-cost-model.md)
+  is a planning model, not an observed bill.
+- **Simulated data.** Volumes come from the bundled event generators, not a
+  real retailer.
+
+## Problems found by testing
+
+Reviewing and running the pipeline surfaced bugs that unit tests alone missed.
+Each fix landed with a test or a reproduction:
+
+| Problem | How it showed up | Fix |
+|---|---|---|
+| Consent model never finished | An `OR` across two join keys forced a nested-loop join, about 9 billion comparisons on local data; the audit hung | Two equi-joins with `UNION ALL`: same rows (checked on a sample), view builds in 0.17 s |
+| Long sessions truncated | A DuckDB scenario: an incremental run stored a session as 14:00–17:00 with 10 events; a full refresh gave 12:20–17:00 with 15 | Incremental window re-reads every client with a session still open |
+| Flink jobs ignored their config on EMR | YARN application mode does not pass the step's environment to the JobManager | The submit script forwards every variable the config reads, and fails if a required one is missing |
+| EMR steps could not be submitted from Windows | PowerShell 5.1 strips quotes from JSON arguments; reproduced against the real AWS CLI | Step definitions go through a file in the CLI's own format |
+| Checkpoints expired after 14 days | A blanket S3 lifecycle rule would delete files that incremental RocksDB checkpoints still reference | Only scratch data and old versions expire |
 
 ## Branches
 
@@ -130,7 +176,6 @@ Prerequisites: Docker Desktop, PowerShell, [uv](https://docs.astral.sh/uv/).
 git checkout local-testing-version
 uv sync --group dev
 
-# Flink before simulate (Kafka latest-offset). Task all does this order.
 .\scripts\local\run_local_stack.ps1 -Task all
 ```
 
@@ -205,6 +250,10 @@ DuckDB — no Redshift credentials required.
 Cost figures are planning scenarios, not observed cloud bills.
 
 ## Environments and deploy
+
+Cloud Bronze keeps raw Kafka bytes and transport metadata; Spark validates and
+deduplicates into Silver. Before upgrading an existing deployment, follow the
+[cloud rollout/replay guide](docs/runbooks/bronze-replay.md).
 
 | Flavour | Branch / where | Entry point |
 |---|---|---|
