@@ -48,7 +48,8 @@ jobs:
           java-version: "11"
 
       - name: install Spark
-        run: pip install "pyspark==3.4.1"
+        # GraphFrames imports pyspark.ml, which needs numpy (pyspark 3.4 predates numpy 2).
+        run: pip install "pyspark==3.4.1" "numpy<2"
 
       - name: execute DataFrame + GraphFrames parity smoke test
         run: >
@@ -78,7 +79,8 @@ jobs:
         # no creds). Everything else third-party is stubbed by tests/unit/conftest.py.
         # pyarrow: local-testing-version bridge tests import generate_pos_parquet
         # (module-level pyarrow import) during collection, even when deselected.
-        run: pip install pytest==8.4.1 pyyaml==6.0.2 "duckdb>=1.5,<2.0" "pyarrow>=15,<23" && pytest tests/unit/ -v --tb=short -m unit
+        # jinja2: test_replayable_bronze renders the cloud Flink step template.
+        run: pip install pytest==8.4.1 pyyaml==6.0.2 "duckdb>=1.5,<2.0" "pyarrow>=15,<23" "jinja2>=3.1,<4" && pytest tests/unit/ -v --tb=short -m unit
 
   dbt-duckdb:
     name: dbt identity chain on DuckDB (no cloud creds)
@@ -137,7 +139,9 @@ jobs:
         run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_public_devices --full-refresh
 
       - name: dbt test identity graph chain
-        run: dbt test --profiles-dir . --target local --select int_identity_public_devices int_identity_resolution identity_graph
+        # cautious: skip tests that also depend on models this job doesn't build
+        # (fact_sales_customer_key_matches_identity needs fact_sales).
+        run: dbt test --profiles-dir . --target local --select int_identity_public_devices int_identity_resolution identity_graph --indirect-selection cautious
 
       - name: verify identity scenarios (loyalty match, session link, multi-hop, public device, singleton)
         working-directory: ${{ github.workspace }}
