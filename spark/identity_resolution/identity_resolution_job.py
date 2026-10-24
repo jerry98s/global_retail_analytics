@@ -258,7 +258,7 @@ def write_consumer_exports(
     edges_path = f"{root}/identity_edges"
     
     # Use Hadoop FileSystem API for reliable cross-platform directory removal
-    sc = resolution.sql_ctx.sparkContext
+    sc = resolution.sparkSession.sparkContext
     java_import(sc._jvm, "org.apache.hadoop.fs.Path")
     java_import(sc._jvm, "org.apache.hadoop.fs.FileSystem")
     hadoop_conf = sc._jsc.hadoopConfiguration()
