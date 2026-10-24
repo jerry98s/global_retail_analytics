@@ -52,12 +52,28 @@ From the latest full local run (2026-08-31, fresh volumes — raw evidence in
 | ![Flink job RUNNING with completed checkpoint history](docs/evidence/screenshots/02-flink-checkpoints.png) | ![Streamlit dashboard over 90,000 streamed clickstream events](docs/evidence/screenshots/01-dashboard-overview.png) |
 | ![DuckDB queries over Iceberg Bronze/Silver Parquet](docs/evidence/screenshots/03-iceberg-query.png) | ![dbt lineage graph with identity_graph highlighted](docs/evidence/screenshots/04-dbt-lineage.png) |
 
-Screenshots captured from the earlier 2026-08-01 run (pre-ADR-010).
+Screenshots captured from the earlier 2026-08-01 run (pre-ADR-010). The CI
+badge at the top shows live status; the capture below is from the same run:
+
+![GitHub Actions green on main and local-testing-version](docs/evidence/screenshots/05-ci-green.png)
 
 Latest regression run (2026-10-24, local Iceberg data loaded into a scratch
 DuckDB): two consecutive Write-Audit-Publish rounds each built 23 models,
 passed 158 dbt audit tests and published 10 Gold tables; the second round left
 every Gold row count unchanged, so reruns are idempotent.
+
+### Verify it yourself
+
+```powershell
+uv sync --group dev
+.\.venv\Scripts\python.exe -m pytest tests/unit/ -q -m unit   # unit suite (388 tests)
+git checkout local-testing-version
+.\scripts\local\run_local_stack.ps1 -Task all                  # full pipeline, ~35 min
+```
+
+The full check list and step-by-step form are in [Quick start](#quick-start);
+every claim above has a dated entry in the
+[evidence ledger](./docs/evidence/README.md).
 
 ## What is not proven yet
 
