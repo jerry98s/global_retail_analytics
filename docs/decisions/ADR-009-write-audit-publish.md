@@ -30,9 +30,6 @@ incorrect for this warehouse:
 - `marketing.dim_product` is an SCD2 accumulator whose history exists only in
   the table. A full-refresh rebuilds it as current-only rows and **destroys
   version history on publish**.
-- Bound Redshift views follow a renamed table by OID, so the publish swap
-  (`RENAME` + `DROP ... __wap_old`) would fail or CASCADE-drop
-  `customer_360_view`.
 - Two DAGs both published `dim_product`, so overlapping runs could clobber the
   same pending table.
 
@@ -57,11 +54,15 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts, with a
    Great Expectations does not audit Gold; it checks the Silver event
    contract only, so dbt tests are the single Gold gate.
 4. **Publish atomically.** After every audit passes, preflight that every
-   DAG-owned pending table exists, then promote the **entire set** in one
-   transaction: Redshift `ALTER TABLE pending.x SET SCHEMA live` (rename swap
-   keeping the old live as `x__wap_old` until commit); DuckDB
-   `CREATE TABLE live AS SELECT * FROM pending` in that same transaction. A
-   missing later table aborts before any swap.
+   DAG-owned pending table exists and has the same columns as live, then
+   promote the **entire set** in one transaction: `DELETE FROM live.x` +
+   `INSERT INTO live.x (cols) SELECT cols FROM pending.x` (first publish:
+   `CREATE TABLE live.x (LIKE pending.x)`). A missing table or a column
+   mismatch aborts before any write. Redshift has no `ALTER TABLE … SET
+   SCHEMA`, and `ALTER TABLE APPEND` cannot run inside a transaction block, so
+   a pointer swap cannot publish the set atomically. Delete + insert keeps the
+   live table's identity, grants, owner, and DIST/SORT keys; readers see the
+   previous publish until commit.
 
 Because pending already exists and holds prior state, `is_incremental()` is
 true and `{{ this }}` is the correct incremental anchor. Cross-DAG Gold **model**
@@ -71,8 +72,8 @@ use `source('gold_marketing', 'dim_product')` instead: dbt cannot infer a nested
 `ref()` inside generic test YAML, so `wap_live_ref` there fails `dbt compile`.
 
 Dependent Redshift views are **late-binding** (`dbt_project.yml` `+bind: false`,
-hand DDL `WITH NO SCHEMA BINDING`) so the rename/drop swap does not follow
-OIDs. Gold models declare `dist` / `sort` matching
+hand DDL `WITH NO SCHEMA BINDING`) so a deliberate live DDL migration can drop
+and recreate a table without dropping its views. Gold models declare `dist` / `sort` matching
 `the warehouse DDL on main` so a published table keeps its tuning.
 
 ## Correctness guarantees
@@ -90,11 +91,13 @@ OIDs. Gold models declare `dist` / `sort` matching
   `finance` and are excluded from clone/publish lists.
 - **Serving refresh after publish.** `marketing.customer_360_view` and
   `serving.customer_360_serving` are views over live Gold. The marketing DAG
-  rebuilds them after the swap. They are not renamed through WAP.
+  rebuilds them after publish. They are not published through WAP.
 - **Transaction handling.** `redshift_connector` is not autocommit: publish
-  preflights the full set, then commits every swap together via
-  `conn.commit()`. Dropping `__wap_old` is a follow-up transaction so a drop
-  failure cannot roll the swap back.
+  preflights the full set, then commits every table together via
+  `conn.commit()`. Dropping the pending copies is a follow-up transaction so a
+  drop failure cannot roll the publish back.
+- **Publish audit.** Each published table writes a `wap_publish` row to
+  `meta.dq_check_result` (fail-open).
 
 ## Ownership boundaries
 
@@ -123,11 +126,11 @@ removed.
 
 - A failing audit leaves live on the last good publish; consumers never see a
   half-built mart.
-- Each run copies Gold once (Redshift has no zero-copy clone). Acceptable at
-  this project's volumes; Snowflake/Iceberg would use zero-copy clones or
-  branches instead.
+- Each run copies Gold twice (clone, then publish), because Redshift has no
+  zero-copy clone or cross-schema swap. Acceptable at this project's volumes;
+  Snowflake/Iceberg would use zero-copy clones or branches instead.
 - The canonical table list lives in
   `orchestration/airflow/plugins/wap_publish.py` (`WAP_TABLES` + per-DAG
   subsets) so cloud Airflow and the local DuckDB stack share one definition.
-- Schema-level GRANTs (not table-level) are assumed: a `SET SCHEMA` swap
-  creates a new object identity. This repo has no table-level GRANTs.
+- A model that changes columns needs a deliberate live DDL migration before
+  its next publish; WAP refuses to publish a mismatched shape.

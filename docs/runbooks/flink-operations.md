@@ -29,7 +29,7 @@ The platform runs Flink jobs on EMR, which submits each job as a YARN applicatio
 | `state.backend` | `rocksdb` | `streaming/config/state.yaml` |
 | `state.backend.incremental` | `true` | same |
 
-Applied by `_config.apply_state_config()` in each Flink job's `run()`. The maintenance batch job (`iceberg_maintenance.py`) does NOT call this — it has no long-running state.
+Applied by `_config.apply_state_config()` in each Flink job's `run()`.
 
 **Why RocksDB over HashMap?** HashMap is faster (~10-20% throughput) but JVM-heap-bound — OOMs at ~10GB state. RocksDB stores state off-heap on disk, supports TB-scale state, and is the Flink-recommended production default.
 
@@ -220,7 +220,7 @@ The Kafka lag alarm is wired on `main`. The checkpoint-failure and checkpoint-du
 | Flink runtime config (parallelism, topics, consumer groups) | `streaming/config/flink_conf.yaml` |
 | `apply_state_config()` helper | `streaming/flink_jobs/_config.py` |
 | Streaming Flink jobs | `streaming/flink_jobs/{inventory_bronze,clickstream_bronze,inventory_silver}_job.py` |
-| Maintenance batch job (no state) | `streaming/flink_jobs/iceberg_maintenance.py` |
+| Iceberg compaction + snapshot expiry (Spark) | `spark/maintenance/iceberg_maintenance.py` |
 | Job submitter DAG | `orchestration/airflow/dags/streaming_manual_flink_jobs.py` |
 | Iceberg maintenance DAG | `orchestration/airflow/dags/lakehouse_daily_iceberg_maintenance.py` |
 | State config unit tests | `tests/unit/test_flink_state_config.py` |

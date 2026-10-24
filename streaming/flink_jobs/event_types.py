@@ -9,7 +9,7 @@ Why a separate module (not inline in each job):
   * Avoids drift between the two Flink jobs and the producers
   * The JSON Schema files are the authoritative contract; this module is the
     Python-friendly view of the same enums
-  * Flink packages this module flat via `-pyfs /opt/flink-config-src/flink_jobs`,
+  * Flink packages this module flat via `-pyfs`,
     so the jobs import it as `from event_types import INVENTORY_EVENT_TYPES`
 """
 

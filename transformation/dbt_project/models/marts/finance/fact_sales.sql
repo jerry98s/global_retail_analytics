@@ -19,23 +19,28 @@
          as-of SCD2 join. Line items pick up the product_key that is current
          at load time; already-loaded history is not restated when merchandising
          changes price/category. Catalog DAG owns dim_product; this model reads
-         the last published live table via wap_live_ref.
+         the last published live table via wap_live_ref. A product the catalog
+         DAG has not published yet gets the unknown key -1; the restatement
+         window below re-keys it on a later run.
          dim_store (Type 0/1 seed, never WAP'd).
          int_identity_resolution (loyalty_id -> customer_key; LEFT JOIN
          yields NULL customer_key for anonymous transactions).
 
-  Incremental strategy: crash-resilient lookback on max(date_key) from
-  {{ this }} (the WAP pending clone of live). Inclusive overlap of the last
-  loaded day + delete+insert on the grain key rewrites a partial day.
+  Incremental strategy: lookback from max(date_key) in {{ this }} (the WAP
+  pending clone of live) minus var pos_restatement_days (default 3), with
+  delete+insert on the grain key. That rewrites a partial last day, reloads
+  restated or late POS partitions inside the window, and re-keys unknown
+  products once dim_product publishes them.
   `dt` is the Spectrum partition column (aliased from transaction_date on
   DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
 */
 
 {% set lookback %}
-          select coalesce(
-              max({{ date_from_date_key('date_key') }}),
-              cast('1970-01-01' as date)
-          )
+          select cast({{ dateadd_unit(
+              'day',
+              -var('pos_restatement_days', 3),
+              "coalesce(max(" ~ date_from_date_key('date_key') ~ "), cast('1970-01-04' as date))"
+          ) }} as date)
           from {{ this }}
 {% endset %}
 
@@ -49,7 +54,7 @@ with base as (
 )
 select
     {{ date_key_from_date('b.transaction_date') }} as date_key,
-    p.product_key,
+    coalesce(p.product_key, -1) as product_key,
     s.store_key,
     i.customer_key,
     b.loyalty_id,

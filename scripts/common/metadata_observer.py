@@ -195,6 +195,9 @@ class MetadataWriter:
     def fetchone(self, sql: str, params: Sequence[Any] | None = None) -> Any:
         raise NotImplementedError
 
+    def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[Any]:
+        raise NotImplementedError
+
     def close(self) -> None:
         raise NotImplementedError
 
@@ -220,6 +223,11 @@ class DuckDBMetadataWriter(MetadataWriter):
         if params is None:
             return self._con.execute(sql).fetchone()
         return self._con.execute(sql, list(params)).fetchone()
+
+    def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[Any]:
+        if params is None:
+            return self._con.execute(sql).fetchall()
+        return self._con.execute(sql, list(params)).fetchall()
 
     def close(self) -> None:
         self._con.close()
@@ -271,6 +279,14 @@ class RedshiftMetadataWriter(MetadataWriter):
             else:
                 cur.execute(_qmark_to_pyformat(sql), tuple(params))
             return cur.fetchone()
+
+    def fetchall(self, sql: str, params: Sequence[Any] | None = None) -> list[Any]:
+        with self._conn.cursor() as cur:
+            if params is None:
+                cur.execute(sql)
+            else:
+                cur.execute(_qmark_to_pyformat(sql), tuple(params))
+            return list(cur.fetchall())
 
     def close(self) -> None:
         self._conn.close()
@@ -843,35 +859,80 @@ def collect_table_freshness(
     return written
 
 
+def freshness_breaches(writer: MetadataWriter, *, execution_id: str) -> list[str]:
+    """``schema.table (lag N min)`` for every SLA breach measured in one run."""
+    rows = writer.fetchall(
+        """
+        SELECT schema_name, table_name, lag_minutes
+        FROM meta.table_freshness
+        WHERE execution_id = ? AND sla_status = 'breach'
+        ORDER BY schema_name, table_name
+        """,
+        (execution_id,),
+    )
+    return [f"{schema}.{table} (lag {lag} min)" for schema, table, lag in rows]
+
+
 def record_reconciliation_results(
     writer: MetadataWriter,
     *,
     execution_id: str,
     deltas: dict[str, dict[str, Any]],
     warned: bool,
+    blocked: Sequence[str] = (),
 ) -> int:
+    """Per-mart rows: ``fail`` blocked publish, ``warn`` only alerted."""
+    def status_of(key: str, item: dict[str, Any]) -> str:
+        if key in blocked:
+            return "fail"
+        return "warn" if item.get("status") == "WARN" else "pass"
+
     results = [
         DqCheckResult(
             check_system="reconciliation",
             check_name=f"row_count:{key}",
             target_object=key,
-            status="warn" if item.get("status") == "WARN" else "pass",
-            failed_count=1 if item.get("status") == "WARN" else 0,
+            status=status_of(key, item),
+            failed_count=0 if status_of(key, item) == "pass" else 1,
             detail=item,
         )
         for key, item in deltas.items()
     ]
+    summary_status = "fail" if blocked else ("warn" if warned else "pass")
     results.append(
         DqCheckResult(
             check_system="reconciliation",
             check_name="row_count_reconciliation_summary",
             target_object="gold",
-            status="warn" if warned else "pass",
-            failed_count=1 if warned else 0,
-            detail={"warned": warned, "mart_count": len(deltas)},
+            status=summary_status,
+            failed_count=0 if summary_status == "pass" else 1,
+            detail={"warned": warned, "blocked": list(blocked), "mart_count": len(deltas)},
         )
     )
     return record_dq_results(writer, execution_id=execution_id, results=results)
+
+
+def record_wap_publish(
+    writer: MetadataWriter,
+    *,
+    execution_id: str,
+    published: Sequence[str],
+) -> int:
+    """One ``wap_publish`` row per Gold table promoted to live."""
+    return record_dq_results(
+        writer,
+        execution_id=execution_id,
+        results=[
+            DqCheckResult(
+                check_system="wap_publish",
+                check_name=f"publish:{fqn}",
+                target_object=fqn,
+                status="pass",
+                failed_count=0,
+            )
+            for fqn in published
+        ],
+    )
 
 
 def _with_retries(fn: Callable[[], Any], attempts: int = 3, delay: float = 0.5) -> Any:

@@ -31,7 +31,7 @@ From the repo root, after `uv sync --group dev`, with Docker Desktop up:
 
 ## Traps
 
-- Flink jobs use `latest-offset`. Simulate before Flink drops the events.
+- Flink jobs use `group-offsets` with `auto.offset.reset=earliest`: a new consumer group reads the topic from the start, a restart resumes from committed offsets. Simulating before Flink no longer drops events.
 - Kafka from the host is `127.0.0.1:9092`. Flink UI is `http://localhost:8082`.
 - The loop writes `.local/iceberg` and `transformation/dbt_project/local_retail.duckdb`. Do not point it at a checkout whose DuckDB file must be kept.
 - `main` has no this wrapper's local compose path. Cloud `-Task all` is infra and streaming smoke, not this loop.

@@ -6,9 +6,9 @@ Three phases, one per Airflow task:
    ``*_pending`` twin.
 2. **Write + audit** — dbt runs with ``wap_phase='pending'`` so models build into
    the pending clones; dbt tests and Great Expectations validate them there.
-3. **Publish** — ``publish_gold`` swaps each audited pending table into the live
-   schema. A failing audit never touches live, so consumers keep reading the
-   last good publish.
+3. **Publish** — ``publish_gold`` replaces each live table's rows with the
+   audited pending rows. A failing audit never touches live, so consumers keep
+   reading the last good publish.
 
 Why the clone phase exists
 --------------------------
@@ -37,28 +37,32 @@ Clone strategy per table (Redshift)::
 
 ``CREATE TABLE ... LIKE`` is what preserves the distribution and sort keys
 defined in ``the warehouse DDL on main``; a plain CTAS would silently drop
-them and the publish swap would leave an untuned table behind.
+them.
 
-Publish strategy (Redshift), one transaction for the whole DAG-owned set::
+Publish strategy, one transaction for the whole DAG-owned set::
 
-    -- preflight: every pending table exists (else abort, no swaps)
-    DROP TABLE IF EXISTS live.table__wap_old;
-    ALTER TABLE live.table RENAME TO table__wap_old;   -- only if live exists
-    ALTER TABLE live_pending.table SET SCHEMA live;    -- lands as live.table
+    -- preflight: every pending table exists and its columns match live
+    DELETE FROM live.table;                              -- live exists
+    CREATE TABLE live.table (LIKE live_pending.table);   -- first publish only
+    INSERT INTO live.table (cols) SELECT cols FROM live_pending.table;
     -- ...repeat for every owned table, then COMMIT once...
-    -- then drop the old copies in a follow-up transaction
+
+Redshift has no ``ALTER TABLE ... SET SCHEMA``, and ``ALTER TABLE APPEND``
+cannot run inside a transaction block, so a cross-schema pointer swap cannot
+publish the set atomically. Delete + insert keeps the live table's OID, grants,
+owner and DIST/SORT keys; readers see the previous publish until COMMIT. The
+cost is one copy of each owned table per publish. Pending copies are dropped
+in a follow-up transaction so a drop failure cannot undo the publish.
+
+A column mismatch between pending and live (a model changed shape) aborts the
+publish before any write: the live DDL must be migrated deliberately.
 
 Each owning DAG also sets ``max_active_runs=1`` so a second run cannot drop
 and reclone ``*_pending`` while the first run is still building or publishing.
 
-The swap requires every dependent view to be late-binding — a bound Redshift
-view follows the renamed table by OID and would block the drop. That is why
-``dbt_project.yml`` sets ``+bind: false`` and the hand-written serving views use
-``WITH NO SCHEMA BINDING``.
-
-DuckDB has no ``SET SCHEMA`` and cannot rename across schemas, so the local path
-copies pending into live and drops the pending copy inside one transaction. It
-is a copy rather than a pointer swap; acceptable for the local simulation.
+Dependent views stay late-binding (``+bind: false`` in ``dbt_project.yml`` and
+``WITH NO SCHEMA BINDING`` on the serving views) so a deliberate live DDL
+migration can drop and recreate a table without dropping its views.
 
 Table ownership
 ---------------
@@ -148,48 +152,60 @@ def build_redshift_clone_statements(tables: list[tuple[str, str]]) -> list[str]:
     return statements
 
 
-def build_redshift_publish_statements(tables: list[tuple[str, str]]) -> list[str]:
-    """SQL statements promoting pending tables into live schemas (Redshift).
+def build_publish_statements(
+    schema: str,
+    table: str,
+    columns: list[str],
+    *,
+    live_exists: bool,
+    dialect: str = "redshift",
+) -> list[str]:
+    """Statements replacing one live table's rows with its pending rows.
 
-    All swaps are issued before a single ``COMMIT``. ``__wap_old`` copies are
-    dropped only after that commit so a drop failure cannot undo the publish.
+    The caller runs every owned table's statements inside one transaction.
     """
-    statements: list[str] = []
-    for schema, table in tables:
-        pending = _pending_schema(schema)
-        live_fqn = f"{schema}.{table}"
-        old_fqn = f"{schema}.{table}__wap_old"
-        pending_fqn = f"{pending}.{table}"
-        statements.extend(
-            [
-                f"DROP TABLE IF EXISTS {old_fqn}",
-                f"ALTER TABLE {live_fqn} RENAME TO {table}__wap_old",
-                f"ALTER TABLE {pending_fqn} SET SCHEMA {schema}",
-            ]
-        )
-    statements.append("COMMIT")
-    for schema, table in tables:
-        statements.append(f"DROP TABLE IF EXISTS {schema}.{table}__wap_old")
-    return statements
+    live_fqn = f"{schema}.{table}"
+    pending_fqn = f"{_pending_schema(schema)}.{table}"
+    cols = ", ".join(columns)
+    if live_exists:
+        create = [f"DELETE FROM {live_fqn}"]
+    elif dialect == "duckdb":
+        create = [f"CREATE TABLE {live_fqn} AS SELECT * FROM {pending_fqn} WHERE 1 = 0"]
+    else:
+        create = [f"CREATE TABLE {live_fqn} (LIKE {pending_fqn})"]
+    return [*create, f"INSERT INTO {live_fqn} ({cols}) SELECT {cols} FROM {pending_fqn}"]
+
+
+def _query(conn: Any, sql: str, params: tuple[str, ...], dialect: str) -> list[tuple[Any, ...]]:
+    if dialect == "duckdb":
+        return conn.execute(sql.replace("%s", "?"), list(params)).fetchall()
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    cur.close()
+    return list(rows)
 
 
 def _table_exists(conn: Any, schema: str, table: str, dialect: str) -> bool:
-    if dialect == "duckdb":
-        row = conn.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = ? AND table_name = ?",
-            [schema, table],
-        ).fetchone()
-    else:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT COUNT(*) FROM information_schema.tables "
-            "WHERE table_schema = %s AND table_name = %s",
-            (schema, table),
-        )
-        row = cur.fetchone()
-        cur.close()
-    return bool(row and int(row[0]) > 0)
+    rows = _query(
+        conn,
+        "SELECT COUNT(*) FROM information_schema.tables "
+        "WHERE table_schema = %s AND table_name = %s",
+        (schema, table),
+        dialect,
+    )
+    return bool(rows and int(rows[0][0]) > 0)
+
+
+def _columns(conn: Any, schema: str, table: str, dialect: str) -> list[str]:
+    rows = _query(
+        conn,
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+        (schema, table),
+        dialect,
+    )
+    return [str(r[0]) for r in rows]
 
 
 def _exec(conn: Any, sql: str, dialect: str) -> None:
@@ -287,17 +303,15 @@ def publish_gold(
     *,
     dialect: str = "redshift",
 ) -> dict[str, Any]:
-    """Promote pending Gold tables into live schemas.
+    """Replace live Gold rows with the audited pending rows.
 
     ``conn`` is a ``redshift_connector`` connection (cloud) or a ``duckdb``
-    connection (local). ``dialect`` selects the swap mechanics.
+    connection (local).
 
-    Raises if any pending table is missing (nothing to audit/publish). A missing
-    live table is fine — that is the first-ever publish and the rename of live
-    is simply skipped.
-
-    The whole owned set is preflighted, then swapped in one transaction, so a
-    missing later table cannot leave earlier tables published.
+    Raises before any write if a pending table is missing or its columns differ
+    from live. A missing live table is the first-ever publish and is created
+    from the pending definition. The whole owned set commits once, so a failure
+    on a later table leaves every live table on the previous publish.
     """
     missing = [
         f"{_pending_schema(schema)}.{table}"
@@ -311,58 +325,53 @@ def publish_gold(
             + ". Run the clone task and dbt with wap_phase='pending' before publishing."
         )
 
-    plan: list[tuple[str, str, bool]] = [
-        (schema, table, _table_exists(conn, schema, table, dialect))
-        for schema, table in tables
-    ]
+    plan: list[tuple[str, str, bool, list[str]]] = []
+    drift: list[str] = []
+    for schema, table in tables:
+        pending_cols = _columns(conn, _pending_schema(schema), table, dialect)
+        live_exists = _table_exists(conn, schema, table, dialect)
+        if live_exists:
+            live_cols = _columns(conn, schema, table, dialect)
+            if sorted(live_cols) != sorted(pending_cols):
+                drift.append(
+                    f"{schema}.{table} live={live_cols} pending={pending_cols}"
+                )
+            plan.append((schema, table, True, live_cols))
+        else:
+            plan.append((schema, table, False, pending_cols))
+    if drift:
+        raise RuntimeError(
+            "WAP publish aborted: pending columns differ from live; migrate the live "
+            "DDL first: " + "; ".join(drift)
+        )
 
     published: list[str] = []
     _begin(conn, dialect)
     try:
-        for schema, table, live_exists in plan:
-            pending = _pending_schema(schema)
-            live_fqn = f"{schema}.{table}"
-            old_fqn = f"{schema}.{table}__wap_old"
-            pending_fqn = f"{pending}.{table}"
-
-            _exec(conn, f"DROP TABLE IF EXISTS {old_fqn}", dialect)
-            if live_exists:
-                _exec(conn, f"ALTER TABLE {live_fqn} RENAME TO {table}__wap_old", dialect)
-            if dialect == "duckdb":
-                _exec(conn, f"CREATE TABLE {live_fqn} AS SELECT * FROM {pending_fqn}", dialect)
-                _exec(conn, f"DROP TABLE {pending_fqn}", dialect)
-            else:
-                _exec(conn, f"ALTER TABLE {pending_fqn} SET SCHEMA {schema}", dialect)
-            published.append(live_fqn)
+        for schema, table, live_exists, columns in plan:
+            for sql in build_publish_statements(
+                schema, table, columns, live_exists=live_exists, dialect=dialect
+            ):
+                _exec(conn, sql, dialect)
+            published.append(f"{schema}.{table}")
         _commit(conn, dialect)
     except Exception:
         _rollback(conn, dialect)
         raise
 
-    old_copies = [
-        f"{schema}.{table}__wap_old"
-        for schema, table, live_exists in plan
-        if live_exists
-    ]
-    if old_copies:
-        # Separate transaction: the swap is already durable, so failing to
-        # drop the old copies must not roll the publish back.
-        try:
-            _begin(conn, dialect)
-            for old_fqn in old_copies:
-                _exec(conn, f"DROP TABLE IF EXISTS {old_fqn}", dialect)
-            _commit(conn, dialect)
-        except Exception as exc:  # noqa: BLE001
-            _rollback(conn, dialect)
-            log.warning(
-                "WAP published %s but could not drop old copies %s: %s",
-                published,
-                old_copies,
-                exc,
-            )
+    # Separate transaction: the publish is already durable, so failing to drop
+    # the pending copies must not roll it back. The next clone drops them anyway.
+    try:
+        _begin(conn, dialect)
+        for schema, table, _, _ in plan:
+            _exec(conn, f"DROP TABLE IF EXISTS {_pending_schema(schema)}.{table}", dialect)
+        _commit(conn, dialect)
+    except Exception as exc:  # noqa: BLE001
+        _rollback(conn, dialect)
+        log.warning("WAP published %s but could not drop pending copies: %s", published, exc)
 
-    for live_fqn, (_, _, live_exists) in zip(published, plan, strict=True):
-        log.info("WAP published %s (live existed: %s)", live_fqn, live_exists)
+    for schema, table, live_exists, _ in plan:
+        log.info("WAP published %s.%s (live existed: %s)", schema, table, live_exists)
 
     return {"published": published, "count": len(published)}
 
@@ -465,13 +474,11 @@ def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> No
             execution_id = (
                 execution_id_for_context(context or {}) if context else "wap_publish"
             )
-            record = getattr(observer, "record_wap_publish", None)
-            if record is not None:
-                record(
-                    writer,
-                    execution_id=execution_id,
-                    published=result.get("published") or [],
-                )
+            observer.record_wap_publish(
+                writer,
+                execution_id=execution_id,
+                published=result.get("published") or [],
+            )
         finally:
             writer.close()
     except Exception as exc:  # noqa: BLE001

@@ -17,8 +17,9 @@ uv sync --group dev
 
 `-Task all` starts Kafka, creates topics, starts Flink, produces events, writes
 POS Parquet, runs the Spark identity job, loads Iceberg into DuckDB, builds
-dbt, and runs quality checks. Start Flink before simulate yourself when you
-run the tasks one at a time (`latest-offset`).
+dbt, and runs quality checks. Flink sources use `group-offsets` (reset
+`earliest`), so simulate and Flink can run in either order when you run the
+tasks one at a time.
 
 Kafka: `127.0.0.1:9092`. Flink UI: <http://localhost:8082>.
 

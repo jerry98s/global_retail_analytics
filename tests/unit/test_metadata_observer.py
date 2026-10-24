@@ -267,6 +267,64 @@ def test_freshness_reads_date_keys_as_end_of_day(tmp_path: Path) -> None:
     analytics.close()
 
 
+def test_freshness_breaches_lists_only_breached_tables_of_the_run(tmp_path: Path) -> None:
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA summary")
+    analytics.execute("CREATE TABLE summary.fresh AS SELECT 20261024 AS date_key")
+    analytics.execute("CREATE TABLE summary.stale AS SELECT 20261020 AS date_key")
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    for execution_id in ("e1", "e2"):
+        mo.collect_table_freshness(
+            writer,
+            analytics,
+            execution_id=execution_id,
+            targets=[
+                ("summary", "fresh", "date_key", 1440),
+                ("summary", "stale", "date_key", 1440),
+            ],
+            measured_at=datetime(2026, 10, 24, 12, 0),
+        )
+    breaches = mo.freshness_breaches(writer, execution_id="e1")
+    assert len(breaches) == 1
+    assert breaches[0].startswith("summary.stale (lag ")
+    writer.close()
+    analytics.close()
+
+
+def test_publish_and_gate_outcomes_are_recorded(tmp_path: Path) -> None:
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    mo.record_wap_publish(writer, execution_id="e1", published=["finance.fact_sales"])
+    mo.record_reconciliation_results(
+        writer,
+        execution_id="e1",
+        deltas={
+            "finance.fact_sales": {"status": "WARN"},
+            "summary.sales_daily_store": {"status": "WARN"},
+            "finance.dim_date": {"status": "ok"},
+        },
+        warned=True,
+        blocked=["finance.fact_sales"],
+    )
+    rows = dict(
+        writer.fetchall(
+            "SELECT check_name, status FROM meta.dq_check_result WHERE execution_id = ?",
+            ("e1",),
+        )
+    )
+    assert rows == {
+        "publish:finance.fact_sales": "pass",
+        "row_count:finance.fact_sales": "fail",
+        "row_count:summary.sales_daily_store": "warn",
+        "row_count:finance.dim_date": "pass",
+        "row_count_reconciliation_summary": "fail",
+    }
+    writer.close()
+
+
 def test_fail_open_wrapper_swallows() -> None:
     def _boom() -> None:
         raise RuntimeError("nope")

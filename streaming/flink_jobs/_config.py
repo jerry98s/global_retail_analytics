@@ -74,16 +74,24 @@ def kafka_security_options(cfg: Dict[str, Any]) -> str:
 
 
 def resolve_config_path(filename: str) -> Path:
-    """Look up `streaming/config/<filename>` from one of two well-known places.
+    """Look up ``streaming/config/<filename>``.
 
-    Local dev: `<repo_root>/streaming/config/<filename>`
-    EMR/prod : `/opt/flink-config/<filename>` (populated by the bootstrap action)
+    A yaml shipped next to the job files wins. The cloud submit script on
+    ``main`` stages one there, because the EMR bootstrap snapshot at
+    ``/opt/flink-config`` is written once when the cluster starts and a later
+    deploy does not refresh it. Local compose mounts the repo at
+    ``/opt/streaming`` and falls through to ``streaming/config``.
     """
-    emr_path = Path("/opt/flink-config") / filename
-    if emr_path.exists():
-        return emr_path
-    repo_root = Path(__file__).resolve().parents[2]
-    return repo_root / "streaming" / "config" / filename
+    candidates = (
+        Path(__file__).resolve().parent / filename,
+        Path("/opt/flink-config-src/config") / filename,
+        Path("/opt/flink-config") / filename,
+        Path(__file__).resolve().parents[2] / "streaming" / "config" / filename,
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[-1]
 
 
 def resolve_parallelism(flink_cfg: Dict[str, Any], topic_key: str) -> int:
@@ -124,9 +132,7 @@ def apply_state_config(
     StreamTableEnvironment.
 
     Called from every streaming Flink job's `run()` after the env + t_env
-    are created, before any `execute_sql` calls. The maintenance batch
-    job (iceberg_maintenance.py) does NOT call this — it has no
-    long-running state.
+    are created, before any `execute_sql` calls.
 
     Runtime-level knobs (state.backend, state.backend.incremental) are applied
     through a PyFlink `Configuration`; SQL-level knobs

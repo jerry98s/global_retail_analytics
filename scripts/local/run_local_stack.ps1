@@ -587,7 +587,7 @@ try {
             Write-Host ""
             Write-Host "Flink Web UI:  http://localhost:8082" -ForegroundColor Yellow
             Write-Host "Iceberg host:  $IcebergHostDir" -ForegroundColor Yellow
-            Write-Host "Tip: start Flink BEFORE simulate (latest-offset). Task all does this." -ForegroundColor Yellow
+            Write-Host "Sources use group-offsets: a new group reads from the start, a restart resumes." -ForegroundColor Yellow
         }
         "flink-stop" {
             Invoke-Step "Cancelling running Flink jobs and stopping cluster" {
@@ -689,7 +689,6 @@ try {
             }
         }
         "all" {
-            # Flink before simulate: jobs use scan.startup.mode=latest-offset.
             $execId = New-LocalExecutionId
             $pipelineStatus = "SUCCESS"
             $pipelineError = ""

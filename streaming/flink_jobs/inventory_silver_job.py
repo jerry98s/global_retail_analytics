@@ -149,7 +149,7 @@ def run() -> None:
           'topic' = '{flink_cfg["inventory_topic"]}',
           'properties.bootstrap.servers' = '{flink_cfg["kafka_bootstrap_servers"]}',
           'properties.group.id' = '{flink_cfg["consumer_group_inventory"]}',
-          'scan.startup.mode' = 'latest-offset',
+          'scan.startup.mode' = 'group-offsets',
           -- K-CONS from the Kafka checklist: explicit enable.auto.commit=
           -- false + isolation.level=read_committed + auto.offset.reset=
           -- earliest. See inventory_bronze_job.py for the full rationale.

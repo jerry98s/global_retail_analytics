@@ -41,10 +41,10 @@ models:
               arguments:
                 min_value: 0
       - name: marketing_consent
-        description: "Marketing consent flag. True if loyalty_id is known OR explicit_marketing_consent is recorded."
+        description: "Marketing consent flag. The customer's latest explicit statement wins (an opt-out overrides loyalty); with no statement, true for loyalty members."
         tests: [not_null]
       - name: analytics_consent
-        description: "Analytics consent flag. True if explicit_analytics_consent is recorded OR loyalty_id is known."
+        description: "Analytics consent flag. The latest explicit statement wins; with no statement, true for authenticated or loyalty customers."
         tests: [not_null]
       - name: last_updated_at
         description: "Timestamp of last dbt refresh (current_timestamp at run time)."

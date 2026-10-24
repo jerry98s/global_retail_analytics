@@ -12,7 +12,8 @@
 
   Grain: (date_key, store_key)
   Measures exclude voided lines.
-  Incremental: reprocess from max(date_key) already in {{ this }}.
+  Incremental: reprocess the same pos_restatement_days window as fact_sales,
+  so restated POS days re-aggregate.
 */
 
 with source_sales as (
@@ -28,7 +29,11 @@ with source_sales as (
     from {{ ref('fact_sales') }}
     {% if is_incremental() %}
       where date_key >= (
-          select coalesce(max(date_key), 0)
+          select coalesce({{ date_key_from_date(dateadd_unit(
+              'day',
+              -var('pos_restatement_days', 3),
+              date_from_date_key('max(date_key)')
+          )) }}, 0)
           from {{ this }}
       )
     {% endif %}
