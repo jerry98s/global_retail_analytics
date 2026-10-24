@@ -288,10 +288,11 @@ def write_consumer_exports(
         if not fs.exists(hadoop_path):
             raise RuntimeError(f"Write failed to create {path_str}")
         status = fs.listStatus(hadoop_path)
-        parquet_files = [s for s in status if s.getPath().getName().startswith("part-") and s.getPath().getName().endswith(".parquet")]
+        all_files = [s.getPath().getName() for s in status]
+        parquet_files = [name for name in all_files if name.startswith("part-") and name.endswith(".parquet")]
+        print(f"DEBUG {path_str}: all files = {all_files}, parquet files = {parquet_files}")
         if len(parquet_files) != 1:
-            file_names = [s.getPath().getName() for s in status]
-            raise RuntimeError(f"Expected exactly 1 parquet file in {path_str}, found {len(parquet_files)}: {file_names}")
+            raise RuntimeError(f"Expected exactly 1 parquet file in {path_str}, found {len(parquet_files)}: {all_files}")
     
     # Clear any cached metadata to ensure subsequent reads see the new data.
     resolution.sparkSession.catalog.clearCache()
