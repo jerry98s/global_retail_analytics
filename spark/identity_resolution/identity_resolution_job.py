@@ -37,6 +37,8 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
+import shutil
+from pathlib import Path
 from urllib.parse import urlparse
 
 from pyspark.sql import SparkSession, DataFrame
@@ -252,10 +254,6 @@ def write_consumer_exports(
     ``data/`` directory because files from superseded snapshots may remain.
     These dedicated overwrite locations contain only the latest completed run.
     """
-    import shutil
-    from pathlib import Path
-    from urllib.parse import urlparse
-    
     resolution_path = f"{root}/identity_resolution"
     edges_path = f"{root}/identity_edges"
     
