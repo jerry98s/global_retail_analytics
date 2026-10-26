@@ -396,7 +396,7 @@ finally:
     Push-Location $DbtDir
     try {
         Invoke-ProjectDbt (@(
-            'run', '--profiles-dir', '.', '--target', 'local', '--select'
+            'build', '--profiles-dir', '.', '--target', 'local', '--select'
         ) + $WapServingModels)
     }
     finally {

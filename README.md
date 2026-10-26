@@ -79,7 +79,7 @@ in [docs/evidence](./docs/evidence/README.md)):
 | Identity resolution | 19,633 identifiers resolved to customers by Spark GraphFrames |
 | Modelling | 18/18 dbt models built through Write-Audit-Publish; dbt tests gate every publish |
 | Data quality | Current unit, dbt and Great Expectations results are in the [CI runs](https://github.com/jerry98s/global_retail_analytics/actions) for each commit |
-| Customer 360 | 3,431 consent-gated customer rows served |
+| Customer 360 | 3,431 consent-gated customer × session rows (the serving view has since been rolled up to one row per customer) |
 
 | | |
 |:---:|:---:|

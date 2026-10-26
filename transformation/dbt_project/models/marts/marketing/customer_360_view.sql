@@ -1,8 +1,8 @@
 {{ config(materialized='view') }}
 
 /*
-  Canonical Customer 360 view (consent-gated).
-  serving.customer_360_serving selects from this view — keep columns aligned.
+  Canonical Customer 360 view (consent-gated), one row per customer x session.
+  serving.customer_360_serving rolls this up to one row per customer.
 */
 
 select

@@ -118,7 +118,8 @@ bronze.clickstream_events + bronze.pos_transactions
   → int_rfm_scoring (omnichannel: POS via loyalty + converted clickstream sessions)
   → dim_customer (+ int_customer_consent)
   → identity_graph (public devices excluded)
-  → customer_360_view → serving.customer_360_serving
+  → customer_360_view (customer × session)
+  → serving.customer_360_serving (one row per customer, sessions rolled up)
 ```
 
 ## Out of scope (P2 / ADR)
