@@ -45,7 +45,7 @@ From the latest full local run (2026-08-31, fresh volumes — raw evidence in
 | Spark identity | GraphFrames connected components (Docker Spark) → **19,633 identifier→identity rows** in `silver.identity_resolution` |
 | Transformation | **18/18 dbt models built** via Write-Audit-Publish (pending → audit → publish); dbt tests gate every publish |
 | Data quality | Current unit, dbt and Great Expectations results are in the [CI runs](https://github.com/jerry98s/global_retail_analytics/actions) for each commit |
-| Identity / C360 | Consent-gated Customer 360: **3,431 rows** in `customer_360_view` / `customer_360_serving` |
+| Identity / C360 | Consent-gated Customer 360: **3,431 customer × session rows** in `customer_360_view` (the serving view has since been rolled up to one row per customer) |
 
 | | |
 |:---:|:---:|

@@ -88,7 +88,7 @@ models:
         description: "Client platform (web, ios, android) from clickstream."
 
   - name: customer_360_view
-    description: "Consent-gated Customer 360 serving view at (customer_key, session_id) grain. dim_customer LEFT JOIN fact_customer_session: one row per consented customer x session; customers with no sessions appear once with NULL session columns. Filtered to marketing_consent = true. serving.customer_360_serving selects from this view."
+    description: "Consent-gated Customer 360 serving view at (customer_key, session_id) grain. dim_customer LEFT JOIN fact_customer_session: one row per consented customer x session; customers with no sessions appear once with NULL session columns. Filtered to marketing_consent = true. serving.customer_360_serving rolls this up to one row per customer."
     columns:
       - name: customer_key
         description: "Customer surrogate key (from dim_customer)."

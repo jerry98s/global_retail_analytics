@@ -13,7 +13,24 @@
 
 DROP VIEW IF EXISTS serving.customer_360_serving CASCADE;
 
+-- One row per consented customer; same definition as the dbt model.
 CREATE VIEW serving.customer_360_serving AS
-SELECT *
+SELECT
+    customer_key,
+    loyalty_id,
+    loyalty_tier,
+    rfm_segment,
+    churn_risk_score,
+    total_lifetime_value,
+    COUNT(session_id) AS session_count,
+    SUM(CASE WHEN converted THEN 1 ELSE 0 END) AS converted_session_count,
+    MAX(session_date_key) AS last_session_date_key
 FROM marketing.customer_360_view
+GROUP BY
+    customer_key,
+    loyalty_id,
+    loyalty_tier,
+    rfm_segment,
+    churn_risk_score,
+    total_lifetime_value
 WITH NO SCHEMA BINDING;

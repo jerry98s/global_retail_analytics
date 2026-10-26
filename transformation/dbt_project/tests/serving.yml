@@ -3,10 +3,19 @@ version: 2
 models:
   - name: customer_360_serving
     description: >
-      Thin serving wrapper over marketing.customer_360_view. Consent-gated;
+      Consent-gated Customer 360 at customer grain: one row per consented
+      customer, with sessions from marketing.customer_360_view rolled up.
       BI/dashboard contract for serving.customer_360_serving. dim_product_current
       remains hand-written Redshift DDL (not dbt-managed).
     columns:
       - name: customer_key
-        description: "Surrogate customer key (consented customers only)."
+        description: "Surrogate customer key (consented customers only). One row per customer."
+        tests: [not_null, unique]
+      - name: session_count
+        description: "Sessions attributed to the customer; 0 when none."
         tests: [not_null]
+      - name: converted_session_count
+        description: "Sessions that ended in a conversion."
+        tests: [not_null]
+      - name: last_session_date_key
+        description: "Date key of the most recent session; NULL when the customer has no sessions."

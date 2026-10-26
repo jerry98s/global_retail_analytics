@@ -170,10 +170,11 @@ with DAG(
     )
 
     # Build the C360 views against the freshly published live marketing Gold.
-    # Views are not WAP-published, so this is the only place they are created.
+    # Views are not WAP-published, so this is the only place they are created
+    # and tested; a failing grain test fails the task after the publish.
     dbt_serving = BashOperator(
         task_id      = "dbt_customer_360_serving_refresh",
-        bash_command = dbt_task_bash(f"run --select {SELECT_SERVING}"),
+        bash_command = dbt_task_bash(f"build --select {SELECT_SERVING}"),
     )
 
     (
