@@ -763,23 +763,44 @@ def _reader_execute(conn: Any, sql: str) -> Any:
         return cur.fetchone()
 
 
-def _as_loaded_through(value: Any) -> datetime | None:
+def _as_loaded_through(value: Any, hour_value: int | None = None) -> datetime | None:
     """Latest point a table is loaded through.
 
-    A date or YYYYMMDD key means the whole day is loaded, so it counts as the
-    end of that day.
+    For hourly tables with both date_key and hour columns, the hour value
+    determines the actual end of the loaded window.
+    
+    For daily tables or when hour is not provided, a date or YYYYMMDD key
+    means the whole day is loaded (counts as end of that day).
     """
     if isinstance(value, datetime):
         return value.replace(tzinfo=None)
     if isinstance(value, date):
-        return datetime.combine(value, datetime.min.time()) + timedelta(days=1)
+        base = datetime.combine(value, datetime.min.time())
+        if hour_value is not None:
+            return base + timedelta(hours=hour_value + 1)
+        return base + timedelta(days=1)
     text = str(value).strip()
     if re.fullmatch(r"\d{8}", text):
-        return datetime.strptime(text, "%Y%m%d") + timedelta(days=1)
+        base = datetime.strptime(text, "%Y%m%d")
+        if hour_value is not None:
+            return base + timedelta(hours=hour_value + 1)
+        return base + timedelta(days=1)
     try:
         return datetime.fromisoformat(text.replace("Z", "")).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def _infer_hour_column(ts_col: str) -> str | None:
+    """Infer hour column name from timestamp column for hourly tables.
+    
+    Returns None for daily-grain tables.
+    """
+    if not ts_col or "date_key" not in ts_col:
+        return None
+    # snapshot_date_key -> snapshot_hour
+    prefix = ts_col.replace("_date_key", "")
+    return f"{prefix}_hour" if prefix else "snapshot_hour"
 
 
 def collect_table_freshness(
@@ -806,14 +827,36 @@ def collect_table_freshness(
             )
             row_count = int(row[0]) if row and row[0] is not None else 0
             if ts_col:
-                row_ts = _reader_execute(
-                    analytics_conn,
-                    f"SELECT MAX({ts_col}) FROM {schema}.{table}",
-                )
-                if row_ts and row_ts[0] is not None:
-                    max_ts = _as_loaded_through(row_ts[0])
-                    if max_ts is not None:
-                        lag = int((measured - max_ts).total_seconds() / 60)
+                # Check if this is an hourly table with a companion hour column
+                hour_col = _infer_hour_column(ts_col)
+                max_hour: int | None = None
+                
+                # First try to query with hour column if it might exist
+                if hour_col:
+                    try:
+                        row_with_hour = _reader_execute(
+                            analytics_conn,
+                            f"SELECT MAX({ts_col}), MAX({hour_col}) FROM {schema}.{table} "
+                            f"WHERE {ts_col} = (SELECT MAX({ts_col}) FROM {schema}.{table})",
+                        )
+                        if row_with_hour and row_with_hour[0] is not None:
+                            max_hour = int(row_with_hour[1]) if row_with_hour[1] is not None else None
+                            max_ts = _as_loaded_through(row_with_hour[0], max_hour)
+                    except Exception:  # noqa: BLE001
+                        # Hour column doesn't exist, fall back to date-only
+                        max_hour = None
+                
+                # If hour-based query failed or hour column doesn't exist, use date only
+                if max_ts is None:
+                    row_ts = _reader_execute(
+                        analytics_conn,
+                        f"SELECT MAX({ts_col}) FROM {schema}.{table}",
+                    )
+                    if row_ts and row_ts[0] is not None:
+                        max_ts = _as_loaded_through(row_ts[0])
+                
+                if max_ts is not None:
+                    lag = int((measured - max_ts).total_seconds() / 60)
             if sla is None:
                 sla_status = "ok" if row_count is not None else "unknown"
             elif lag is None:
