@@ -47,8 +47,8 @@ objects:
     platform_layer: silver
     domain: marketing
     owner: data-platform
-    grain: one row per resolved identity (customer_id)
-    timestamp_column: last_seen_at
+    grain: one row per identifier (identifier_type, identifier_value)
+    timestamp_column: computed_at
     freshness_sla_minutes: 120
     is_active: true
 
@@ -57,8 +57,8 @@ objects:
     platform_layer: silver
     domain: marketing
     owner: data-platform
-    grain: one row per identity edge (identifier pair)
-    timestamp_column: last_seen_at
+    grain: one row per identity edge (src, dst, edge_type)
+    timestamp_column: last_observed_at
     freshness_sla_minutes: 120
     is_active: true
 
