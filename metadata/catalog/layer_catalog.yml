@@ -42,6 +42,26 @@ objects:
     freshness_sla_minutes: 60
     is_active: true
 
+  - object_fqn: silver.identity_resolution
+    object_type: iceberg
+    platform_layer: silver
+    domain: marketing
+    owner: data-platform
+    grain: one row per resolved identity (customer_id)
+    timestamp_column: last_seen_at
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: silver.identity_edges
+    object_type: iceberg
+    platform_layer: silver
+    domain: marketing
+    owner: data-platform
+    grain: one row per identity edge (identifier pair)
+    timestamp_column: last_seen_at
+    freshness_sla_minutes: 120
+    is_active: true
+
   - object_fqn: bronze.pos_transactions
     object_type: external
     platform_layer: bronze

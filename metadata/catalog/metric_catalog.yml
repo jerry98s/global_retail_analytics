@@ -24,3 +24,21 @@ metrics:
     unit: count
     owner: data-platform
     is_active: true
+
+  - metric_name: table_freshness_unknown_count
+    description: Count of freshness observations with sla_status = unknown (metadata collection issues)
+    source_relation: meta.table_freshness
+    expression: SUM(CASE WHEN sla_status = 'unknown' THEN 1 ELSE 0 END)
+    grain: (measured_at day)
+    unit: count
+    owner: data-platform
+    is_active: true
+
+  - metric_name: metadata_collection_failure_count
+    description: Count of pipeline runs where metadata collection had failures
+    source_relation: meta.pipeline_run
+    expression: SUM(CASE WHEN error_text LIKE '%metadata%' THEN 1 ELSE 0 END)
+    grain: (started_at day)
+    unit: count
+    owner: data-platform
+    is_active: true

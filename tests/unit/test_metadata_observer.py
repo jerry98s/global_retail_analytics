@@ -74,6 +74,17 @@ def test_layer_catalog_lists_inventory_lambda_views() -> None:
     assert "intermediate.int_inventory_batch_coverage" in fqns
 
 
+def test_layer_catalog_includes_critical_spark_outputs() -> None:
+    """P1: Catalog must track identity resolution and other critical Spark outputs."""
+    raw = yaml.safe_load(
+        (_REPO / "metadata" / "catalog" / "layer_catalog.yml").read_text(encoding="utf-8")
+    )
+    fqns = {o["object_fqn"] for o in raw["objects"]}
+    # Spark identity resolution outputs (ADR-010)
+    assert "silver.identity_resolution" in fqns, "Missing identity_resolution table"
+    assert "silver.identity_edges" in fqns, "Missing identity_edges table"
+
+
 def test_metric_expressions_run_on_duckdb_and_redshift() -> None:
     # Redshift has no aggregate FILTER clause; integer / integer truncates.
     raw = yaml.safe_load(
@@ -290,6 +301,81 @@ def test_freshness_breaches_lists_only_breached_tables_of_the_run(tmp_path: Path
     breaches = mo.freshness_breaches(writer, execution_id="e1")
     assert len(breaches) == 1
     assert breaches[0].startswith("summary.stale (lag ")
+    writer.close()
+    analytics.close()
+
+
+def test_hourly_inventory_freshness_with_stale_data_breaches_sla(tmp_path: Path) -> None:
+    """P0: Hourly tables with date keys must measure actual event time, not assume end of day."""
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA silver")
+    analytics.execute(
+        "CREATE TABLE silver.inventory_hourly AS "
+        "SELECT 20261024 AS snapshot_date_key, 7 AS snapshot_hour"
+    )
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    
+    # Measured at 4 PM (16:00) same day. Last data is from hour 7 (7-8 AM).
+    # Gap is from 8:00 AM to 4:00 PM = 8 hours = 480 minutes, which exceeds 120-minute SLA.
+    mo.collect_table_freshness(
+        writer,
+        analytics,
+        execution_id="e1",
+        targets=[("silver", "inventory_hourly", "snapshot_date_key", 120)],
+        measured_at=datetime(2026, 10, 24, 16, 0),
+    )
+    lag, status = writer.fetchone(
+        "SELECT lag_minutes, sla_status FROM meta.table_freshness WHERE execution_id = 'e1'"
+    )
+    # Should breach because 480 minutes > 120-minute SLA
+    assert lag == 480, f"Expected lag = 480 min (8 hours), got {lag}"
+    assert status == "breach", f"Expected breach, got {status}"
+    
+    breaches = mo.freshness_breaches(writer, execution_id="e1")
+    assert len(breaches) == 1
+    writer.close()
+    analytics.close()
+
+
+def test_freshness_unknown_status_is_observable(tmp_path: Path) -> None:
+    """P1: Unknown freshness (metadata failures) should be trackable separately."""
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA summary")
+    analytics.execute("CREATE TABLE summary.good AS SELECT 20261024 AS date_key")
+    # Missing table will result in unknown status
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    
+    mo.collect_table_freshness(
+        writer,
+        analytics,
+        execution_id="e1",
+        targets=[
+            ("summary", "good", "date_key", 1440),
+            ("summary", "missing", "date_key", 1440),
+        ],
+        measured_at=datetime(2026, 10, 24, 12, 0),
+    )
+    
+    # Query for unknown status count
+    unknown_count = writer.fetchone(
+        "SELECT COUNT(*) FROM meta.table_freshness "
+        "WHERE execution_id = 'e1' AND sla_status = 'unknown'"
+    )[0]
+    assert unknown_count == 1, "Should have 1 table with unknown status"
+    
+    # Verify metric can be computed
+    metric_value = writer.fetchone(
+        "SELECT SUM(CASE WHEN sla_status = 'unknown' THEN 1 ELSE 0 END) "
+        "FROM meta.table_freshness WHERE execution_id = 'e1'"
+    )[0]
+    assert metric_value == 1
+    
     writer.close()
     analytics.close()
 
