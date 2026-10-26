@@ -4,6 +4,7 @@
 # (amazon provider, boto3, pyarrow, redshift-connector, sqlalchemy) take its
 # version; do not pin them here. dbt cannot satisfy these constraints and runs
 # from its own virtualenv (startup.sh + dbt-requirements.txt).
+apache-airflow-providers-amazon
 great-expectations==0.18.21
 redshift-connector
 sqlalchemy-redshift==0.8.14
