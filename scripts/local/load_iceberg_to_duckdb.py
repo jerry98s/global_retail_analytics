@@ -10,6 +10,7 @@ files into ``local_retail.duckdb`` schemas that match dbt ``source()`` names:
   silver.inventory_hourly
   silver.identity_resolution  (from the Spark GraphFrames current-run export,
                                ADR-010/011 — required in fidelity mode)
+  silver.identity_edges       (same Spark export; audit copy of graph edges)
 
 Reference dims (``finance.dim_date``, ``finance.dim_store``) stay as dbt seeds.
 
@@ -45,6 +46,10 @@ _TABLES: dict[str, tuple[str, str]] = {
     "identity_resolution": (
         "silver",
         "consumer_current/identity_resolution/**/*.parquet",
+    ),
+    "identity_edges": (
+        "silver",
+        "consumer_current/identity_edges/**/*.parquet",
     ),
 }
 
@@ -112,7 +117,12 @@ def load_all(
         for name, (schema, pattern) in _TABLES.items():
             files = _glob_parquet(iceberg_dir, pattern)
             required = False
-            if name in ("clickstream_events", "inventory_events", "identity_resolution"):
+            if name in (
+                "clickstream_events",
+                "inventory_events",
+                "identity_resolution",
+                "identity_edges",
+            ):
                 required = require_streams
             elif name == "pos_transactions":
                 required = require_pos

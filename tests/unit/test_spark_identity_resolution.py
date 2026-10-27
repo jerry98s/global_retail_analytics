@@ -190,5 +190,7 @@ class TestDbtHandoffContract:
         job = (_REPO / "spark/identity_resolution/identity_resolution_job.py").read_text(encoding="utf-8")
         assert "consumer_current/identity_resolution/" in bridge
         assert "silver/identity_resolution/data/" not in bridge
+        assert "consumer_current/identity_edges/" in bridge
+        assert "silver/identity_edges/data/" not in bridge
         assert "{root}/identity_resolution" in job
         assert "{root}/identity_edges" in job
