@@ -42,29 +42,29 @@ DASHBOARD_QUERIES: dict[str, dict[str, Any]] = {
         "limit": 20,
     },
     "inventory_by_day": {
-        "metrics": ["inventory_on_hand", "inventory_available", "stockout_hours"],
+        "metrics": ["ending_on_hand_qty", "ending_available_qty", "stockout_hour_count"],
         "group_by": ["metric_time__day"],
         "order_by": ["metric_time__day"],
     },
     "inventory_current": {
-        "metrics": ["inventory_on_hand", "inventory_available"],
+        "metrics": ["ending_on_hand_qty", "ending_available_qty"],
     },
     "inventory_by_store": {
-        "metrics": ["inventory_on_hand"],
+        "metrics": ["ending_on_hand_qty"],
         "group_by": ["store__store_name"],
-        "order_by": ["-inventory_on_hand"],
+        "order_by": ["-ending_on_hand_qty"],
         "limit": 20,
     },
     "session_funnel": {
         "metrics": [
-            "sessions",
-            "product_views",
-            "add_to_carts",
+            "session_count",
+            "product_view_count",
+            "add_to_cart_count",
             "converted_sessions",
-            "session_conversion_rate",
+            "conversion_rate",
         ],
         "group_by": ["platform_day__platform"],
-        "order_by": ["-sessions"],
+        "order_by": ["-session_count"],
     },
 }
 

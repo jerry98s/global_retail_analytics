@@ -42,8 +42,11 @@ split across two `product_key` values.
    `summary.sales_daily_store`, `summary.inventory_position_daily`,
    `summary.sessions_daily_platform`, and the `dim_store` seed. Never on facts.
    - On-hand and available are `sum` measures with
-     `non_additive_dimension: position_date, window_choice: max`. Over a period
+     `non_additive_dimension: snapshot_date, window_choice: max`. Over a period
      they take the last day.
+   - Measures and metrics keep the summary column name they aggregate
+     (`ending_on_hand_qty`, `session_count`), so one concept has one name from
+     the table to the dashboard.
    - `metricflow_time_spine` is a view over `dim_date`.
    - Time dimensions parse the `YYYYMMDD` keys with `substring`/`cast`, which
      runs unchanged on DuckDB and Redshift.

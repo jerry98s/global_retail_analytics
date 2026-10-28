@@ -9,6 +9,12 @@ version: 2
 #
 # Time dimensions parse the YYYYMMDD integer keys with plain substring/cast,
 # which runs unchanged on DuckDB and Redshift (expr is not Jinja-rendered).
+#
+# Naming: measures and metrics use the summary column name they aggregate.
+# Time dimensions drop _key from the date key (snapshot_date_key ->
+# snapshot_date, session_date_key -> session_date); the generic date_key on
+# sales becomes sales_date. Primary entities name the grain (store_day = one
+# store on one day).
 
 models:
   - name: metricflow_time_spine
@@ -47,7 +53,7 @@ semantic_models:
     model: ref('sales_daily_store')
     defaults:
       agg_time_dimension: sales_date
-    primary_entity: sales_day_store
+    primary_entity: store_day
     entities:
       - name: store
         type: foreign
@@ -79,7 +85,7 @@ semantic_models:
       Grain (snapshot_date_key, product_id, store_id).
     model: ref('inventory_position_daily')
     defaults:
-      agg_time_dimension: position_date
+      agg_time_dimension: snapshot_date
     primary_entity: product_store_day
     entities:
       - name: store
@@ -89,7 +95,7 @@ semantic_models:
         type: foreign
         expr: product_id
     dimensions:
-      - name: position_date
+      - name: snapshot_date
         type: time
         expr: >-
           cast(substring(cast(snapshot_date_key as varchar), 1, 4) || '-' || substring(cast(snapshot_date_key as varchar), 5, 2)
@@ -99,24 +105,21 @@ semantic_models:
       - name: had_movement
         type: categorical
     measures:
-      - name: on_hand_qty
+      - name: ending_on_hand_qty
         description: Semi-additive. Sums across products and stores; over time takes the last day in the period.
         agg: sum
-        expr: ending_on_hand_qty
         non_additive_dimension:
-          name: position_date
+          name: snapshot_date
           window_choice: max
-      - name: available_qty
-        description: Semi-additive, like on_hand_qty. On-hand floored at zero.
+      - name: ending_available_qty
+        description: Semi-additive, like ending_on_hand_qty. On-hand floored at zero.
         agg: sum
-        expr: ending_available_qty
         non_additive_dimension:
-          name: position_date
+          name: snapshot_date
           window_choice: max
-      - name: stockout_hours
+      - name: stockout_hour_count
         description: Product/store hours with on-hand <= 0. Additive.
         agg: sum
-        expr: stockout_hour_count
 
   - name: sessions_daily_platform
     description: Daily platform sessions. Grain (session_date_key, platform).
@@ -135,14 +138,11 @@ semantic_models:
       - name: platform
         type: categorical
     measures:
-      - name: sessions
+      - name: session_count
         agg: sum
-        expr: session_count
       - name: converted_sessions
         agg: sum
-      - name: product_views
+      - name: product_view_count
         agg: sum
-        expr: product_view_count
-      - name: add_to_carts
+      - name: add_to_cart_count
         agg: sum
-        expr: add_to_cart_count

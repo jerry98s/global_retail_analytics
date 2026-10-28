@@ -101,11 +101,28 @@ class TestSemanticModels:
     def test_on_hand_measures_are_semi_additive(self) -> None:
         inventory = _semantic_models()["inventory_position_daily"]
         measures = {m["name"]: m for m in inventory["measures"]}
-        for name in ("on_hand_qty", "available_qty"):
+        for name in ("ending_on_hand_qty", "ending_available_qty"):
             nad = measures[name]["non_additive_dimension"]
             assert nad["name"] == inventory["defaults"]["agg_time_dimension"]
             assert nad["window_choice"] == "max"
-        assert "non_additive_dimension" not in measures["stockout_hours"]
+        assert "non_additive_dimension" not in measures["stockout_hour_count"]
+
+    def test_measures_and_metrics_use_summary_column_names(self) -> None:
+        for name, sm in _semantic_models().items():
+            for measure in sm.get("measures", []):
+                assert "expr" not in measure, f"{name}.{measure['name']} renames its column"
+        for name, metric in _metrics().items():
+            if metric["type"] == "simple":
+                assert metric["type_params"]["measure"] == name, name
+
+    def test_time_dimensions_follow_date_key_names(self) -> None:
+        for name, sm in _semantic_models().items():
+            for dim in sm.get("dimensions", []):
+                if dim["type"] != "time":
+                    continue
+                key = re.search(r"cast\((\w+) as varchar\)", dim["expr"]).group(1)
+                expected = "sales_date" if key == "date_key" else key.removesuffix("_key")
+                assert dim["name"] == expected, f"{name}.{dim['name']} reads {key}"
 
     def test_time_spine_is_declared(self) -> None:
         models = {m["name"]: m for m in _yaml(_SEMANTIC / "semantic_models.yml")["models"]}
@@ -132,11 +149,11 @@ class TestMetricCatalogAlignment:
         layer = mo.load_layer_catalog(_REPO / "metadata" / "catalog")
         rows = {r["metric_name"]: r for r in mo.semantic_metric_rows(_SEMANTIC, layer)}
         assert set(rows) == set(_metrics())
-        on_hand = rows["inventory_on_hand"]
+        on_hand = rows["ending_on_hand_qty"]
         assert on_hand["source_relation"] == "summary.inventory_position_daily"
         assert on_hand["expression"] == "SUM(ending_on_hand_qty)"
         assert on_hand["grain"] == "(snapshot_date_key, product_id, store_id)"
-        assert rows["session_conversion_rate"]["expression"] == (
+        assert rows["conversion_rate"]["expression"] == (
             "CAST(SUM(converted_sessions) AS DOUBLE PRECISION) / NULLIF(SUM(session_count), 0)"
         )
 

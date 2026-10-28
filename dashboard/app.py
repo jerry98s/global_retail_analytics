@@ -112,18 +112,18 @@ def render_gold() -> None:
             st.warning("No inventory rows yet.")
         else:
             c1, c2, c3 = st.columns(3)
-            c1.metric("Quantity on hand", f"{int(current['inventory_on_hand'].iloc[0]):,}")
-            c2.metric("Quantity available", f"{int(current['inventory_available'].iloc[0]):,}")
+            c1.metric("Quantity on hand", f"{int(current['ending_on_hand_qty'].iloc[0]):,}")
+            c2.metric("Quantity available", f"{int(current['ending_available_qty'].iloc[0]):,}")
             c3.metric("As of", str(pd.Timestamp(by_day["metric_time__day"].iloc[-1]).date()))
             daily = by_day.set_index("metric_time__day")
-            st.line_chart(daily["inventory_on_hand"])
+            st.line_chart(daily["ending_on_hand_qty"])
             st.subheader("Stockout hours per day")
-            st.bar_chart(daily["stockout_hours"])
+            st.bar_chart(daily["stockout_hour_count"])
 
         by_store, err = _safe_semantic("inventory_by_store")
         if not err and not by_store.empty:
             st.subheader("On hand by store")
-            st.bar_chart(by_store.set_index("store__store_name")["inventory_on_hand"])
+            st.bar_chart(by_store.set_index("store__store_name")["ending_on_hand_qty"])
 
     with tab_customer:
         st.subheader("Customer 360 & funnel")
