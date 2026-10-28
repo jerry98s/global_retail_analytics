@@ -32,32 +32,32 @@ metrics:
     type_params:
       measure: transaction_count
 
-  - name: inventory_on_hand
+  - name: ending_on_hand_qty
     label: Quantity on hand
     description: On-hand units at the end of the period (last day), summed across products and stores.
     type: simple
     type_params:
-      measure: on_hand_qty
+      measure: ending_on_hand_qty
 
-  - name: inventory_available
+  - name: ending_available_qty
     label: Quantity available
     description: Available units (on-hand floored at zero) at the end of the period.
     type: simple
     type_params:
-      measure: available_qty
+      measure: ending_available_qty
 
-  - name: stockout_hours
+  - name: stockout_hour_count
     label: Stockout hours
     description: Product/store hours with on-hand <= 0 in the period.
     type: simple
     type_params:
-      measure: stockout_hours
+      measure: stockout_hour_count
 
-  - name: sessions
+  - name: session_count
     label: Sessions
     type: simple
     type_params:
-      measure: sessions
+      measure: session_count
 
   - name: converted_sessions
     label: Converted sessions
@@ -65,22 +65,22 @@ metrics:
     type_params:
       measure: converted_sessions
 
-  - name: product_views
+  - name: product_view_count
     label: Product views
     type: simple
     type_params:
-      measure: product_views
+      measure: product_view_count
 
-  - name: add_to_carts
+  - name: add_to_cart_count
     label: Add to carts
     type: simple
     type_params:
-      measure: add_to_carts
+      measure: add_to_cart_count
 
-  - name: session_conversion_rate
+  - name: conversion_rate
     label: Session conversion rate
-    description: Converted sessions divided by sessions.
+    description: Converted sessions divided by sessions, recomputed from the totals rather than averaging the daily conversion_rate column.
     type: ratio
     type_params:
       numerator: converted_sessions
-      denominator: sessions
+      denominator: session_count

@@ -1,5 +1,9 @@
 # Governed object registry for metadata.meta.layer_catalog.
 # Collector upserts by object_fqn (idempotent).
+#
+# grain is the unique-key tuple, e.g. (date_key, store_key), whenever the
+# object has one; prose only for objects without a key (raw Bronze ledgers,
+# single-row views). object_type external = read through Spectrum on main.
 
 objects:
   - object_fqn: bronze.clickstream_records
@@ -27,7 +31,7 @@ objects:
     platform_layer: silver
     domain: digital
     owner: data-platform
-    grain: one row per clickstream event
+    grain: (event_id)
     timestamp_column: event_time
     freshness_sla_minutes: 60
     is_active: true
@@ -37,27 +41,27 @@ objects:
     platform_layer: silver
     domain: supply
     owner: data-platform
-    grain: one row per inventory event
+    grain: (event_id)
     timestamp_column: event_time
     freshness_sla_minutes: 60
     is_active: true
 
   - object_fqn: silver.identity_resolution
-    object_type: iceberg
+    object_type: external
     platform_layer: silver
     domain: marketing
     owner: data-platform
-    grain: one row per identifier (identifier_type, identifier_value)
+    grain: (identifier_type, identifier_value)
     timestamp_column: computed_at
     freshness_sla_minutes: 120
     is_active: true
 
   - object_fqn: silver.identity_edges
-    object_type: iceberg
+    object_type: external
     platform_layer: silver
     domain: marketing
     owner: data-platform
-    grain: one row per identity edge (src, dst, edge_type)
+    grain: (src, dst, edge_type)
     timestamp_column: last_observed_at
     freshness_sla_minutes: 120
     is_active: true
@@ -67,7 +71,7 @@ objects:
     platform_layer: bronze
     domain: finance
     owner: data-platform
-    grain: one row per POS line item
+    grain: (transaction_id, line_item_number)
     timestamp_column: transaction_date
     freshness_sla_minutes: 1440
     is_active: true
@@ -77,7 +81,7 @@ objects:
     platform_layer: silver
     domain: supply
     owner: data-platform
-    grain: (snapshot_date_key, snapshot_hour, product_id, store_id) per Flink window
+    grain: (snapshot_date_key, snapshot_hour, product_id, store_id)
     timestamp_column: snapshot_date_key
     freshness_sla_minutes: 120
     is_active: true
@@ -87,7 +91,7 @@ objects:
     platform_layer: intermediate
     domain: supply
     owner: analytics-engineering
-    grain: one row (batch_start_hour_key, batch_end_hour_key)
+    grain: one row describing the Spark-covered hour range
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true
@@ -127,7 +131,7 @@ objects:
     platform_layer: gold
     domain: marketing
     owner: analytics-engineering
-    grain: one row per session
+    grain: (session_id)
     timestamp_column: session_date_key
     freshness_sla_minutes: 120
     is_active: true
@@ -137,7 +141,7 @@ objects:
     platform_layer: gold
     domain: marketing
     owner: analytics-engineering
-    grain: SCD2 product version
+    grain: (product_key)
     timestamp_column: effective_from
     freshness_sla_minutes: null
     is_active: true
@@ -147,7 +151,7 @@ objects:
     platform_layer: gold
     domain: finance
     owner: analytics-engineering
-    grain: one row per store
+    grain: (store_key)
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true
@@ -157,7 +161,7 @@ objects:
     platform_layer: gold
     domain: finance
     owner: analytics-engineering
-    grain: one row per calendar day
+    grain: (date_key)
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true
@@ -167,7 +171,7 @@ objects:
     platform_layer: gold
     domain: marketing
     owner: analytics-engineering
-    grain: one row per customer
+    grain: (customer_key)
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true
@@ -217,7 +221,7 @@ objects:
     platform_layer: serving
     domain: marketing
     owner: analytics-engineering
-    grain: one row per customer
+    grain: (customer_key)
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true

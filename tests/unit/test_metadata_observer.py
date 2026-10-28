@@ -57,8 +57,9 @@ def test_layer_catalog_grain_matches_model_unique_key() -> None:
     for obj in raw["objects"]:
         table = obj["object_fqn"].split(".", 1)[1]
         grain = obj.get("grain") or ""
-        if table not in unique_keys or not grain.startswith("("):
+        if table not in unique_keys:
             continue
+        assert grain.startswith("("), (obj["object_fqn"], "grain must be the unique-key tuple")
         columns = {c.strip() for c in grain[1:grain.index(")")].split(",")}
         assert columns == unique_keys[table], (obj["object_fqn"], columns, unique_keys[table])
         checked += 1
@@ -227,7 +228,7 @@ def test_seed_catalogs_upsert(tmp_path: Path) -> None:
     row = writer.fetchone("SELECT COUNT(*) FROM meta.layer_catalog")
     assert row[0] >= 10
     names = set(writer.fetchone("SELECT list(metric_name) FROM meta.metric_catalog")[0])
-    assert {"pipeline_success_rate", "net_revenue", "inventory_on_hand"} <= names
+    assert {"pipeline_success_rate", "net_revenue", "ending_on_hand_qty"} <= names
     assert "retired_metric" not in names
     writer.close()
 

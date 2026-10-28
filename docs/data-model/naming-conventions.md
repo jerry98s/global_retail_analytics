@@ -8,7 +8,7 @@ Spectrum/dbt**, except where the layer is already implied by schema (`staging.st
 | Layer | Redshift | Iceberg namespace | Example table |
 |-------|----------|-------------------|---------------|
 | Bronze (lake) | POS Spectrum; raw ledgers via Spark/Iceberg | `bronze` | `bronze.clickstream_records` |
-| Silver (lake) | `silver.*` (Spectrum external) | `silver` | `silver.inventory_hourly` |
+| Silver (lake) | `silver.*` (Spectrum external) | `silver` | `silver.clickstream_events` |
 | Staging (dbt) | `staging.*` | — | `staging.stg_clickstream_events` |
 | Intermediate | `intermediate.*` | — | `intermediate.int_session_reconstruction` |
 | Gold | `finance.*`, `marketing.*` | — | `finance.fact_sales` |
@@ -24,22 +24,34 @@ workgroup — see [platform-layers.md](platform-layers.md) and
 
 ## Bronze tables
 
-| Kafka topic | Iceberg table | S3 path suffix | Spectrum / dbt source |
-|-------------|---------------|----------------|------------------------|
-| `clickstream.events.v1` | `bronze.clickstream_records` | Iceberg-managed; read snapshots | None (raw binary ledger) |
-| `inventory.events.v1` | `bronze.inventory_records` | Iceberg-managed; read snapshots | None (raw binary ledger) |
-| *(batch POS)* | *(Parquet only)* | `iceberg/bronze/pos_transactions/data/` | `bronze.pos_transactions` |
+Bronze keeps every Kafka delivery as raw bytes (ADR-011), so the tables are
+named `*_records`, not `*_events`: a record is one delivery, and transport
+repeats are kept.
+
+| Kafka topic | Iceberg table | S3 path suffix | Read by |
+|-------------|---------------|----------------|---------|
+| `clickstream.events.v1` | `bronze.clickstream_records` | Iceberg-managed; read snapshots | Spark promotion only |
+| `inventory.events.v1` | `bronze.inventory_records` | Iceberg-managed; read snapshots | Spark promotion only |
+| *(batch POS)* | *(Parquet only)* | `iceberg/bronze/pos_transactions/data/` | `bronze.pos_transactions` (Spectrum / dbt source) |
 
 POS is a **batch exception**: grain is line items, not events, so the name stays
 `pos_transactions`.
 
+`bronze.clickstream_events` / `bronze.inventory_events` are legacy filtered
+tables from before ADR-011. Spectrum still registers them, but no current
+model reads them.
+
 ## Silver tables
 
-| Kafka topic | Iceberg table | S3 path suffix |
-|-------------|---------------|----------------|
-| `inventory.events.v1` | `silver.inventory_hourly` | `iceberg/silver/inventory_hourly/data/` |
-| Bronze clickstream records | `silver.clickstream_events` | `iceberg/consumer_current/clickstream_events/` |
-| Bronze inventory records | `silver.inventory_events` | `iceberg/consumer_current/inventory_events/` |
+| Source | Iceberg table | S3 path suffix |
+|--------|---------------|----------------|
+| Spark promotion of `bronze.clickstream_records` | `silver.clickstream_events` | `iceberg/consumer_current/clickstream_events/` |
+| Spark promotion of `bronze.inventory_records` | `silver.inventory_events` | `iceberg/consumer_current/inventory_events/` |
+| `inventory.events.v1` (Flink window) | `silver.inventory_hourly` | `iceberg/silver/inventory_hourly/data/` |
+| Spark GraphFrames job | `silver.identity_resolution`, `silver.identity_edges` | `iceberg/consumer_current/identity_*/` |
+
+Spark-written Silver tables also have a replace-only `consumer_current/{table}/`
+Parquet export. Spectrum reads that export, never the Iceberg `data/` folders.
 
 `finance.fact_inventory_snapshot` reads `int_inventory_hourly`: **silver**
 `inventory_events` for hours Spark has covered, **silver** `inventory_hourly`
@@ -86,3 +98,17 @@ Kimball names follow `docs/data-model/dimensional-model.md`:
 - Facts: `fact_{entity}` (`fact_sales`, `fact_inventory_snapshot`, `fact_customer_session`)
 - Dims: `dim_{entity}` (`dim_product`, `dim_customer`, …)
 - Serving views: `serving.{use_case}` (`customer_360_serving`, `dim_product_current`)
+
+## Semantic layer and metadata catalogs
+
+- Semantic measures and metrics use the summary column they aggregate
+  (`ending_on_hand_qty`, `session_count`, `conversion_rate`). Labels carry the
+  business wording ("Quantity on hand").
+- Time dimensions drop `_key` from the date key (`snapshot_date`,
+  `session_date`); the generic `date_key` on sales is `sales_date`.
+- Primary entities name the grain: `store_day`, `product_store_day`,
+  `platform_day`.
+- `layer_catalog.yml` grain is the unique-key tuple when the object has one,
+  e.g. `(date_key, store_key)`; prose only for keyless objects.
+- Operational `meta.*` metrics are `{subject}_{measure}` with the unit last
+  (`table_freshness_breach_count`, `pipeline_success_rate`).
