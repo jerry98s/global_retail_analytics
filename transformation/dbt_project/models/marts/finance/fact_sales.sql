@@ -33,12 +33,15 @@
   That rewrites a partial last day, reloads restated or late POS partitions
   inside the window, and re-keys unknown products once dim_product publishes
   them. The grain is still enforced by the unique_combination_of_columns test.
+  Setting vars pos_restate_from / pos_restate_to replaces exactly that date
+  range instead, for corrected files older than the lookback.
   Whole-day replacement assumes a day's lines never land in a dt= partition
   older than the day itself; such lines would be filtered out and deleted.
   `dt` is the Spectrum partition column (aliased from transaction_date on
   DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
 */
 
+{% set restate = pos_restate_range() %}
 {% set lookback %}
           select cast({{ dateadd_unit(
               'day',
@@ -51,7 +54,12 @@
 with base as (
     select *
     from {{ ref('stg_pos_transactions') }}
-    {% if is_incremental() %}
+    {% if is_incremental() and restate %}
+      where transaction_date between cast('{{ restate.from_date }}' as date)
+                                 and cast('{{ restate.to_date }}' as date)
+        and dt between cast('{{ restate.from_date }}' as date)
+                   and cast('{{ restate.to_date }}' as date)
+    {% elif is_incremental() %}
       where transaction_date >= ( {{ lookback }} )
         and dt >= ( {{ lookback }} )
     {% endif %}

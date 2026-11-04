@@ -2,19 +2,29 @@
 -- line count and net revenue in stg_pos_transactions must equal fact_sales,
 -- and every store-day of non-voided fact_sales must equal sales_daily_store.
 -- Catches lines left behind by a corrected file and stale store-days.
--- The window matches the models' pos_restatement_days lookback, so the
--- Spectrum side scans only the partitions the run just reprocessed.
+-- The window matches the models' pos_restatement_days lookback, or the
+-- pos_restate_from / pos_restate_to range when set, so the Spectrum side
+-- scans only the partitions the run just reprocessed.
 
-{% set window_start %}
-    (
-        select cast({{ dateadd_unit(
-            'day',
-            -var('pos_restatement_days', 3),
-            "max(" ~ date_from_date_key('date_key') ~ ")"
-        ) }} as date)
-        from {{ ref('fact_sales') }}
-    )
-{% endset %}
+{% set restate = pos_restate_range() %}
+{% if restate %}
+    {% set window_start = "cast('" ~ restate.from_date ~ "' as date)" %}
+    {% set source_end = "and transaction_date <= cast('" ~ restate.to_date ~ "' as date)" %}
+    {% set key_end = "and date_key <= " ~ restate.to_key %}
+{% else %}
+    {% set window_start %}
+        (
+            select cast({{ dateadd_unit(
+                'day',
+                -var('pos_restatement_days', 3),
+                "max(" ~ date_from_date_key('date_key') ~ ")"
+            ) }} as date)
+            from {{ ref('fact_sales') }}
+        )
+    {% endset %}
+    {% set source_end = "" %}
+    {% set key_end = "" %}
+{% endif %}
 
 with source_daily as (
     select
@@ -24,6 +34,7 @@ with source_daily as (
     from {{ ref('stg_pos_transactions') }}
     where transaction_date >= {{ window_start }}
       and dt >= {{ window_start }}
+      {{ source_end }}
     group by 1
 ),
 
@@ -34,6 +45,7 @@ fact_daily as (
         sum(net_revenue) as net_revenue
     from {{ ref('fact_sales') }}
     where date_key >= {{ date_key_from_date(window_start) }}
+      {{ key_end }}
     group by 1
 ),
 
@@ -46,6 +58,7 @@ fact_store_daily as (
         sum(net_revenue) as net_revenue
     from {{ ref('fact_sales') }}
     where date_key >= {{ date_key_from_date(window_start) }}
+      {{ key_end }}
       and not is_voided
     group by 1, 2
 ),
@@ -54,6 +67,7 @@ summary_store_daily as (
     select date_key, store_key, transaction_count, units_sold, net_revenue
     from {{ ref('sales_daily_store') }}
     where date_key >= {{ date_key_from_date(window_start) }}
+      {{ key_end }}
 ),
 
 source_vs_fact as (
