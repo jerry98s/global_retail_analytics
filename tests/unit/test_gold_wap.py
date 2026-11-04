@@ -437,7 +437,8 @@ class TestDagWapContract:
     def test_warehouse_clone_then_pending_then_publish(self) -> None:
         src = _read(_DAGS / "warehouse_daily_batch_pipeline.py")
         assert "clone_finance_summary_task" in src
-        assert '"wap_phase": "pending"' in src
+        # Pending vars come from pos_restatement.pos_dbt_vars (tested there).
+        assert src.count("{{ pos_dbt_vars(params) }}") == 2
         assert "wap_publish" in src
         assert "pending_tables" in src
         # dbt tests are the publish gate; GE no longer re-audits Gold.

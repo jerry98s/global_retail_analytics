@@ -30,7 +30,10 @@ should be seeded in the MWAA UI per environment — see
 Wiring
 ------
 Imported by ``orchestration/airflow/dags/warehouse_daily_batch_pipeline.py`` as a
-``PythonOperator`` placed after ``dbt_tests`` and before the WAP publish.
+``PythonOperator`` placed after ``dbt_tests`` and before the WAP publish. That
+DAG passes ``save_baseline=False`` and saves the counts in a separate task after
+publish, so a failed publish never advances the baseline to counts that did not
+go live.
 
 It is a publish gate for the tables the calling DAG owns (``pending_tables``):
 an owned table that cannot be read, or that shrank by more than the threshold,
@@ -156,12 +159,15 @@ def reconcile_gold_row_counts(
     var_get: Any,
     var_set: Any,
     pending_tables: list[str] | None = None,
+    save_baseline: bool = True,
 ) -> dict[str, Any]:
     """Compare current Gold mart row counts to baseline; warn on >threshold delta.
 
-    Returns a dict with per-mart deltas and a ``warned`` flag. Updates the
-    baseline only if no mart exceeded the threshold (preserves last known good
-    on a warned run).
+    Returns a dict with per-mart deltas and a ``warned`` flag. A clean run (no
+    warning, nothing blocked) yields ``baseline_candidate``; it is saved here
+    unless ``save_baseline`` is False, in which case the caller saves it with
+    ``save_baseline_candidate`` once the audited tables are actually live.
+    A warned run preserves the last known good baseline.
 
     ``pending_tables`` (ADR-009) reads the listed marts from their pending
     schemas during the audit phase, while baseline keys stay on the live names so
@@ -220,17 +226,38 @@ def reconcile_gold_row_counts(
             "status": status,
         }
 
+    candidate: dict[str, int] | None = None
     if not warned and not blocked:
-        new_baseline = {f"{m.schema}.{m.table}": m.row_count for m in current}
-        _save_baseline(var_set, new_baseline)
-        log.info("Baseline updated (no warnings).")
+        candidate = {f"{m.schema}.{m.table}": m.row_count for m in current}
+        if save_baseline:
+            _save_baseline(var_set, candidate)
+            log.info("Baseline updated (no warnings).")
+        else:
+            log.info("Baseline candidate recorded; saved after publish.")
     else:
         log.warning(
             "Baseline NOT updated — investigate warnings before next run. "
             "Previous baseline preserved for next comparison."
         )
 
-    return {"warned": warned, "blocked": blocked, "threshold": threshold, "deltas": deltas}
+    return {
+        "warned": warned,
+        "blocked": blocked,
+        "threshold": threshold,
+        "deltas": deltas,
+        "baseline_candidate": candidate,
+    }
+
+
+def save_baseline_candidate(result: dict[str, Any] | None, *, var_set: Any) -> bool:
+    """Persist a reconciliation run's clean counts; False when there are none."""
+    candidate = (result or {}).get("baseline_candidate")
+    if not candidate:
+        log.warning("No baseline candidate from reconciliation; baseline unchanged.")
+        return False
+    _save_baseline(var_set, candidate)
+    log.info("Baseline updated after publish.")
+    return True
 
 
 def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> None:
@@ -264,7 +291,9 @@ def _emit_metadata(result: dict[str, Any], context: dict[str, Any] | None) -> No
 
 
 def _airflow_entrypoint(
-    pending_tables: list[str] | None = None, **context: Any
+    pending_tables: list[str] | None = None,
+    save_baseline: bool = True,
+    **context: Any,
 ) -> dict[str, Any]:
     """Airflow PythonOperator entrypoint.
 
@@ -296,6 +325,7 @@ def _airflow_entrypoint(
             var_get=Variable.get,
             var_set=Variable.set,
             pending_tables=pending_tables,
+            save_baseline=save_baseline,
         )
         _emit_metadata(result, context)
     finally:
@@ -321,8 +351,18 @@ def _airflow_entrypoint(
     return result
 
 
-# Airflow PythonOperator callable — referenced by warehouse_daily_batch_pipeline.py.
-# The double-underscore name signals "do not import in tests"; tests should
-# import ``reconcile_gold_row_counts`` and inject ``conn``/``var_get``/``var_set``
-# doubles.
+def _save_baseline_entrypoint(
+    reconcile_task_id: str = "row_count_reconciliation", **context: Any
+) -> bool:
+    """Airflow entrypoint: save the reconciliation's counts after WAP publish."""
+    from airflow.models import Variable
+
+    result = context["ti"].xcom_pull(task_ids=reconcile_task_id)
+    return save_baseline_candidate(result, var_set=Variable.set)
+
+
+# Airflow PythonOperator callables — referenced by warehouse_daily_batch_pipeline.py.
+# Tests should import ``reconcile_gold_row_counts`` / ``save_baseline_candidate``
+# and inject ``conn``/``var_get``/``var_set`` doubles.
 reconcile_gold_row_counts_task = _airflow_entrypoint
+save_row_count_baseline_task = _save_baseline_entrypoint

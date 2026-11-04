@@ -512,5 +512,21 @@ def publish_dim_product_task(**context: Any) -> dict[str, Any]:
     return _airflow_entrypoint(DIM_PRODUCT_TABLES, "publish", **context)
 
 
+def require_publish_succeeded(publish_task_id: str, **context: Any) -> str:
+    """Final ALL_DONE task: the run succeeds exactly when Gold was published.
+
+    Post-publish maintenance tasks still alert on their own failure, but they
+    no longer turn a run whose Gold is already live into a failed run.
+    """
+    ti = context["dag_run"].get_task_instance(publish_task_id)
+    state = getattr(ti, "state", None)
+    if state != "success":
+        raise RuntimeError(
+            f"Gold was not published: {publish_task_id} ended in state {state!r}; "
+            "live keeps the previous publish. See the first failed task."
+        )
+    return f"{publish_task_id} succeeded"
+
+
 if __name__ == "__main__":
     main()

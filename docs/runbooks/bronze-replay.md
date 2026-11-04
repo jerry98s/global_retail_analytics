@@ -92,6 +92,29 @@ lookback, test/GE audit, then publish only that owner's tables. Preserve existin
 SCD2 product history; never indiscriminately full-refresh all models or publish
 seed dimensions. Use existing WAP runbooks for the audited publish procedure.
 
+### Corrected POS files
+
+POS days inside the `pos_restatement_days` lookback (default 3) reload on the
+next daily run. For an older day, upload the corrected file over
+`dt=<YYYY-MM-DD>/part-00000.parquet` (Bronze bucket versioning keeps the
+previous object), then trigger the owning DAG with an inclusive range:
+
+```text
+airflow dags trigger warehouse_daily_batch_pipeline \
+  --conf '{"restate_from": "2026-10-01", "restate_to": "2026-10-03"}'
+```
+
+That run skips the POS generator, registers each partition in the range, and
+passes `pos_restate_from` / `pos_restate_to` to dbt: `fact_sales` and
+`sales_daily_store` replace exactly those days in pending, and
+`pos_revenue_reconciles_through_gold` must match source, fact and summary
+money per day before publish. Do not clear the original daily run instead: it
+regenerates simulator data over the corrected file and only reloads the last
+lookback days. A day whose file was deleted entirely leaves its old fact rows,
+and the reconciliation fails the publish; remove such a day deliberately.
+Locally, pass the same dbt vars, for example
+`dbt run --select fact_sales sales_daily_store --vars '{"pos_restate_from": "2026-10-01", "pos_restate_to": "2026-10-03"}'`.
+
 Do not overwrite live `silver.inventory_hourly` from replay while Flink owns it.
 Compare canonical inventory against that fast-path output first; an historical
 rollup rebuild and writer handoff are separate operations, not implemented by

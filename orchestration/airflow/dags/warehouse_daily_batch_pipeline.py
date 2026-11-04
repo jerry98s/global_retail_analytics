@@ -2,8 +2,8 @@
 Daily batch pipeline DAG.
 Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging
 (owned models) → WAP clone live→pending → dbt marts (pending) → dbt tests
-(pending) → row-count gate (pending) → WAP publish to live → Redshift ANALYZE →
-Redshift usage check.
+(pending) → row-count gate (pending) → WAP publish to live → {row-count
+baseline save, Redshift ANALYZE, Redshift usage check} → publish outcome.
 
 Each dbt task syncs its own copy of the project (`dbt_task_bash`), because
 consecutive tasks can land on different MWAA workers. Staging/intermediate
@@ -28,6 +28,17 @@ read live via the `wap_live_ref` macro; marketing marts belong to
 
 Schedule: 00:15 UTC daily (15-min buffer for late clickstream events).
 
+Corrected POS files older than the `pos_restatement_days` lookback: trigger
+the DAG manually with params `restate_from` / `restate_to` (inclusive,
+YYYY-MM-DD). That run keeps the delivered files (no generator), registers
+every partition in the range, and rebuilds/audits/publishes exactly those
+days through the same WAP path. See docs/runbooks/bronze-replay.md.
+
+The final publish-outcome task (ALL_DONE) decides the run state: the run
+succeeds when the WAP publish succeeded, even if ANALYZE, the usage check, or
+the row-count baseline save failed afterwards (those still alert). The
+baseline is saved only after publish.
+
 Required Airflow Variables (seed from `.\scripts\cloud\deploy_platform.ps1 -Env dev -Action airflow-vars`):
   - emr_cluster_id              : j-XXXXXXXXX (streaming DAG only; not used here)
   - artifacts_bucket            : retail-platform-<env>-artifacts
@@ -51,20 +62,27 @@ Optional Airflow Variables for row-count reconciliation (P2.5):
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.models.param import Param
 from airflow.providers.amazon.aws.operators.redshift_data import RedshiftDataOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
+from airflow.utils.trigger_rule import TriggerRule
 
 # MWAA loads modules under plugins/ onto sys.path, so this imports cleanly
 # in the cloud runtime. Local `python -m compileall` skips Airflow imports
 # (compileall does not execute imports).
 from alerting import notify_task_failure
 from dbt_selectors import WAREHOUSE_LIVE_MODELS, select
-from row_count_reconciliation import reconcile_gold_row_counts_task
+from pos_restatement import AIRFLOW_MACROS as POS_RESTATEMENT_MACROS
+from row_count_reconciliation import (
+    reconcile_gold_row_counts_task,
+    save_row_count_baseline_task,
+)
 from wap_publish import (
     FINANCE_SUMMARY_TABLES,
     clone_finance_summary_task,
     publish_finance_summary_task,
+    require_publish_succeeded,
 )
 from metadata_airflow import (
     dbt_task_bash,
@@ -122,6 +140,21 @@ with DAG(
     max_active_runs  = 1,
     tags             = ["batch", "core", "daily"],
     doc_md           = __doc__,
+    params           = {
+        "restate_from": Param(
+            None,
+            type=["null", "string"],
+            pattern=r"^\d{4}-\d{2}-\d{2}$",
+            description="First POS date to restate (inclusive). Leave empty for the daily load.",
+        ),
+        "restate_to": Param(
+            None,
+            type=["null", "string"],
+            pattern=r"^\d{4}-\d{2}-\d{2}$",
+            description="Last POS date to restate (inclusive). Set together with restate_from.",
+        ),
+    },
+    user_defined_macros = POS_RESTATEMENT_MACROS,
     on_success_callback = on_dag_success,
     on_failure_callback = on_dag_failure,
 ) as dag:
@@ -132,11 +165,16 @@ with DAG(
     )
 
     # The generator imports ingestion.kafka.sim_entities, so the whole package
-    # is synced and run as a module from the work directory.
+    # is synced and run as a module from the work directory. A restatement run
+    # must not overwrite the corrected files it was triggered for.
     generate_pos_parquet = BashOperator(
         task_id      = "generate_pos_parquet",
         bash_command = """
             set -e
+            {% if pos_is_restatement(params) %}
+            echo "Restatement {{ params.restate_from }}..{{ params.restate_to }}: keeping delivered POS files"
+            exit 0
+            {% endif %}
             WORK="$(mktemp -d /tmp/pos_task.XXXXXX)"
             trap 'rm -rf "$WORK"' EXIT
             aws s3 sync --only-show-errors s3://{{ var.value.artifacts_bucket }}/ingestion "$WORK/ingestion"
@@ -150,15 +188,19 @@ with DAG(
     # Spectrum does not auto-discover Hive partitions. Without this, today's
     # dt=<ds> directory is invisible and fact_sales incremental reads yesterday.
     # ADD IF NOT EXISTS keeps the task idempotent on DAG retry (S3 object is
-    # overwritten in place; the partition location does not change).
+    # overwritten in place; the partition location does not change). A
+    # restatement registers every day in its range in one statement.
     register_pos_partition = RedshiftDataOperator(
         task_id        = "register_pos_spectrum_partition",
         workgroup_name = "{{ var.value.redshift_workgroup_name }}",
         database       = "{{ var.value.redshift_database }}",
         sql            = """
             ALTER TABLE bronze.pos_transactions
-            ADD IF NOT EXISTS PARTITION (dt='{{ ds }}')
-            LOCATION '{{ var.value.pos_bronze_s3_path }}data/dt={{ ds }}/'
+            ADD IF NOT EXISTS
+            {% for dt in pos_partition_dates(params, ds) %}
+            PARTITION (dt='{{ dt }}')
+            LOCATION '{{ var.value.pos_bronze_s3_path }}data/dt={{ dt }}/'
+            {% endfor %}
         """,
     )
 
@@ -175,23 +217,24 @@ with DAG(
         python_callable = clone_finance_summary_task,
     )
 
+    # A restatement run adds pos_restate_from / pos_restate_to to the vars.
     dbt_marts = _dbt_step(
         "dbt_mart_models",
         "run",
         OWNED_SELECT,
-        vars_json='{"wap_phase": "pending"}',
+        vars_json="{{ pos_dbt_vars(params) }}",
     )
 
     # Audits run against the pending schemas; live is untouched until publish.
     dbt_tests = _dbt_step(
-        "dbt_tests", "test", TEST_SELECT, vars_json='{"wap_phase": "pending"}'
+        "dbt_tests", "test", TEST_SELECT, vars_json="{{ pos_dbt_vars(params) }}"
     )
 
     # Publish gate: an owned table that shrank or cannot be read fails here.
     row_count_reconcile = PythonOperator(
         task_id          = "row_count_reconciliation",
         python_callable  = reconcile_gold_row_counts_task,
-        op_kwargs        = {"pending_tables": OWNED_TABLES},
+        op_kwargs        = {"pending_tables": OWNED_TABLES, "save_baseline": False},
     )
 
     # Audit gate passed — atomically promote pending marts into live schemas.
@@ -223,6 +266,24 @@ with DAG(
         """,
     )
 
+    # Runs only after a successful publish, so the next gate compares against
+    # counts that actually went live.
+    save_baseline = PythonOperator(
+        task_id         = "save_row_count_baseline",
+        python_callable = save_row_count_baseline_task,
+    )
+
+    # Run state follows the publish, not the maintenance tasks after it. The
+    # task that actually failed has already alerted, so this one does not.
+    gold_publish_outcome = PythonOperator(
+        task_id             = "gold_publish_outcome",
+        python_callable     = require_publish_succeeded,
+        op_kwargs           = {"publish_task_id": "wap_publish_gold"},
+        trigger_rule        = TriggerRule.ALL_DONE,
+        retries             = 0,
+        on_failure_callback = None,
+    )
+
     (
         metadata_start
         >> generate_pos_parquet
@@ -233,6 +294,6 @@ with DAG(
         >> dbt_tests
         >> row_count_reconcile
         >> wap_publish
-        >> redshift_analyze
-        >> cost_check
+        >> [save_baseline, redshift_analyze, cost_check]
+        >> gold_publish_outcome
     )
