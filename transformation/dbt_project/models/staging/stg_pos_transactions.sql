@@ -21,7 +21,7 @@ select
     cast(gross_revenue as decimal(18,2)) as gross_revenue,
     cast(net_revenue as decimal(18,2)) as net_revenue,
     cast(gross_margin as decimal(18,2)) as gross_margin,
-    coalesce(cast(is_voided as boolean), false) as is_voided,
+    cast(is_voided as boolean) as is_voided,
     {% if target.type == 'duckdb' %}
     cast(transaction_date as date) as dt
     {% else %}

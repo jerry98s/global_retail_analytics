@@ -1,7 +1,7 @@
 {{
   config(
     materialized='incremental',
-    unique_key=['date_key', 'store_key'],
+    unique_key=['date_key'],
     incremental_strategy='delete+insert',
     on_schema_change='append_new_columns'
   )
@@ -12,8 +12,10 @@
 
   Grain: (date_key, store_key)
   Measures exclude voided lines.
-  Incremental: reprocess the same pos_restatement_days window as fact_sales,
-  so restated POS days re-aggregate.
+  Incremental: reprocess the same pos_restatement_days window as fact_sales
+  and replace each reprocessed day whole (delete+insert on date_key), so a
+  store-day whose lines all became voided or were removed is deleted rather
+  than left with its old totals.
 */
 
 with source_sales as (
@@ -42,7 +44,7 @@ with source_sales as (
 non_voided as (
     select *
     from source_sales
-    where coalesce(is_voided, false) = false
+    where not is_voided
 )
 
 select

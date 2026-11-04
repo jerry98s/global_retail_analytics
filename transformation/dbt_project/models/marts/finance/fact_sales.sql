@@ -1,7 +1,7 @@
 {{
   config(
     materialized='incremental',
-    unique_key=['transaction_id', 'line_item_number'],
+    unique_key=['date_key'],
     incremental_strategy='delete+insert',
     on_schema_change='append_new_columns',
     dist='product_key',
@@ -28,9 +28,13 @@
 
   Incremental strategy: lookback from max(date_key) in {{ this }} (the WAP
   pending clone of live) minus var pos_restatement_days (default 3), with
-  delete+insert on the grain key. That rewrites a partial last day, reloads
-  restated or late POS partitions inside the window, and re-keys unknown
-  products once dim_product publishes them.
+  delete+insert on date_key: every reprocessed day is replaced whole, so a
+  line removed from a corrected POS file disappears instead of lingering.
+  That rewrites a partial last day, reloads restated or late POS partitions
+  inside the window, and re-keys unknown products once dim_product publishes
+  them. The grain is still enforced by the unique_combination_of_columns test.
+  Whole-day replacement assumes a day's lines never land in a dt= partition
+  older than the day itself; such lines would be filtered out and deleted.
   `dt` is the Spectrum partition column (aliased from transaction_date on
   DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
 */

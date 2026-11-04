@@ -62,7 +62,7 @@ models:
         description: "Gross margin = net_revenue * margin_rate."
         tests: [not_null]
       - name: is_voided
-        description: "True if the transaction was voided (~1% of simulator output)."
+        description: "True if the transaction was voided (~1% of simulator output). A NULL in Bronze is passed through, not read as false, so this test blocks the publish."
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
