@@ -39,31 +39,60 @@ def test_layer_catalog_yaml_has_summary_and_gold() -> None:
         }
 
 
+_DBT = _REPO / "transformation" / "dbt_project"
+
+
 def _model_unique_keys() -> dict[str, set[str]]:
     keys: dict[str, set[str]] = {}
-    for path in (_REPO / "transformation" / "dbt_project" / "models").rglob("*.sql"):
+    for path in (_DBT / "models").rglob("*.sql"):
         match = re.search(r"unique_key\s*=\s*(\[[^\]]*\]|'[^']*')", path.read_text(encoding="utf-8"))
         if match:
             keys[path.stem] = set(re.findall(r"'([^']+)'", match.group(1)))
     return keys
 
 
-def test_layer_catalog_grain_matches_model_unique_key() -> None:
+def _model_grain_tests() -> dict[str, set[str]]:
+    """Columns of each model's dbt_utils.unique_combination_of_columns test."""
+    grains: dict[str, set[str]] = {}
+    for path in [*(_DBT / "models").rglob("*.yml"), *(_DBT / "tests").rglob("*.yml")]:
+        for model in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("models") or []:
+            for test in model.get("tests") or []:
+                if isinstance(test, dict) and "dbt_utils.unique_combination_of_columns" in test:
+                    spec = test["dbt_utils.unique_combination_of_columns"]
+                    columns = (spec.get("arguments") or spec)["combination_of_columns"]
+                    grains[model["name"]] = set(columns)
+    return grains
+
+
+def test_layer_catalog_grain_matches_model_grain() -> None:
+    """Catalog grain equals the model's grain test, else its unique_key.
+
+    A model may replace whole days (unique_key=['date_key']) while its grain
+    is finer; the uniqueness test is what states the grain.
+    """
     raw = yaml.safe_load(
         (_REPO / "metadata" / "catalog" / "layer_catalog.yml").read_text(encoding="utf-8")
     )
-    unique_keys = _model_unique_keys()
+    grains = {**_model_unique_keys(), **_model_grain_tests()}
     checked = 0
     for obj in raw["objects"]:
         table = obj["object_fqn"].split(".", 1)[1]
         grain = obj.get("grain") or ""
-        if table not in unique_keys:
+        if table not in grains:
             continue
-        assert grain.startswith("("), (obj["object_fqn"], "grain must be the unique-key tuple")
+        assert grain.startswith("("), (obj["object_fqn"], "grain must be the key tuple")
         columns = {c.strip() for c in grain[1:grain.index(")")].split(",")}
-        assert columns == unique_keys[table], (obj["object_fqn"], columns, unique_keys[table])
+        assert columns == grains[table], (obj["object_fqn"], columns, grains[table])
         checked += 1
     assert checked >= 4
+
+
+def test_date_replacement_models_keep_a_grain_test() -> None:
+    """Whole-day delete+insert must not drop the finer uniqueness guarantee."""
+    grain_tests = _model_grain_tests()
+    for model, key in _model_unique_keys().items():
+        if key == {"date_key"}:
+            assert model in grain_tests and grain_tests[model] != key, model
 
 
 def test_layer_catalog_lists_inventory_lambda_views() -> None:
