@@ -50,9 +50,10 @@ current model reads them.
 | `inventory.events.v1` (Flink window) | `silver.inventory_hourly` | `iceberg/silver/inventory_hourly/data/` |
 | Spark GraphFrames job | `silver.identity_resolution`, `silver.identity_edges` | `iceberg/silver/identity_*/data/` |
 
-Spark-written Silver tables also have a replace-only `consumer_current/{table}/`
-Parquet export. Spectrum and the local DuckDB bridge read that export, never
-the Iceberg `data/` folders.
+Spark-written Silver tables, and Flink's `silver.inventory_hourly`, also have a
+`consumer_current/{table}/` export: one `run=<id>/` directory per Spark run plus
+a `manifest` replaced atomically. Spectrum and the local DuckDB bridge read the
+files that manifest lists, never the Iceberg `data/` folders.
 
 `finance.fact_inventory_snapshot` reads `int_inventory_hourly`: **silver**
 `inventory_events` for hours Spark has covered, **silver** `inventory_hourly`

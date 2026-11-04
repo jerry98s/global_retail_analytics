@@ -31,6 +31,7 @@ from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 
+from alerting import notify_task_failure
 from metadata_airflow import on_dag_failure, on_dag_start, on_dag_success
 
 STEP_NAME = "iceberg-maintenance"
@@ -43,7 +44,7 @@ DEFAULT_ARGS = {
     "retries":             1,
     "retry_delay":         timedelta(minutes=5),
     "execution_timeout":   timedelta(hours=1),
-    "email_on_failure":    True,
+    "on_failure_callback": notify_task_failure,
 }
 
 

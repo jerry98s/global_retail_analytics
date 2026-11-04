@@ -185,12 +185,22 @@ class TestDbtHandoffContract:
         header = seed.read_text(encoding="utf-8").splitlines()[0]
         assert "identifier_type" in header and "customer_key" in header
 
-    def test_duckdb_bridge_reads_current_export_not_iceberg_data_glob(self) -> None:
-        bridge = (_REPO / "scripts/local/load_iceberg_to_duckdb.py").read_text(encoding="utf-8")
+    def test_job_publishes_every_export_the_duckdb_bridge_reads(self) -> None:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "load_iceberg_to_duckdb", _REPO / "scripts/local/load_iceberg_to_duckdb.py"
+        )
+        bridge = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bridge)
+
         job = (_REPO / "spark/identity_resolution/identity_resolution_job.py").read_text(encoding="utf-8")
-        assert "consumer_current/identity_resolution/" in bridge
-        assert "silver/identity_resolution/data/" not in bridge
-        assert "consumer_current/identity_edges/" in bridge
-        assert "silver/identity_edges/data/" not in bridge
-        assert "{root}/identity_resolution" in job
-        assert "{root}/identity_edges" in job
+        events = (_REPO / "spark/identity_resolution/canonical_events.py").read_text(encoding="utf-8")
+        assert 'publish(resolution, root, "identity_resolution", run_id)' in job
+        assert 'publish(edges, root, "identity_edges", run_id)' in job
+        assert 'publish(frame, root, "inventory_hourly", new_run_id())' in job
+        assert "publish(frame, root, f'{stream}_{suffix}', run_id)" in events
+        assert set(bridge._EXPORTS) == {
+            "clickstream_events", "inventory_events", "inventory_hourly",
+            "identity_resolution", "identity_edges",
+        }

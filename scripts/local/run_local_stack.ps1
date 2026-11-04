@@ -20,7 +20,14 @@ param(
     [ValidateRange(30, 600)]
     [int]$IcebergWaitSeconds = 90,
     [Parameter(Mandatory = $false)]
-    [int]$PosTransactionCount = 500
+    [int]$PosTransactionCount = 500,
+    # POS restatement (same contract as the warehouse DAG's restate_from /
+    # restate_to params): inclusive YYYY-MM-DD range. The run keeps the POS
+    # files already on disk and rebuilds/audits/publishes exactly those days.
+    [Parameter(Mandatory = $false)]
+    [string]$RestateFrom = "",
+    [Parameter(Mandatory = $false)]
+    [string]$RestateTo = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -295,7 +302,61 @@ function Wait-ForIcebergParquet {
     Write-Host "WARNING: timed out waiting for Iceberg Parquet - dbt load may fail." -ForegroundColor Yellow
 }
 
+function Test-PosRestatement {
+    return [bool]($RestateFrom -or $RestateTo)
+}
+
+# dbt --vars for the pending build and audit, from the same plugin the cloud
+# DAG renders (orchestration/airflow/plugins/pos_restatement.py), so range
+# validation and the var names cannot drift between local and cloud.
+$script:PendingDbtVars = $null
+function Get-PendingDbtVars {
+    if ($null -eq $script:PendingDbtVars) {
+        $env:POS_RESTATE_FROM = $RestateFrom
+        $env:POS_RESTATE_TO = $RestateTo
+        try {
+            $out = (& (Get-PythonCmd) -c @"
+import os, sys
+sys.path.insert(0, r'$RepoRoot')
+from orchestration.airflow.plugins.pos_restatement import pos_dbt_vars
+try:
+    print(pos_dbt_vars({'restate_from': os.environ.get('POS_RESTATE_FROM') or None,
+                        'restate_to': os.environ.get('POS_RESTATE_TO') or None}))
+except ValueError as exc:
+    print(exc)
+    sys.exit(2)
+"@)
+            if ($LASTEXITCODE -ne 0) {
+                throw "Invalid -RestateFrom/-RestateTo: $out"
+            }
+            $script:PendingDbtVars = $out
+        }
+        finally {
+            Remove-Item Env:POS_RESTATE_FROM, Env:POS_RESTATE_TO -ErrorAction SilentlyContinue
+        }
+    }
+    return $script:PendingDbtVars
+}
+
+# Same publish gate as the warehouse DAG's row_count_reconciliation task
+# (shared plugin code); the baseline is saved only after publish.
+$RowCountGateState = Join-Path $RepoRoot '.local\row_count_gate.json'
+function Invoke-RowCountGateLocal {
+    Invoke-ProjectPython scripts/local/row_count_gate.py audit `
+        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
+        --state $RowCountGateState
+}
+
+function Save-RowCountBaselineLocal {
+    Invoke-ProjectPython scripts/local/row_count_gate.py save --state $RowCountGateState
+}
+
 function Invoke-PosParquetLocal {
+    if (Test-PosRestatement) {
+        $null = Get-PendingDbtVars
+        Write-Host "Restatement $RestateFrom..$RestateTo`: keeping POS files on disk (no generator)." -ForegroundColor Yellow
+        return
+    }
     $outDir = Join-Path $IcebergHostDir 'bronze\pos_transactions'
     $txnDate = (Get-Date).ToString('yyyy-MM-dd')
     Invoke-ProjectPython -m ingestion.batch.generate_pos_parquet `
@@ -406,6 +467,7 @@ finally:
 
 function Invoke-DbtIceberg {
     param([string]$ExecutionId = "")
+    $null = Get-PendingDbtVars
     Ensure-LocalDbtProfile
     Ensure-IcebergHostDir
     Invoke-Step "Generate local POS Parquet (not streamed to Iceberg)" {
@@ -444,7 +506,7 @@ function Invoke-DbtIceberg {
         # are excluded — they are built post-publish against live.
         Invoke-ProjectDbt (@(
             'run', '--profiles-dir', '.', '--target', 'local',
-            '--vars', '{"wap_phase": "pending"}', '--exclude'
+            '--vars', (Get-PendingDbtVars), '--exclude'
         ) + $WapServingModels) -ExecutionId $ExecutionId
     }
     finally {
@@ -457,6 +519,9 @@ function Invoke-DbtIceberg {
 
 function Invoke-DbtSeeds {
     param([string]$ExecutionId = "")
+    if (Test-PosRestatement) {
+        throw "-RestateFrom/-RestateTo need -DbtSource iceberg (seeds mode rebuilds from scratch)."
+    }
     Ensure-LocalDbtProfile
     $duckDb = Join-Path $DbtDir 'local_retail.duckdb'
     if (Test-Path $duckDb) {
@@ -657,15 +722,21 @@ try {
                     try {
                         Invoke-ProjectDbt (@(
                             'test', '--profiles-dir', '.', '--target', 'local',
-                            '--vars', '{"wap_phase": "pending"}', '--exclude'
+                            '--vars', (Get-PendingDbtVars), '--exclude'
                         ) + $WapServingModels) -ExecutionId $execId
                     }
                     finally {
                         Pop-Location
                     }
                 }
+                Invoke-Step "Row-count gate (pending Gold vs baseline)" {
+                    Invoke-RowCountGateLocal
+                }
                 Invoke-Step "WAP publish pending Gold -> live" {
                     Invoke-WapPublishLocal
+                }
+                Invoke-Step "Saving row-count baseline (post-publish)" {
+                    Save-RowCountBaselineLocal
                 }
                 # Mirrors the cloud quality_hourly_ge_checkpoint DAG: Silver
                 # event contract checks. Gold is gated by the dbt tests above.
@@ -703,7 +774,7 @@ try {
                 Write-Host "Waiting 75s for silver windows / checkpoints ..." -ForegroundColor DarkGray
                 Start-Sleep -Seconds 75
                 if ($DbtSource -eq "iceberg") {
-                    & $PSCommandPath -Task pos-parquet
+                    & $PSCommandPath -Task pos-parquet -RestateFrom $RestateFrom -RestateTo $RestateTo
                     & $PSCommandPath -Task spark
                     Invoke-Step "dbt local (Iceberg Parquet + dim seeds)" {
                         Invoke-DbtIceberg -ExecutionId $execId
@@ -719,15 +790,21 @@ try {
                     try {
                         Invoke-ProjectDbt (@(
                             'test', '--profiles-dir', '.', '--target', 'local',
-                            '--vars', '{"wap_phase": "pending"}', '--exclude'
+                            '--vars', (Get-PendingDbtVars), '--exclude'
                         ) + $WapServingModels) -ExecutionId $execId
                     }
                     finally {
                         Pop-Location
                     }
                 }
+                Invoke-Step "Row-count gate (pending Gold vs baseline)" {
+                    Invoke-RowCountGateLocal
+                }
                 Invoke-Step "WAP publish pending Gold -> live" {
                     Invoke-WapPublishLocal
+                }
+                Invoke-Step "Saving row-count baseline (post-publish)" {
+                    Save-RowCountBaselineLocal
                 }
                 # Mirrors the cloud quality_hourly_ge_checkpoint DAG: Silver
                 # event contract checks. Gold is gated by the dbt tests above.

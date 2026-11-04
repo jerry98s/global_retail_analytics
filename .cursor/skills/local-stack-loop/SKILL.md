@@ -25,7 +25,7 @@ From the repo root, after `uv sync --group dev`, with Docker Desktop up:
 .\scripts\local\run_local_stack.ps1 -Task all
 ```
 
-`-DbtSource iceberg` is the default. `-Task all` then does: `up`, `topics`, `flink`, `simulate`, wait for Parquet and silver windows, `pos-parquet`, `spark`, dbt into `*_pending`, pending dbt tests, pending GE, WAP publish, live GE, unit pytest.
+`-DbtSource iceberg` is the default. `-Task all` then does: `up`, `topics`, `flink`, `simulate`, wait for Parquet and silver windows, `pos-parquet`, `spark`, dbt into `*_pending`, pending dbt tests, pending GE, row-count gate, WAP publish, row-count baseline save, live GE, unit pytest.
 
 `-DbtSource seeds` skips POS Parquet and Spark and loads the identity CSV fixtures instead.
 

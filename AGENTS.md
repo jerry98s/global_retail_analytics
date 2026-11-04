@@ -79,7 +79,8 @@ uv sync --group dev
  can start in either order; a restart resumes from committed offsets.
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
-- `-Task quality`: `dbt test` (the Gold WAP gate) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
+- `-Task quality`: `dbt test` + row-count gate (the Gold WAP audit; baseline saved after publish) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
+- POS restatement: pass `-RestateFrom`/`-RestateTo` to both `-Task dbt` and `-Task quality` (validated by the DAG's `pos_restatement` plugin).
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
   `.local/iceberg/silver/identity_resolution`. `-Task all` (iceberg source)

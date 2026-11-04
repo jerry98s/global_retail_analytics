@@ -28,7 +28,7 @@ bronze clickstream (Iceberg) + POS loyalty IDs (Parquet)
       edge construction + public-device exclusion + connected components
       → silver.identity_resolution  (Iceberg; full overwrite per run)
       → silver.identity_edges       (audit copy of the graph)
-      → consumer_current/*          (replace-only Parquet for Spectrum/DuckDB)
+      → consumer_current/*          (run dir + atomic manifest for Spectrum/DuckDB)
   → int_identity_resolution         (thin dbt view over the silver source; adds identity_key)
   → marketing.identity_graph        (filtered: public devices excluded)
 ```

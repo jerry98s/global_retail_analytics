@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -59,8 +60,9 @@ class TestLocalIcebergBridge:
             "identity_resolution",
         ):
             assert name in src
-        assert "consumer_current/identity_resolution/**/*.parquet" in src
-        assert "silver/identity_resolution/data/**/*.parquet" not in src
+        assert "/data/**" not in src.replace(
+            '"bronze/pos_transactions/data/**/*.parquet"', ""
+        ), "only POS Bronze may be globbed; exports are read through manifests"
 
     def test_run_local_stack_has_spark_identity_task(self) -> None:
         # ADR-010: local GraphFrames runs in the Spark Docker image against
@@ -134,3 +136,65 @@ class TestLocalIcebergBridge:
             _REPO / "transformation/dbt_project/seeds/finance/dim_date.csv"
         ).read_text(encoding="utf-8")
         assert "20260101" in dates and "20261231" in dates
+
+
+def _bridge():
+    spec = importlib.util.spec_from_file_location(
+        "load_iceberg_to_duckdb", _REPO / "scripts/local/load_iceberg_to_duckdb.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _publish(iceberg: Path, name: str, run: str, values: list[int]) -> None:
+    """Mimic consumer_exports.publish: a run dir, then the manifest Spark writes
+    with the Spark container's file:/tmp/iceberg URLs."""
+    import json
+
+    import pyarrow as pa
+
+    run_dir = iceberg / "consumer_current" / name / f"run={run}"
+    run_dir.mkdir(parents=True)
+    pq.write_table(pa.table({"v": values}), run_dir / "part-00000.parquet")
+    url = f"file:/tmp/iceberg/consumer_current/{name}/run={run}/part-00000.parquet"
+    (iceberg / "consumer_current" / name / "manifest").write_text(
+        json.dumps({"entries": [{"url": url, "mandatory": True}]}), encoding="utf-8"
+    )
+
+
+class TestManifestExports:
+    def test_loads_only_the_run_the_manifest_lists(self, tmp_path: Path) -> None:
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        for name in bridge._EXPORTS:
+            _publish(iceberg, name, "20261104T010000Z", [1, 2, 3])
+            _publish(iceberg, name, "20261104T020000Z", [7])
+        stale = iceberg / "silver" / "inventory_hourly" / "data"
+        stale.mkdir(parents=True)
+        import pyarrow as pa
+
+        pq.write_table(pa.table({"v": [99, 99]}), stale / "superseded.parquet")
+
+        counts = bridge.load_all(iceberg, tmp_path / "t.duckdb", require_pos=False)
+
+        for name, schema in bridge._EXPORTS.items():
+            assert counts[f"{schema}.{name}"] == 1, name
+        assert counts["bronze.pos_transactions"] == 0
+
+    def test_missing_manifest_fails_in_fidelity_mode(self, tmp_path: Path) -> None:
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        _publish(iceberg, "clickstream_events", "20261104T010000Z", [1])
+        with pytest.raises(FileNotFoundError, match="inventory_events"):
+            bridge.load_all(iceberg, tmp_path / "t.duckdb", require_pos=False)
+
+    def test_manifest_pointing_at_a_deleted_run_fails(self, tmp_path: Path) -> None:
+        import shutil
+
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        _publish(iceberg, "identity_edges", "20261104T010000Z", [1])
+        shutil.rmtree(iceberg / "consumer_current" / "identity_edges" / "run=20261104T010000Z")
+        with pytest.raises(FileNotFoundError, match="lists missing files"):
+            bridge._manifest_files(iceberg, "identity_edges")

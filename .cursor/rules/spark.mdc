@@ -12,7 +12,7 @@ One job under `spark/identity_resolution/`. No Spark Streaming and no Spark SQL 
 
 - `graph_logic.py` is the rules source. `identity_resolution_job.py` mirrors it in DataFrames.
 - `event_contract.py` and `canonical_events.py` promote Bronze `*_records` to `silver.*_events`, `*_quarantine`, and `*_duplicates`. The job fails if input rows do not equal those three counts.
-- Iceberg `silver.identity_resolution` and `silver.identity_edges`, plus replace-only `consumer_current/*` Parquet. Spectrum and the DuckDB bridge read that export. Never glob Iceberg `data/` dirs.
+- Iceberg `silver.identity_resolution` and `silver.identity_edges`, plus `consumer_current/*` exports (run dir + atomic `manifest`, `consumer_exports.py`), including `inventory_hourly`. Spectrum and the DuckDB bridge read only the manifest's files. Never glob Iceberg `data/` dirs or export run dirs.
 
 ## Commands
 
@@ -22,7 +22,7 @@ One job under `spark/identity_resolution/`. No Spark Streaming and no Spark SQL 
 .\.venv\Scripts\python.exe tests\integration\verify_spark_identity.py
 ```
 
-Local submit is Docker Compose profile `spark` (`infra/docker/spark`), not a host Spark install. The marketing DAG submits `spark-submit --py-files graph_logic.py,canonical_events.py,event_contract.py identity_resolution_job.py`.
+Local submit is Docker Compose profile `spark` (`infra/docker/spark`), not a host Spark install. Local compose and the marketing DAG on `main` both submit `spark-submit --py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py identity_resolution_job.py`.
 
 ## Traps
 

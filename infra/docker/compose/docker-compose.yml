@@ -155,7 +155,7 @@ services:
         mkdir -p /tmp/graphframes-checkpoints /tmp/iceberg
         exec /opt/spark/bin/spark-submit \
           --master local[*] \
-          --py-files graph_logic.py,canonical_events.py,event_contract.py \
+          --py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py \
           identity_resolution_job.py --local \
           --bronze-warehouse file:///tmp/iceberg \
           --silver-warehouse file:///tmp/iceberg \

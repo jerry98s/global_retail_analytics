@@ -272,3 +272,41 @@ def test_reconcile_handles_corrupt_baseline_gracefully() -> None:
     assert result["warned"] is False
     persisted = json.loads(store[BASELINE_VAR_NAME])
     assert persisted["finance.fact_sales"] == 100_000
+
+
+# ---------- publish gate (owned tables only) ----------
+
+_DROPPED_SALES = [3653, 20, 30_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
+
+
+def test_gate_blocks_owned_table_that_shrank() -> None:
+    var_get, var_set, store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
+    result = reconcile_gold_row_counts(
+        conn=_StubConn(counts=list(_DROPPED_SALES)), var_get=var_get, var_set=var_set,
+        pending_tables=["finance.fact_sales"],
+    )
+    assert result["blocked"] == ["finance.fact_sales"]
+    assert json.loads(store[BASELINE_VAR_NAME])["finance.fact_sales"] == 100_000
+
+
+def test_gate_ignores_tables_another_dag_owns() -> None:
+    var_get, var_set, _store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
+    result = reconcile_gold_row_counts(
+        conn=_StubConn(counts=list(_DROPPED_SALES)), var_get=var_get, var_set=var_set,
+        pending_tables=["marketing.fact_customer_session"],
+    )
+    assert result["blocked"] == []
+    assert result["warned"] is True
+
+
+def test_gate_blocks_unreadable_owned_table_and_not_growth() -> None:
+    counts = list(_DEFAULT_COUNTS)
+    counts[2] = -1  # finance.fact_sales unreadable
+    counts[8] = 5_000  # summary.sales_daily_store grew 10x: warn only
+    var_get, var_set, _store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
+    result = reconcile_gold_row_counts(
+        conn=_StubConn(counts=counts), var_get=var_get, var_set=var_set,
+        pending_tables=["finance.fact_sales", "summary.sales_daily_store"],
+    )
+    assert result["blocked"] == ["finance.fact_sales"]
+    assert result["deltas"]["summary.sales_daily_store"]["status"] == "WARN"

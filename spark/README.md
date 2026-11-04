@@ -16,10 +16,14 @@ revisiting ADR-006.
 - Writes `silver.identity_resolution` (consumed by dbt as a source) and
   `silver.identity_edges` (audit) to the silver Iceberg warehouse. Full
   overwrite per run — recompute is cheap at identifier grain.
-- Replaces `consumer_current/identity_resolution` and
-  `consumer_current/identity_edges` plain-Parquet exports for Spectrum and the
-  local DuckDB bridge. Consumers never glob Iceberg `data/` directories, where
-  superseded snapshot files may remain.
+- Publishes `consumer_current/<name>/` exports (`consumer_exports.py`):
+  identity resolution, identity edges, the canonical event/quarantine/duplicate
+  sets, and `silver.inventory_hourly` read from its committed Iceberg snapshot.
+  Each run writes `run=<utc ts>/` and then atomically replaces `manifest`;
+  Spectrum's `LOCATION` and the local DuckDB loader both read only the files
+  it lists, so a reader sees one complete run. The current and previous runs
+  are kept; older ones are deleted. Consumers never glob Iceberg `data/`
+  directories, where superseded snapshot files may remain.
 
 `graph_logic.py` — engine-independent source of truth for the rules (identifier
 normalization, edge

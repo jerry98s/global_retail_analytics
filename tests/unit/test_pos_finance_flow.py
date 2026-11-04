@@ -39,7 +39,8 @@ class TestPosFinanceFlow:
     def test_warehouse_registers_spectrum_partition(self) -> None:
         src = _read(_DAG)
         assert "register_pos_spectrum_partition" in src
-        assert "ADD IF NOT EXISTS PARTITION" in src
+        # Rendered SQL per daily/restatement run is checked in test_pos_restatement.py.
+        assert "ADD IF NOT EXISTS" in src and "PARTITION (dt='{{ dt }}')" in src
         assert "pos_bronze_s3_path" in src
         assert "generate_pos_parquet" in src
         assert src.index("generate_pos_parquet") < src.index("register_pos_partition")

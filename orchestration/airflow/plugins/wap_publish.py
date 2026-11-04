@@ -36,7 +36,7 @@ Clone strategy per table (Redshift)::
     INSERT INTO live_pending.table SELECT * FROM live.table;
 
 ``CREATE TABLE ... LIKE`` is what preserves the distribution and sort keys
-defined in ``the warehouse DDL on main``; a plain CTAS would silently drop
+defined in ``transformation/redshift/ddl/``; a plain CTAS would silently drop
 them.
 
 Publish strategy, one transaction for the whole DAG-owned set::
@@ -510,6 +510,22 @@ def publish_marketing_task(**context: Any) -> dict[str, Any]:
 
 def publish_dim_product_task(**context: Any) -> dict[str, Any]:
     return _airflow_entrypoint(DIM_PRODUCT_TABLES, "publish", **context)
+
+
+def require_publish_succeeded(publish_task_id: str, **context: Any) -> str:
+    """Final ALL_DONE task: the run succeeds exactly when Gold was published.
+
+    Post-publish maintenance tasks still alert on their own failure, but they
+    no longer turn a run whose Gold is already live into a failed run.
+    """
+    ti = context["dag_run"].get_task_instance(publish_task_id)
+    state = getattr(ti, "state", None)
+    if state != "success":
+        raise RuntimeError(
+            f"Gold was not published: {publish_task_id} ended in state {state!r}; "
+            "live keeps the previous publish. See the first failed task."
+        )
+    return f"{publish_task_id} succeeded"
 
 
 if __name__ == "__main__":

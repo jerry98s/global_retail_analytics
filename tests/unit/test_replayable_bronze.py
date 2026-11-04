@@ -120,4 +120,22 @@ def test_cloud_flink_step_quotes_and_forwards_source_incarnation():
     rendered = environment.from_string(template).render(var={'value': {'bronze_source_system': source_id}})
     tokens = shlex.split(rendered)
     assert 'BRONZE_SOURCE_SYSTEM=' + source_id in tokens
-    assert '-Dcontainerized.master.env.BRONZE_SOURCE_SYSTEM=' + source_id in tokens
+    script = tokens.index('/opt/flink-config-src/bin/submit_flink_job.sh')
+    assert tokens[script + 1:script + 3] == ['clicks', 'clickstream_bronze_job.py']
+
+
+def test_submit_script_forwards_every_config_variable_to_yarn_containers():
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    script = (root / 'streaming/bin/submit_flink_job.sh').read_text(encoding='utf-8')
+    conf = '\n'.join(
+        line for line in (root / 'streaming/config/flink_conf.yaml').read_text(encoding='utf-8').splitlines()
+        if not line.lstrip().startswith('#')
+    )
+    jobs = ''.join(p.read_text(encoding='utf-8') for p in (root / 'streaming/flink_jobs').glob('*.py'))
+    read_vars = set(re.findall(r'\$\{([A-Z_]+)', conf)) | set(re.findall(r'os\.environ\.get\("([A-Z_]+)"', jobs))
+    forwarded = set(re.search(r'forwarded=\(([^)]*)\)', script).group(1).split())
+    assert read_vars <= forwarded, f'not forwarded to the JobManager: {sorted(read_vars - forwarded)}'
+    assert '-Dcontainerized.master.env.${var}' in script

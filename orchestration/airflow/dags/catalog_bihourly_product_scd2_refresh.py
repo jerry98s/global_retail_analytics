@@ -8,13 +8,20 @@ from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
+from alerting import notify_task_failure
+from dbt_selectors import CATALOG_LIVE_MODELS, select
 from metadata_airflow import (
-    dbt_bash_with_metadata,
+    dbt_task_bash,
     on_dag_failure,
     on_dag_start,
     on_dag_success,
 )
 from wap_publish import clone_dim_product_task, publish_dim_product_task
+
+WAP_VARS = '{"wap_phase": "pending"}'
+# int_product_catalog builds live (intermediate is never WAP-routed);
+# dim_product builds into marketing_pending.
+SELECT = select(CATALOG_LIVE_MODELS, "dim_product")
 
 DAG_DOC_MD = """
 ## catalog_bihourly_product_scd2_refresh
@@ -74,8 +81,8 @@ with DAG(
         "start_date": datetime(2024, 1, 1),
         "retries": 2,
         "retry_delay": timedelta(minutes=10),
-        "email_on_failure": True,
-        "email": ["data-platform@company.com"],
+        "execution_timeout": timedelta(minutes=30),
+        "on_failure_callback": notify_task_failure,
     },
     schedule_interval="0 */2 * * *",
     catchup=False,
@@ -98,22 +105,12 @@ with DAG(
 
     refresh_dim_product = BashOperator(
         task_id="dbt_run_dim_product",
-        bash_command=dbt_bash_with_metadata(
-            "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/dbt_project /tmp/dbt_project && "
-            "aws s3 sync s3://{{ var.value.artifacts_bucket }}/mwaa/scripts /tmp/scripts && "
-            "cp /tmp/dbt_project/profiles.yml.example /tmp/dbt_project/profiles.yml && "
-            "cd /tmp/dbt_project && dbt deps && "
-            # WAP: build into marketing_pending, audit there, then publish.
-            "dbt run --select dim_product --vars '{\"wap_phase\": \"pending\"}' --target prod"
-        ),
+        bash_command=dbt_task_bash(f"run --select {SELECT} --vars '{WAP_VARS}'"),
     )
 
     test_dim_product = BashOperator(
         task_id="dbt_test_dim_product",
-        bash_command=dbt_bash_with_metadata(
-            "cd /tmp/dbt_project && "
-            "dbt test --select dim_product --vars '{\"wap_phase\": \"pending\"}' --target prod"
-        ),
+        bash_command=dbt_task_bash(f"test --select {SELECT} --vars '{WAP_VARS}'"),
     )
 
     publish_dim_product = PythonOperator(
