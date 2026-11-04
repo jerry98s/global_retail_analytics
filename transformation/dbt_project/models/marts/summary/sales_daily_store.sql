@@ -15,8 +15,11 @@
   Incremental: reprocess the same pos_restatement_days window as fact_sales
   and replace each reprocessed day whole (delete+insert on date_key), so a
   store-day whose lines all became voided or were removed is deleted rather
-  than left with its old totals.
+  than left with its old totals. pos_restate_from / pos_restate_to switch
+  the window to that explicit date range, matching fact_sales.
 */
+
+{% set restate = pos_restate_range() %}
 
 with source_sales as (
     select
@@ -29,7 +32,9 @@ with source_sales as (
         gross_margin,
         is_voided
     from {{ ref('fact_sales') }}
-    {% if is_incremental() %}
+    {% if is_incremental() and restate %}
+      where date_key between {{ restate.from_key }} and {{ restate.to_key }}
+    {% elif is_incremental() %}
       where date_key >= (
           select coalesce({{ date_key_from_date(dateadd_unit(
               'day',
