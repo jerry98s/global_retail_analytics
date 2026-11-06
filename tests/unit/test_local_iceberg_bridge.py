@@ -45,8 +45,10 @@ class TestLocalIcebergBridge:
         assert "_silver_window_interval" in src
         assert "{window_interval}" in src
         assert "INTERVAL '1' HOUR" in src
-        assert "TO_TIMESTAMP(REPLACE(SUBSTRING(event_time, 1, 23)" in src
+        assert "event_ts AS {event_ts_sql()}" in src
         assert "WATERMARK FOR event_ts" in src
+        # Append-only plan (verify_flink_inventory_dedup.py): dedup per window.
+        assert "PARTITION BY window_start, window_end, event_id" in src
 
     def test_load_script_maps_expected_tables(self) -> None:
         src = (_REPO / "scripts/local/load_iceberg_to_duckdb.py").read_text(

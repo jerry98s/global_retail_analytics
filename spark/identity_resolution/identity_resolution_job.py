@@ -251,14 +251,15 @@ def write_consumer_exports(
     resolution: DataFrame,
     edges: DataFrame,
     root: str,
+    run_id: str | None = None,
 ) -> None:
     """Publish the identity outputs as snapshot-safe exports (consumer_exports)."""
-    run_id = new_run_id()
+    run_id = run_id or new_run_id()
     publish(resolution, root, "identity_resolution", run_id)
     publish(edges, root, "identity_edges", run_id)
 
 
-def export_inventory_hourly(spark: SparkSession, root: str) -> None:
+def export_inventory_hourly(spark: SparkSession, root: str, run_id: str | None = None) -> None:
     """Export Flink's committed silver.inventory_hourly snapshot for Spectrum.
 
     Reading through the Iceberg catalog returns only committed rows; Spectrum
@@ -271,7 +272,7 @@ def export_inventory_hourly(spark: SparkSession, root: str) -> None:
         frame = spark.table(INVENTORY_HOURLY_TABLE).select(*empty.columns)
     else:
         frame = empty
-    publish(frame, root, "inventory_hourly", new_run_id())
+    publish(frame, root, "inventory_hourly", run_id or new_run_id())
 
 
 def assign_resolution(
@@ -386,8 +387,10 @@ def main() -> None:
 
     if not args.canonical_only and not args.pos_parquet_path:
         raise ValueError('--pos-parquet-path is required unless --canonical-only is set')
-    events = promote_events(spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args))
-    export_inventory_hourly(spark, _consumer_root(args))
+    # One run id for every export, so dbt can check it combined one run.
+    run_id = new_run_id()
+    events = promote_events(spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args), run_id)
+    export_inventory_hourly(spark, _consumer_root(args), run_id)
     if args.canonical_only:
         spark.stop()
         return
@@ -403,7 +406,7 @@ def main() -> None:
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {SILVER_CATALOG}.silver")
     resolution.writeTo(OUTPUT_TABLE).using("iceberg").createOrReplace()
     edges.writeTo(EDGES_TABLE).using("iceberg").createOrReplace()
-    write_consumer_exports(resolution, edges, _consumer_root(args))
+    write_consumer_exports(resolution, edges, _consumer_root(args), run_id)
 
     spark.stop()
 

@@ -15,7 +15,7 @@ Airflow · Great Expectations · Terraform · Streamlit
 | Team | What they need | What the platform delivers |
 |---|---|---|
 | **Finance** | Sales figures that reconcile to the till, every day | `finance.fact_sales`: one row per POS line item, built daily and only published after automated checks pass |
-| **Store operations** | Current stock per product and store | `finance.fact_inventory_snapshot`: hourly stock on hand from the scanner stream, corrected by the full event history once each hour closes |
+| **Store operations** | Current stock per product and store | `serving.inventory_current_position`: last published balance plus the newest Flink hours (about an hour old); `finance.fact_inventory_snapshot` holds hourly history, corrected by the full event history once each hour closes |
 | **Marketing** | One view of each customer across loyalty card, web and app, respecting consent | `serving.customer_360_serving`: identities merged by a graph algorithm, with personal data shown only where `marketing_consent` is given |
 | **Engineering** | Recoverable data and visible failures | Raw events kept in a replayable lake, bad events routed to dead-letter queues, a runbook for every incident |
 

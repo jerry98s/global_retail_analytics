@@ -47,6 +47,9 @@ sources:
       # layer. int_inventory_hourly uses it only for hours Spark has not
       # covered yet (ADR-012).
       - name: inventory_hourly
+      # Spark lists missing Kafka offsets in the pinned inventory Bronze
+      # snapshot; int_inventory_coverage_gaps keeps those hours on Flink.
+      - name: inventory_offset_gaps
       # Spark GraphFrames identity_resolution_job writes
       # silver.identity_resolution (ADR-010). int_identity_resolution is a
       # thin view over this source; fixture mode seeds it from

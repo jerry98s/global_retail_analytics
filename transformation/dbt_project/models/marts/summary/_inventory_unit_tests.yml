@@ -1,0 +1,30 @@
+unit_tests:
+  - name: inventory_position_daily_counts_every_hour_out_of_stock
+    description: >
+      The fact has rows only for hours that moved. Stock hits 0 at 09:00 and
+      the next movement is a receipt at 18:00, so the day has nine stockout
+      hours even though the fact holds a single zero-balance row.
+    model: inventory_position_daily
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fact_inventory_snapshot')
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_key: 1, store_key: 1, quantity_on_hand: 0}
+          - {snapshot_date_key: 20261104, snapshot_hour: 18, product_key: 1, store_key: 1, quantity_on_hand: 10}
+      - input: ref('dim_product')
+        rows:
+          - {product_key: 1, product_id: P1}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_key: 1, store_id: S1}
+      - input: source('gold_finance', 'dim_date')
+        rows:
+          - {date_key: 20261104}
+      - input: ref('inventory_opening_balance')
+        rows:
+          - {product_id: P1, store_id: S1, opening_qty: 5}
+    expect:
+      rows:
+        - {snapshot_date_key: 20261104, product_id: P1, store_id: S1, ending_on_hand_qty: 10, stockout_hour_count: 9}

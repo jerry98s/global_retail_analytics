@@ -10,9 +10,10 @@
 /*
   Daily product/store inventory rollup from finance.fact_inventory_snapshot only.
 
-  Grain: (snapshot_date_key, product_key, store_key)
-  ending_* taken from the latest hour of the day; stockout hours count hours
-  where quantity_available <= 0.
+  Grain: (snapshot_date_key, product_key, store_key), days with a movement only.
+  ending_* taken from the latest hour of the day. Stockout duration lives in
+  summary.inventory_position_daily, which counts the hours a balance is held;
+  the fact has rows only for hours with movement, so it cannot be counted here.
 
   Incremental: the fact rewrites past hours when Spark replaces a Flink hour
   (ADR-012), so any earlier day can change. Each run rolls up every day and
@@ -51,10 +52,7 @@ daily as (
         cast(
             max(case when rn_end = 1 then quantity_available end) as numeric(18, 4)
         ) as ending_available_qty,
-        cast(min(quantity_available) as numeric(18, 4)) as minimum_available_qty,
-        cast(
-            sum(case when quantity_available <= 0 then 1 else 0 end) as integer
-        ) as stockout_hour_count
+        cast(min(quantity_available) as numeric(18, 4)) as minimum_available_qty
     from ranked
     group by snapshot_date_key, product_key, store_key
 )
@@ -65,8 +63,7 @@ select
     d.store_key,
     d.ending_on_hand_qty,
     d.ending_available_qty,
-    d.minimum_available_qty,
-    d.stockout_hour_count
+    d.minimum_available_qty
 from daily d
 {% if is_incremental() %}
 left join {{ this }} t
@@ -77,5 +74,4 @@ where t.snapshot_date_key is null
    or t.ending_on_hand_qty <> d.ending_on_hand_qty
    or t.ending_available_qty <> d.ending_available_qty
    or t.minimum_available_qty <> d.minimum_available_qty
-   or t.stockout_hour_count <> d.stockout_hour_count
 {% endif %}

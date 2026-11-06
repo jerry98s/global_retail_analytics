@@ -41,9 +41,7 @@ Applied by `_config.apply_state_config()` in each Flink job's `run()`.
 |---|---|---|
 | `table.exec.state.ttl` | `7 d` | `streaming/config/state.yaml` |
 
-**Mandatory for `inventory_silver_job.py`** — its dedup CTE (`ROW_NUMBER OVER (PARTITION BY event_id ORDER BY event_time)`) is a regular self-join. Without TTL, the dedup state grows by ~1 row per `event_id` forever — until the job OOMs.
-
-7d is conservative; events older than 7d are essentially impossible to re-emit by upstream (the producer simulates up to 300s late). If upstream lateness grows, bump this rather than removing it.
+A backstop for non-windowed state. `inventory_silver_job.py` dedups per event-time window (`ROW_NUMBER() OVER (PARTITION BY window_start, window_end, event_id ORDER BY event_ts)`, keep first) and then aggregates per window. Both are window operators: their state is freed when the window closes and every operator is append-only, which the append Iceberg sink needs. `tests/integration/verify_flink_inventory_dedup.py` runs the job's SQL in the Flink image and checks the plan and the rows.
 
 ### 2.3 Checkpoint safeguards
 
@@ -138,12 +136,14 @@ All 3 streaming jobs declare `WATERMARK FOR event_ts AS event_ts - INTERVAL '...
 
 **Layer 3 (deferred):** Side outputs require migrating the late-event-handling from SQL to DataStream API. The current SQL jobs route schema-violation rows to a DLQ Kafka topic (which serves the same operational purpose — late/schema-violating rows are visible for offline correction). A future side-output implementation would route `is_late=true AND event_ts < watermark` rows to a dedicated `dlq.inventory.late_events` topic. **Action if late-event analysis becomes a regular task:** replay the topic from `earliest-offset` into a new consumer group. That is the operational substitute for side outputs.
 
+**Recovery (in use):** a scan Flink drops as late is still in Bronze. Once Spark covers its hour, dbt takes Spark's canonical number for that hour instead of Flink's (ADR-012). To reproduce locally with a running stack, follow the steps in `scripts/local/demo_inventory_late_event.py`: a pair at 100 gets a −5 sale and then a +10 receipt inside the already-closed window. The published balance goes 95 (provisional) → 105 (canonical) and stays at 105 on a rerun.
+
 ### 5.3 Window optimizations
 
 | Item | Status |
 |---|---|
 | Avoid sliding windows | **In use** — inventory_silver_job uses a 1-hour tumbling window. Sliding windows multiply data by the overlap count and cause state inflation. |
-| `AggregateFunction + ProcessWindowFunction` | **N/A** — this is a DataStream API pattern. The SQL jobs use `GROUP BY TUMBLE(event_time, INTERVAL '1' HOUR)` which is Flink SQL's optimised aggregation path (incremental aggregation is automatic). |
+| `AggregateFunction + ProcessWindowFunction` | **N/A** — this is a DataStream API pattern. The silver job uses the `TUMBLE` window TVF (window dedup, then a two-phase window aggregate), Flink SQL's optimised append-only path. |
 
 ## 6. Resource Tuning & Data Skew
 

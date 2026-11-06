@@ -1,0 +1,29 @@
+unit_tests:
+  - name: int_inventory_hourly_keeps_offset_gap_hours_on_flink
+    description: >
+      Hour 10 is covered and gap-free, so Spark's canonical events win. Hour 11
+      is covered but inside a Bronze offset gap, and hour 13 is past coverage,
+      so both stay on Flink. No hour is counted twice.
+    model: int_inventory_hourly
+    given:
+      - input: ref('int_inventory_batch_coverage')
+        rows:
+          - {batch_start_hour_key: 2026110410, batch_end_hour_key: 2026110413}
+      - input: ref('int_inventory_coverage_gaps')
+        rows:
+          - {gap_start_hour_key: 2026110411, gap_end_hour_key: 2026110411}
+      - input: source('silver', 'inventory_events')
+        rows:
+          - {event_time: "2026-11-04 10:05:00", product_id: P1, store_id: S1, qty_delta: -5, export_run_id: R1}
+          - {event_time: "2026-11-04 10:06:00", product_id: P1, store_id: S1, qty_delta: 10, export_run_id: R1}
+          - {event_time: "2026-11-04 11:05:00", product_id: P1, store_id: S1, qty_delta: -1, export_run_id: R1}
+      - input: source('silver', 'inventory_hourly')
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 10, product_id: P1, store_id: S1, qty_delta_hour: -5, qty_received_hour: 0, export_run_id: R1}
+          - {snapshot_date_key: 20261104, snapshot_hour: 11, product_id: P1, store_id: S1, qty_delta_hour: -3, qty_received_hour: 0, export_run_id: R1}
+          - {snapshot_date_key: 20261104, snapshot_hour: 13, product_id: P1, store_id: S1, qty_delta_hour: 2, qty_received_hour: 2, export_run_id: R1}
+    expect:
+      rows:
+        - {snapshot_date_key: 20261104, snapshot_hour: 10, product_id: P1, store_id: S1, qty_delta_hour: 5, qty_received_hour: 10, is_estimated: false, export_run_id: R1}
+        - {snapshot_date_key: 20261104, snapshot_hour: 11, product_id: P1, store_id: S1, qty_delta_hour: -3, qty_received_hour: 0, is_estimated: true, export_run_id: R1}
+        - {snapshot_date_key: 20261104, snapshot_hour: 13, product_id: P1, store_id: S1, qty_delta_hour: 2, qty_received_hour: 2, is_estimated: true, export_run_id: R1}

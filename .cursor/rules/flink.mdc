@@ -10,7 +10,8 @@ alwaysApply: false
 
 - `inventory_bronze_job.py` / `clickstream_bronze_job.py`: lossless Kafka bytes → `bronze.*_records` (ADR-011). No parse and no DLQ in the capture job.
 - Canonical parse, quarantine, and dedup are Spark (`canonical_events.py`), rebuilt from a committed Bronze snapshot.
-- `inventory_silver_job.py`: reads Kafka directly (not Bronze) → dedup → watermark → tumble → `silver.inventory_hourly`.
+- `inventory_silver_job.py`: reads Kafka directly (not Bronze) → tumble → window keep-first dedup → window aggregate → `silver.inventory_hourly`. Must stay append-only (`[I]` only); check with `tests/integration/verify_flink_inventory_dedup.py` in the Flink image.
+- Flink 1.17.1: no `COALESCE` in a watermarked computed column (TaskManager codegen fails, FLINK-28693); use `CASE`. The probe runs in one JVM and cannot catch this, so confirm a resubmitted job is RUNNING with checkpoints.
 - Iceberg compaction/snapshot expiry is Spark (`spark/maintenance/`); Flink 1.17 SQL has no `CALL`.
 
 ## Config

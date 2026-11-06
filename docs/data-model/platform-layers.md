@@ -32,7 +32,7 @@ Kafka / POS batch
 | Detail transform | `staging.*`, `intermediate.*` | dbt detail prep |
 | Gold | `finance.*`, `marketing.*` | Atomic Kimball facts/dims |
 | Summary | `summary.*` | Reusable aggregates from **one** Gold fact |
-| Serving | `serving.*` | Consumer-facing views (`customer_360_serving` is dbt-managed; `dim_product_current` remains Redshift DDL) |
+| Serving | `serving.*` | Consumer-facing views (`customer_360_serving` and `inventory_current_position` are dbt-managed; `dim_product_current` remains Redshift DDL) |
 | Metadata | `metadata.meta.*` | Catalog + pipeline/DQ/freshness history |
 
 ## Analytics database vs metadata database

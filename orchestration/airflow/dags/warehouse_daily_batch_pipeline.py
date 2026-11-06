@@ -3,7 +3,8 @@ Daily batch pipeline DAG.
 Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging
 (owned models) → WAP clone live→pending → dbt marts (pending) → dbt tests
 (pending) → row-count gate (pending) → WAP publish to live → {row-count
-baseline save, Redshift ANALYZE, Redshift usage check} → publish outcome.
+baseline save, serving.inventory_current_position build, Redshift ANALYZE,
+Redshift usage check} → publish outcome.
 
 Each dbt task syncs its own copy of the project (`dbt_task_bash`), because
 consecutive tasks can land on different MWAA workers. Staging/intermediate
@@ -266,6 +267,13 @@ with DAG(
         """,
     )
 
+    # Views are never WAP-published, so the serving view is built after publish
+    # against live Gold. It reads silver.inventory_hourly at query time, so it
+    # follows each hourly export without another run of this DAG.
+    dbt_serving = _dbt_step(
+        "dbt_inventory_serving_refresh", "build", "inventory_current_position"
+    )
+
     # Runs only after a successful publish, so the next gate compares against
     # counts that actually went live.
     save_baseline = PythonOperator(
@@ -294,6 +302,6 @@ with DAG(
         >> dbt_tests
         >> row_count_reconcile
         >> wap_publish
-        >> [save_baseline, redshift_analyze, cost_check]
+        >> [save_baseline, dbt_serving, redshift_analyze, cost_check]
         >> gold_publish_outcome
     )

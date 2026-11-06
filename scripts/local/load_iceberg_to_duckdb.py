@@ -11,6 +11,7 @@ the Spectrum tables on ``main``, and materializes them into
   silver.clickstream_events
   silver.inventory_events
   silver.inventory_hourly     (Spark export of Flink's committed snapshot)
+  silver.inventory_offset_gaps (missing Kafka offsets in inventory Bronze)
   silver.identity_resolution  (Spark GraphFrames, ADR-010/011 — required in
                                fidelity mode)
   silver.identity_edges       (same Spark run; audit copy of graph edges)
@@ -48,6 +49,7 @@ _EXPORTS: dict[str, str] = {
     "clickstream_events": "silver",
     "inventory_events": "silver",
     "inventory_hourly": "silver",
+    "inventory_offset_gaps": "silver",
     "identity_resolution": "silver",
     "identity_edges": "silver",
 }

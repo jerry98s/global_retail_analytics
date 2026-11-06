@@ -7,7 +7,8 @@ from pathlib import Path
 
 from pyspark.sql import SparkSession
 
-from spark.identity_resolution.canonical_events import canonicalize, promote_events, write_exports
+from spark.identity_resolution.canonical_events import (
+    canonicalize, offset_gaps, promote_events, write_exports)
 from spark.identity_resolution.consumer_exports import new_run_id, read_current
 
 
@@ -39,23 +40,38 @@ def main():
         assert invalid.count() == 3
         assert duplicates.count() == 2
         assert {r.error_reason for r in invalid.collect()} == {'invalid_json', 'invalid_utf8', 'tombstone'}
-        assert canonical.filter("event_id = 'E1'").first().kafka_offset == 2
+        # The first delivery wins; later identical copies are retries.
+        assert canonical.filter("event_id = 'E1'").first().kafka_offset == 1
         assert {r.duplicate_kind for r in duplicates.collect()} == {'transport_replay', 'business_duplicate'}
-        assert {r.canonical_transport.kafka_offset for r in duplicates.collect()} == {2}
+        assert {r.canonical_transport.kafka_offset for r in duplicates.collect()} == {1}
         # Inventory uses the same transport/business separation, without a TTL.
-        inv = json.dumps(dict(event_id='I1', event_time='2001-01-01T00:00:00Z',
-            store_id='s', product_id='p', qty_delta=-3, event_type='sale_deduction',
-            scanner_id='d', schema_version='1.0.0')).encode()
-        inv_raw = spark.createDataFrame([record(10, inv), record(11, inv), record(12, b'{}')], schema)
+        def inv_event(qty, time='2001-01-01T00:00:00Z'):
+            return json.dumps(dict(event_id='I1', event_time=time,
+                store_id='s', product_id='p', qty_delta=qty, event_type='sale_deduction',
+                scanner_id='d', schema_version='1.0.0')).encode()
+        inv = inv_event(-3)
+        conflict = inv_event(97, '2001-01-01T00:01:00Z')
+        inv_raw = spark.createDataFrame(
+            [record(10, inv), record(11, inv), record(12, b'{}'), record(13, conflict)], schema)
         inv_events, inv_bad, inv_dup = canonicalize(inv_raw, 'inventory')
-        assert (inv_events.count(), inv_bad.count(), inv_dup.count()) == (1, 1, 1)
+        assert (inv_events.count(), inv_bad.count(), inv_dup.count()) == (1, 1, 2)
         assert inv_events.first().qty_delta == -3
+        # A different payload under the same event_id is audited, never counted.
+        assert {(r.kafka_offset, r.duplicate_kind) for r in inv_dup.collect()} == {
+            (11, 'business_duplicate'), (13, 'payload_conflict')}
+        # Contiguous offsets have no gap; a lost record is reported with its Kafka-time range.
+        assert offset_gaps(inv_raw).count() == 0
+        gap = offset_gaps(inv_raw.filter('kafka_offset != 11')).collect()
+        assert [(g.last_offset_before, g.first_offset_after, g.missing_offsets) for g in gap] == [(10, 12, 1)]
         # Repartitioning and replaying the same snapshot cannot change winners.
         again, _, _ = canonicalize(raw.repartition(3), 'clickstream')
-        assert {(r.event_id, r.kafka_offset) for r in again.collect()} == {('E1', 2), ('late', 6)}
+        assert {(r.event_id, r.kafka_offset) for r in again.collect()} == {('E1', 1), ('late', 6)}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve().as_uri()
-            write_exports(canonical, invalid, duplicates, root, 'clickstream', new_run_id())
+            first_run = new_run_id()
+            write_exports(canonical, invalid, duplicates, root, 'clickstream', first_run)
+            exported = read_current(spark, root, 'clickstream_events')
+            assert {r.export_run_id for r in exported.select('export_run_id').collect()} == {first_run}
             # A changed business policy/input must replace previous output.
             second, bad2, dup2 = canonicalize(raw.filter('kafka_offset = 6'), 'clickstream')
             write_exports(second, bad2, dup2, root, 'clickstream', new_run_id())
@@ -81,6 +97,7 @@ def main():
                     assert outputs['clickstream'].count() == 2
                     assert outputs['inventory'].count() == 1
                     assert read_current(spark, root + '/consumer_current', 'clickstream_events').count() == 2
+                    assert read_current(spark, root + '/consumer_current', 'inventory_offset_gaps').count() == 0
                 assert spark.table('replay.bronze.clickstream_records').count() == 7
                 assert spark.sql('SELECT snapshot_id FROM replay.bronze.clickstream_records.snapshots').collect() == before
                 print('PASS: pinned Iceberg snapshots, repeat promotion, no Bronze mutations')

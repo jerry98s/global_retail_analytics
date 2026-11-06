@@ -73,13 +73,16 @@ models:
   - name: int_inventory_hourly
     description: >
       Hourly inventory movements per product/store (ADR-012). Spark canonical
-      events for hours inside int_inventory_batch_coverage, Flink
-      silver.inventory_hourly for every other hour. The two ranges do not
-      overlap, so the grain has one row.
+      events for hours inside int_inventory_batch_coverage and outside every
+      int_inventory_coverage_gaps range, Flink silver.inventory_hourly for
+      every other hour. The two ranges do not overlap, so the grain has one row.
     columns:
       - name: qty_delta_hour
         tests: [not_null]
       - name: is_estimated
+        tests: [not_null]
+      - name: export_run_id
+        description: Spark run that published the export this row was read from.
         tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:

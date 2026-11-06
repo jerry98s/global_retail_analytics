@@ -384,7 +384,7 @@ function Invoke-SparkIdentityLocal {
 
 # Views over Gold. Never WAP-published (only tables are), so they are built after
 # the swap, against the freshly published live tables.
-$WapServingModels = @('customer_360_view', 'customer_360_serving')
+$WapServingModels = @('customer_360_view', 'customer_360_serving', 'inventory_current_position')
 
 # ADR-009 step 1: clone live Gold into the *_pending schemas before dbt runs.
 # Without the clone the pending relations start empty, dbt's is_incremental() is

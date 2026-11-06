@@ -198,9 +198,10 @@ class TestDbtHandoffContract:
         events = (_REPO / "spark/identity_resolution/canonical_events.py").read_text(encoding="utf-8")
         assert 'publish(resolution, root, "identity_resolution", run_id)' in job
         assert 'publish(edges, root, "identity_edges", run_id)' in job
-        assert 'publish(frame, root, "inventory_hourly", new_run_id())' in job
+        assert 'publish(frame, root, "inventory_hourly", run_id or new_run_id())' in job
         assert "publish(frame, root, f'{stream}_{suffix}', run_id)" in events
+        assert "publish(gaps, root, 'inventory_offset_gaps', run_id)" in events
         assert set(bridge._EXPORTS) == {
             "clickstream_events", "inventory_events", "inventory_hourly",
-            "identity_resolution", "identity_edges",
+            "inventory_offset_gaps", "identity_resolution", "identity_edges",
         }

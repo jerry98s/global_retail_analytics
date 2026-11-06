@@ -19,3 +19,33 @@ models:
         tests: [not_null]
       - name: last_session_date_key
         description: "Date key of the most recent session; NULL when the customer has no sessions."
+
+  - name: inventory_current_position
+    description: >
+      Current stock per (product_id, store_id): the latest published balance in
+      live finance.fact_inventory_snapshot plus Flink silver.inventory_hourly
+      hours after the fact's newest hour (ADR-012 speed layer). Built after the
+      warehouse publish; recomputed on every query.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [product_id, store_id]
+    columns:
+      - name: product_id
+        tests: [not_null]
+      - name: store_id
+        tests: [not_null]
+      - name: current_on_hand_qty
+        description: "published_on_hand_qty + provisional_qty_delta. Can be negative."
+        tests: [not_null]
+      - name: current_available_qty
+        description: "current_on_hand_qty floored at zero."
+        tests: [not_null]
+      - name: provisional_qty_delta
+        description: "Sum of Flink hourly deltas after the fact's newest hour; 0 when none."
+        tests: [not_null]
+      - name: as_of_hour_key
+        description: "YYYYMMDDHH of the newest hour in the balance; NULL for a pair with only an opening balance."
+      - name: is_provisional
+        description: "True when the balance includes a Flink hour Spark has not yet confirmed."
+        tests: [not_null]
