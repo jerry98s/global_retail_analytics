@@ -9,6 +9,8 @@
 -- (spark/identity_resolution/consumer_exports.py). Every table below points
 -- at <export>/manifest, so a query sees one complete run.
 -- Re-run this DDL only if a schema changes; data refreshes need no action.
+-- Spectrum maps Parquet columns by position. publish() appends export_run_id
+-- as the last column of every export, so it stays last here.
 --
 -- Column semantics (NOT the same as gold finance.fact_inventory_snapshot):
 --   qty_delta_hour    = SUM(qty_delta) within the hourly TUMBLE window
@@ -39,7 +41,8 @@ CREATE EXTERNAL TABLE silver.inventory_hourly (
     store_id            varchar(32),
     qty_delta_hour      bigint,
     qty_received_hour   bigint,
-    is_estimated        boolean
+    is_estimated        boolean,
+    export_run_id       varchar(64)
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_hourly/manifest';
@@ -62,7 +65,8 @@ CREATE EXTERNAL TABLE silver.identity_resolution (
     is_public_device    boolean,
     component_rep_node  varchar(320),
     component_rep_type  varchar(50),
-    computed_at         timestamp
+    computed_at         timestamp,
+    export_run_id       varchar(64)
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_resolution/manifest';
@@ -72,7 +76,8 @@ CREATE EXTERNAL TABLE silver.identity_edges (
     src                 varchar(320),
     dst                 varchar(320),
     edge_type           varchar(50),
-    last_observed_at    timestamp
+    last_observed_at    timestamp,
+    export_run_id       varchar(64)
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_edges/manifest';
@@ -98,7 +103,8 @@ CREATE EXTERNAL TABLE silver.clickstream_events (
     kafka_partition integer,
     kafka_offset bigint,
     kafka_timestamp timestamp,
-    ingested_at timestamp
+    ingested_at timestamp,
+    export_run_id varchar(64)
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/clickstream_events/manifest';
@@ -120,7 +126,25 @@ CREATE EXTERNAL TABLE silver.inventory_events (
     kafka_partition integer,
     kafka_offset bigint,
     kafka_timestamp timestamp,
-    ingested_at timestamp
+    ingested_at timestamp,
+    export_run_id varchar(64)
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_events/manifest';
+
+-- Breaks in Kafka offsets per partition of the pinned Bronze snapshot
+-- (ADR-012). dbt keeps the affected hours on Flink.
+DROP TABLE IF EXISTS silver.inventory_offset_gaps;
+CREATE EXTERNAL TABLE silver.inventory_offset_gaps (
+    source_system varchar(256),
+    kafka_topic varchar(256),
+    kafka_partition integer,
+    last_offset_before bigint,
+    first_offset_after bigint,
+    missing_offsets bigint,
+    gap_start_ts timestamp,
+    gap_end_ts timestamp,
+    export_run_id varchar(64)
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_offset_gaps/manifest';

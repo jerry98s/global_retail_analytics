@@ -95,6 +95,32 @@ def render_redshift() -> None:
             st.bar_chart(by_store.set_index("store__store_name")["net_revenue"])
 
     with tab_inventory:
+        st.subheader("Live stock")
+        st.caption(
+            "Published balance from the last warehouse run plus Flink hours after "
+            "it. Provisional hours are replaced by Spark-canonical ones on the next "
+            "daily rebuild."
+        )
+        live, err = _safe_query(data.INVENTORY_LIVE)
+        if err:
+            _missing("serving.inventory_current_position", err)
+        elif live.empty or pd.isna(live["current_on_hand_qty"].iloc[0]):
+            st.warning("No live inventory rows yet.")
+        else:
+            row = live.iloc[0]
+            c1, c2, c3 = st.columns(3)
+            c1.metric(
+                "Current on hand",
+                f"{int(row['current_on_hand_qty']):,}",
+                delta=f"{int(row['provisional_qty_delta']):+,} provisional",
+            )
+            c2.metric("Published on hand", f"{int(row['published_on_hand_qty']):,}")
+            c3.metric("As of", data.format_hour_key(row["as_of_hour_key"]))
+            st.caption(
+                f"Published through {data.format_hour_key(row['published_hour_key'])}; "
+                f"{int(row['provisional_pairs']):,} product/store pairs include provisional hours."
+            )
+
         st.subheader("Inventory position")
         st.caption(
             "On-hand is the end-of-day balance of every product/store, carried "

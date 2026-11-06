@@ -123,6 +123,26 @@ CUSTOMER_360 = """
     LIMIT 500
 """
 
+# Speed-layer read (ADR-012): published balance plus Flink hours after it.
+INVENTORY_LIVE = """
+    SELECT SUM(published_on_hand_qty) AS published_on_hand_qty,
+           SUM(provisional_qty_delta) AS provisional_qty_delta,
+           SUM(current_on_hand_qty) AS current_on_hand_qty,
+           SUM(current_available_qty) AS current_available_qty,
+           MAX(published_hour_key) AS published_hour_key,
+           MAX(as_of_hour_key) AS as_of_hour_key,
+           SUM(CASE WHEN is_provisional THEN 1 ELSE 0 END) AS provisional_pairs
+    FROM serving.inventory_current_position
+"""
+
+
+def format_hour_key(hour_key: int | float | str | None) -> str:
+    """Format a YYYYMMDDHH key as 'YYYY-MM-DD HH:00 UTC'; '—' when missing."""
+    if hour_key is None or pd.isna(hour_key):
+        return "—"
+    text = str(int(hour_key))
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]} {text[8:10]}:00 UTC"
+
 
 # --------------------------------------------------------------------------- #
 # Inventory snapshot display helpers

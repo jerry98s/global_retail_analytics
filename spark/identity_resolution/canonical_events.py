@@ -45,14 +45,23 @@ def canonicalize(raw: DataFrame, stream: str) -> tuple[DataFrame, DataFrame, Dat
     transport_ranked = valid.withColumn('_transport_rank', F.row_number().over(transport_order))
     transport_copies = transport_ranked.filter('_transport_rank > 1')
     unique_records = transport_ranked.filter('_transport_rank = 1').drop('_transport_rank')
+    # The earliest copy of an event_id wins, as in Flink's window dedup. A
+    # later copy with the same payload is a retry; one with a different
+    # payload is a conflict, kept for audit and never counted.
     event_order = Window.partitionBy('event_id').orderBy(
-        F.col('event_time').desc(), F.col('kafka_timestamp').desc_nulls_last(),
-        *[F.col(name).desc() for name in TRANSPORT])
+        F.col('event_time').asc(), F.col('kafka_timestamp').asc_nulls_last(),
+        *[F.col(name).asc() for name in TRANSPORT])
+    payload_hash = F.sha2(F.to_json(F.struct(*fields)), 256)
     ranked = unique_records.withColumn('_event_rank', F.row_number().over(event_order))
     winner = F.struct(*[F.col(name).alias(name) for name in TRANSPORT])
-    ranked = ranked.withColumn('canonical_transport', F.first(winner).over(event_order))
+    ranked = (ranked.withColumn('canonical_transport', F.first(winner).over(event_order))
+              .withColumn('_payload_matches', payload_hash == F.first(payload_hash).over(event_order)))
     business_copies = ranked.filter('_event_rank > 1').drop('_event_rank')
-    business_copies = business_copies.withColumn('duplicate_kind', F.lit('business_duplicate'))
+    business_copies = business_copies.withColumn(
+        'duplicate_kind',
+        F.when(F.col('_payload_matches'), F.lit('business_duplicate')).otherwise(F.lit('payload_conflict')),
+    ).drop('_payload_matches')
+    ranked = ranked.drop('_payload_matches')
     winners = ranked.filter('_event_rank = 1').select('event_id', 'canonical_transport')
     transport_copies = (transport_copies.drop('_transport_rank')
                         .join(winners, 'event_id', 'inner')
@@ -63,19 +72,47 @@ def canonicalize(raw: DataFrame, stream: str) -> tuple[DataFrame, DataFrame, Dat
     return canonical, invalid, duplicates
 
 
+PARTITION = ['source_system', 'kafka_topic', 'kafka_partition']
+
+
+def offset_gaps(raw: DataFrame) -> DataFrame:
+    """Missing Kafka offsets per partition in a Bronze snapshot.
+
+    Bronze keeps every delivered record (valid, invalid and duplicate), and the
+    producers are not transactional, so offsets between a partition's first
+    and last record are contiguous. A gap means Bronze lost records that Flink
+    may still have counted; its Kafka-time range bounds the affected hours.
+    """
+    offsets = raw.select(*PARTITION, 'kafka_offset', 'kafka_timestamp').dropDuplicates(
+        [*PARTITION, 'kafka_offset'])
+    order = Window.partitionBy(*PARTITION).orderBy('kafka_offset')
+    return (offsets
+            .withColumn('_prev_offset', F.lag('kafka_offset').over(order))
+            .withColumn('_prev_ts', F.lag('kafka_timestamp').over(order))
+            .filter(F.col('kafka_offset') - F.col('_prev_offset') > 1)
+            .select(*PARTITION,
+                    F.col('_prev_offset').alias('last_offset_before'),
+                    F.col('kafka_offset').alias('first_offset_after'),
+                    (F.col('kafka_offset') - F.col('_prev_offset') - 1).alias('missing_offsets'),
+                    F.col('_prev_ts').alias('gap_start_ts'),
+                    F.col('kafka_timestamp').alias('gap_end_ts')))
+
+
 def write_exports(canonical, invalid, duplicates, root: str, stream: str, run_id: str) -> None:
     for suffix, frame in [('events', canonical), ('quarantine', invalid), ('duplicates', duplicates)]:
         publish(frame, root, f'{stream}_{suffix}', run_id)
 
 
-def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str) -> dict[str, DataFrame]:
+def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
+                   run_id: str | None = None) -> dict[str, DataFrame]:
     """Pin each source snapshot, persist outputs, then return canonical sources.
 
     Iceberg reads are snapshot-aware, and each plain-Parquet export switches
     atomically through its manifest (consumer_exports). Run one writer at a time.
+    Inventory also publishes ``inventory_offset_gaps`` for dbt's batch coverage.
     """
     outputs = {}
-    run_id = new_run_id()
+    run_id = run_id or new_run_id()
     spark.sql(f'CREATE NAMESPACE IF NOT EXISTS {silver_catalog}.silver')
     for stream in ('clickstream', 'inventory'):
         source = f'{bronze_catalog}.bronze.{stream}_records'
@@ -95,10 +132,17 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str) -
                 raise RuntimeError(f'{stream} reconciliation failed: {input_rows} != {counts}')
             for suffix, frame in zip(('events', 'quarantine', 'duplicates'), frames):
                 frame.writeTo(f'{silver_catalog}.silver.{stream}_{suffix}').using('iceberg').createOrReplace()
+            if stream == 'inventory':
+                gaps = offset_gaps(raw)
+                gaps.writeTo(f'{silver_catalog}.silver.inventory_offset_gaps').using('iceberg').createOrReplace()
+                publish(gaps, root, 'inventory_offset_gaps', run_id)
             write_exports(*frames, root, stream, run_id)
             print(json.dumps(dict(stream=stream, bronze_snapshot_id=head.snapshot_id if head else None,
                                   input_rows=input_rows, canonical_rows=counts[0],
-                                  invalid_rows=counts[1], duplicate_rows=counts[2]), sort_keys=True))
+                                  invalid_rows=counts[1], duplicate_rows=counts[2],
+                                  payload_conflict_rows=frames[2].filter(
+                                      F.col('duplicate_kind') == 'payload_conflict').count()),
+                             sort_keys=True))
         finally:
             for frame in frames:
                 frame.unpersist()

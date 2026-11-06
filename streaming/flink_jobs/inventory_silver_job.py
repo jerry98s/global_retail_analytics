@@ -81,10 +81,9 @@ def run() -> None:
     t_env = StreamTableEnvironment.create(
         stream_execution_environment=env, environment_settings=env_settings
     )
-    # F-STATE: rocksdb state backend + incremental checkpoints + 7d TTL
-    # (mandatory for this job's dedup self-join — without TTL the dedup
-    # state grows by ~1 row per event_id forever) + 1min source idle
-    # timeout. See streaming/config/state.yaml.
+    # F-STATE: rocksdb state backend + incremental checkpoints + 7d TTL +
+    # 1min source idle timeout. Window dedup/aggregation free their state
+    # when the window closes; the TTL is a backstop. See streaming/config/state.yaml.
     apply_state_config(env, t_env, state_cfg)
 
     silver_wm = watermark_interval_sql(
@@ -131,10 +130,9 @@ def run() -> None:
         CREATE TABLE default_catalog.default_database.inventory_events (
           event_id STRING,
           event_time STRING,
-          -- Same ISO-8601 parse as inventory_bronze_job: JSON TIMESTAMP(3)
-          -- does not reliably bind producer `...T...+00:00` strings, which
-          -- leaves null watermarks and prevents TUMBLE windows from closing.
-          event_ts AS TO_TIMESTAMP(REPLACE(SUBSTRING(event_time, 1, 23), 'T', ' ')),
+          -- JSON TIMESTAMP(3) does not reliably bind producer
+          -- `...T...+00:00` strings; parse the string instead.
+          event_ts AS {event_ts_sql()},
           store_id STRING,
           product_id STRING,
           qty_delta INT,
@@ -168,23 +166,64 @@ def run() -> None:
         """
     )
 
-    job_sql = f"""
-    INSERT INTO {catalog}.{SILVER_NAMESPACE}.{INVENTORY_HOURLY}
+    job_sql = f"INSERT INTO {catalog}.{SILVER_NAMESPACE}.{INVENTORY_HOURLY}\n" + hourly_select_sql(
+        source="default_catalog.default_database.inventory_events",
+        window_interval=window_interval,
+    )
+
+    result = t_env.execute_sql(job_sql)
+    job_client = result.get_job_client()
+    if job_client is not None:
+        print(f"Started job: {job_client.get_job_id()}")
+
+
+def event_ts_sql(column: str = "event_time") -> str:
+    """UTC rowtime from an ISO-8601 string, never null.
+
+    Accepts any (or no) fractional seconds and a trailing Z or +/-HH:MM
+    offset, matching Spark's to_timestamp. A null rowtime fails the watermark
+    operator and restarts the job, so an unparseable value becomes 1970: its
+    window closed long ago and Flink drops it, while Bronze keeps the raw record.
+
+    CASE, not COALESCE: on Flink 1.17.1 a COALESCE in a watermarked computed
+    column fails code generation on the TaskManager (FLINK-28693).
+    """
+    def offset(group: int) -> str:
+        return f"REGEXP_EXTRACT({column}, '([+-])([0-9][0-9]):([0-9][0-9])$', {group})"
+
+    offset_minutes = (
+        f"(CASE WHEN {offset(1)} IN ('+', '-')"
+        f" THEN (CASE WHEN {offset(1)} = '-' THEN -1 ELSE 1 END)"
+        f" * (CAST({offset(2)} AS INT) * 60 + CAST({offset(3)} AS INT))"
+        f" ELSE 0 END)"
+    )
+    local = f"TO_TIMESTAMP(REPLACE(SUBSTRING({column}, 1, 19), 'T', ' '))"
+    return (
+        f"(CASE WHEN {local} IS NULL THEN TIMESTAMP '1970-01-01 00:00:00'"
+        f" ELSE TIMESTAMPADD(MINUTE, -{offset_minutes}, {local}) END)"
+    )
+
+
+def hourly_select_sql(*, source: str, window_interval: str) -> str:
+    """Event-time tumble, window dedup, window aggregate: silver.inventory_hourly rows.
+
+    Every operator is append-only, so each closed window writes one row per
+    (product, store) to the append Iceberg sink. A retry carries the original
+    event_time, so its copies share a window; the first one is kept. A copy of
+    an event_id with a different event_time is a conflict, not a retry: Spark
+    flags it from Bronze, and its hour is provisional until then.
+    """
+    return f"""
     WITH deduped AS (
-      SELECT event_id, event_time, store_id, product_id, qty_delta
+      SELECT *
       FROM (
         SELECT
-          event_id,
-          event_ts AS event_time,
-          store_id,
-          product_id,
-          qty_delta,
+          *,
           ROW_NUMBER() OVER (
-            PARTITION BY event_id
-            ORDER BY event_ts DESC
+            PARTITION BY window_start, window_end, event_id
+            ORDER BY event_ts ASC
           ) AS rn
-        FROM default_catalog.default_database.inventory_events
-        WHERE event_ts IS NOT NULL
+        FROM TABLE(TUMBLE(TABLE {source}, DESCRIPTOR(event_ts), {window_interval}))
       )
       WHERE rn = 1
     )
@@ -196,20 +235,9 @@ def run() -> None:
       CAST(SUM(qty_delta) AS BIGINT) AS qty_delta_hour,
       CAST(SUM(CASE WHEN qty_delta > 0 THEN qty_delta ELSE 0 END) AS BIGINT) AS qty_received_hour,
       FALSE AS is_estimated
-    FROM TABLE(
-      TUMBLE(
-        TABLE deduped,
-        DESCRIPTOR(event_time),
-        {window_interval}
-      )
-    )
-    GROUP BY window_start, product_id, store_id
+    FROM deduped
+    GROUP BY window_start, window_end, product_id, store_id
     """
-
-    result = t_env.execute_sql(job_sql)
-    job_client = result.get_job_client()
-    if job_client is not None:
-        print(f"Started job: {job_client.get_job_id()}")
 
 
 if __name__ == "__main__":

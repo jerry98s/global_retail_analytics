@@ -1,15 +1,18 @@
 """
 Inventory stream producer simulator.
 Emits realistic stock-change events at configurable throughput.
-Simulates: normal events, late events, duplicate retries, poison messages.
+Simulates: normal events, late events, client retries (the original bytes
+resent unchanged) and, rarely, conflicting copies (an old event_id with a
+different payload, which Spark must flag rather than treat as a retry).
 """
 
 import json
 import random
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone, timedelta
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 from typing import Optional
 from confluent_kafka import Producer
 import structlog
@@ -51,7 +54,6 @@ class InventoryEvent:
     def generate(
         cls,
         late_seconds: int = 0,
-        force_duplicate: bool = False,
         event_id: Optional[str] = None
     ) -> "InventoryEvent":
         event_time = datetime.now(timezone.utc) - timedelta(seconds=late_seconds)
@@ -71,6 +73,40 @@ class InventoryEvent:
         )
 
 
+def message_key(event: InventoryEvent) -> bytes:
+    return f"{event.store_id}:{event.product_id}".encode()
+
+
+def conflicting_copy(original: InventoryEvent) -> InventoryEvent:
+    """Same event_id, store and product, but a different quantity and later time."""
+    later = datetime.fromisoformat(original.event_time) + timedelta(seconds=random.randint(1, 120))
+    return replace(original, event_time=later.isoformat(), qty_delta=original.qty_delta + 1)
+
+
+def next_message(
+    r: float,
+    recent: "deque[tuple[InventoryEvent, bytes]]",
+    *,
+    duplicate_pct: float,
+    conflict_pct: float,
+    late_event_pct: float,
+) -> tuple[str, InventoryEvent, bytes]:
+    """Pick one scenario for a draw ``r`` in [0, 1) and return (kind, event, payload)."""
+    if r < duplicate_pct and recent:
+        event, payload = random.choice(recent)
+        return "retry", event, payload
+    if r < duplicate_pct + conflict_pct and recent:
+        event = conflicting_copy(random.choice(recent)[0])
+        return "conflict", event, json.dumps(asdict(event)).encode("utf-8")
+    if r < late_event_pct:
+        event = InventoryEvent.generate(late_seconds=random.randint(61, 300))
+        return "late", event, json.dumps(asdict(event)).encode("utf-8")
+    event = InventoryEvent.generate()
+    payload = json.dumps(asdict(event)).encode("utf-8")
+    recent.append((event, payload))
+    return "normal", event, payload
+
+
 def delivery_report(err, msg):
     if err:
         log.error("delivery_failed", error=str(err))
@@ -83,7 +119,8 @@ def run_producer(
     events_per_second: int = 100,
     duration_seconds: int = 300,
     late_event_pct: float = 0.02,    # 2% of events arrive 60–300s late
-    duplicate_pct: float = 0.001,    # 0.1% duplicate retries
+    duplicate_pct: float = 0.001,    # 0.1% client retries (identical bytes)
+    conflict_pct: float = 0.0002,    # 0.02% conflicting copies of an old event_id
 ):
     producer = Producer(KAFKA_CONFIG)
     total_sent = 0
@@ -92,38 +129,23 @@ def run_producer(
     log.info("producer_started", eps=events_per_second,
              duration=duration_seconds)
 
-    recent_event_ids = []  # for duplicate simulation
+    recent: deque[tuple[InventoryEvent, bytes]] = deque(maxlen=1000)
 
     while time.time() - start_time < duration_seconds:
         batch_start = time.time()
 
         for _ in range(events_per_second):
-            # Determine event scenario
-            r = random.random()
-
-            if r < duplicate_pct and recent_event_ids:
-                # Simulate client retry — same event_id
-                event = InventoryEvent.generate(
-                    event_id=random.choice(recent_event_ids)
-                )
-                log.debug("emitting_duplicate", event_id=event.event_id)
-
-            elif r < late_event_pct:
-                # Simulate late-arriving event
-                late_seconds = random.randint(61, 300)
-                event = InventoryEvent.generate(late_seconds=late_seconds)
-
-            else:
-                # Normal event
-                event = InventoryEvent.generate()
-                recent_event_ids.append(event.event_id)
-                if len(recent_event_ids) > 1000:
-                    recent_event_ids.pop(0)
-
-            payload = json.dumps(asdict(event)).encode("utf-8")
+            kind, event, payload = next_message(
+                random.random(), recent,
+                duplicate_pct=duplicate_pct,
+                conflict_pct=conflict_pct,
+                late_event_pct=late_event_pct,
+            )
+            if kind in ("retry", "conflict"):
+                log.debug(f"emitting_{kind}", event_id=event.event_id)
             producer.produce(
                 topic     = TOPIC,
-                key       = f"{event.store_id}:{event.product_id}".encode(),
+                key       = message_key(event),
                 value     = payload,
                 callback  = delivery_report
             )

@@ -13,6 +13,7 @@ WAREHOUSE_LIVE_MODELS: tuple[str, ...] = (
     "stg_pos_transactions",
     "stg_inventory_events",
     "int_inventory_batch_coverage",
+    "int_inventory_coverage_gaps",
     "int_inventory_hourly",
     "int_inventory_reconciliation_hourly",
 )

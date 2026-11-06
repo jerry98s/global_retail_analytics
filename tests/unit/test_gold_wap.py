@@ -177,8 +177,9 @@ class TestInventoryLambda:
         assert "source('silver', 'inventory_hourly')" in src
         assert "ref('int_inventory_batch_coverage')" in src
         compact = " ".join(src.split())
-        assert "false as is_estimated from batch_hourly" in compact
-        assert "true as is_estimated from speed_hourly" in compact
+        assert "false as is_estimated, b.export_run_id from batch_hourly" in compact
+        assert "true as is_estimated, s.export_run_id from speed_hourly" in compact
+        assert "ref('int_inventory_coverage_gaps')" in src
         # No coverage yet (Spark never ran) must keep every Flink hour.
         assert "c.batch_start_hour_key is null" in compact
 
@@ -206,7 +207,8 @@ class TestInventoryLambda:
         compact = " ".join(src.split())
         assert "max(snapshot_date_key)" not in compact
         assert "t.ending_on_hand_qty <> d.ending_on_hand_qty" in compact
-        assert "t.stockout_hour_count <> d.stockout_hour_count" in compact
+        # Stockout duration needs dense hours: only inventory_position_daily has it.
+        assert "stockout_hour_count" not in compact
 
     def test_is_estimated_allows_speed_layer_hours(self) -> None:
         yml = _read(_DBT / "tests/fact_sales.yml")

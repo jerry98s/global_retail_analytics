@@ -20,7 +20,10 @@ The Flink number has limits the Spark number does not:
 
 1. **Late scans are lost.** A record that reaches Kafka after its window plus
    the 60 s watermark is dropped from `inventory_hourly` for good.
-2. **Deduplication is bounded.** The dedup state expires after 7 days.
+2. **Deduplication is per window.** Flink drops copies of an `event_id`
+   within one event-time window (a retry carries the original `event_time`).
+   A copy with a different `event_time` is a conflict that only Spark, with
+   all of Bronze, can see.
 3. **Recovery depends on Kafka.** Rebuilding means replaying the topic, which
    is limited by retention. A restart restores the newest retained
    checkpoint, or else resumes from the committed consumer-group offsets.
@@ -37,9 +40,26 @@ Split each hour by who has complete data for it:
   that was still open when the snapshot was taken. An hour counts as closed
   once Kafka has received records past its end plus the Flink watermark
   delay.
+- Spark records every break in Kafka offsets per partition of the pinned
+  Bronze snapshot in `silver.inventory_offset_gaps` (producers are not
+  transactional, so offsets are contiguous). `int_inventory_coverage_gaps`
+  widens each gap by the maximum event lateness
+  (`inventory_max_event_lateness_seconds`, default 3600) and those hours stay
+  on Flink even inside the coverage range. A warn-severity test reports them.
 - `int_inventory_hourly` sums Spark's canonical events for covered hours
   (`is_estimated = false`) and takes Flink's `inventory_hourly` for every
-  other hour (`is_estimated = true`). The ranges do not overlap.
+  other hour (`is_estimated = true`). The ranges do not overlap. It is a
+  table carrying `export_run_id`, and a blocking test fails the audit when
+  its inputs come from more than one Spark run.
+- Flink deduplicates with a window Top-1 (`ROW_NUMBER() ... ORDER BY event_ts
+  ASC` per window and `event_id`, keep-first) feeding the window aggregate, so
+  the job is append-only end to end and each window is written once. Spark
+  also keeps the earliest copy of an `event_id`, and labels a later copy with
+  a different payload `payload_conflict` rather than a retry.
+- `serving.inventory_current_position` is the speed-layer read: the latest
+  published balance per product and store plus Flink hours after the fact's
+  newest hour. It is a view built after the warehouse publish, so it follows
+  every `inventory_hourly` export without waiting for the daily rebuild.
 - `fact_inventory_snapshot` reads `int_inventory_hourly`. Each run recomputes
   every running balance and upserts only rows that are new or whose balance
   or `is_estimated` changed. A rewritten hour keeps its stored `product_key`.
@@ -70,9 +90,19 @@ Split each hour by who has complete data for it:
 - **Locally, hours rarely become covered.** A short laptop run sits inside one
   clock hour, so almost every hour stays on Flink. Covered hours appear when
   a run spans an hour boundary.
-- **Spark gaps become Gold gaps.** If Bronze capture stops mid-range, Spark's
-  numbers for that range are short and Gold uses them. The reconciliation
-  check flags these hours as Flink-only quantity.
+- **Bronze gaps fall back to Flink.** A break in Bronze offsets keeps the
+  affected hours on Flink instead of publishing short Spark numbers. A gap
+  that Bronze never refills stays provisional until someone replays or
+  accepts it.
+- **Current stock is about an hour old.** The serving view is as fresh as the
+  Flink window (1 hour on cloud) plus the hourly `inventory_hourly` export.
+- **One stockout measure.** Stockout duration lives only in
+  `summary.inventory_position_daily`, which counts every hour the carried
+  balance is at or below zero. `inventory_daily_product_store` no longer has
+  `stockout_hour_count`; an existing live table needs
+  `ALTER TABLE summary.inventory_daily_product_store DROP COLUMN stockout_hour_count`
+  before the column stops appearing (WAP publish requires matching columns,
+  and the incremental keeps it as NULL until then).
 
 ## Alternatives considered
 
@@ -99,3 +129,5 @@ Rejected: correct, but it restates every stored row to the current
 - `transformation/dbt_project/models/intermediate/int_inventory_batch_coverage.sql`
 - `transformation/dbt_project/models/intermediate/int_inventory_hourly.sql`
 - `transformation/dbt_project/models/marts/finance/fact_inventory_snapshot.sql`
+- `transformation/dbt_project/models/marts/serving/inventory_current_position.sql`
+- `scripts/local/demo_inventory_late_event.py` on `local-testing-version` (late-event recovery demo)

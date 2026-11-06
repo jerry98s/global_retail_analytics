@@ -380,6 +380,7 @@ AWS production deployment or a measured 10k events/s load test.
 |---|---|---|
 | Finance | `finance.fact_sales` | `(transaction_id, line_item_number)` |
 | Ops | `finance.fact_inventory_snapshot` | product/store/hour |
+| Ops | `serving.inventory_current_position` | product/store; published balance plus newer Flink hours (about an hour old) |
 | Marketing | `marketing.fact_customer_session` | `session_id` |
 | Marketing | `marketing.dim_customer` | `customer_key` + RFM/consent |
 | BI | `serving.customer_360_serving` | consent-gated Customer 360 |

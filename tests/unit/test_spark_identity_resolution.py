@@ -195,6 +195,16 @@ class TestDbtHandoffContract:
             "identity_edges",
             "clickstream_events",
             "inventory_events",
+            "inventory_offset_gaps",
         ):
             assert f"consumer_current/{name}/manifest'" in ddl
         assert "/data/'" not in ddl
+
+    def test_job_publishes_every_export_with_one_run_id(self) -> None:
+        job = (_REPO / "spark/identity_resolution/identity_resolution_job.py").read_text(encoding="utf-8")
+        events = (_REPO / "spark/identity_resolution/canonical_events.py").read_text(encoding="utf-8")
+        assert 'publish(resolution, root, "identity_resolution", run_id)' in job
+        assert 'publish(edges, root, "identity_edges", run_id)' in job
+        assert 'publish(frame, root, "inventory_hourly", run_id or new_run_id())' in job
+        assert "publish(frame, root, f'{stream}_{suffix}', run_id)" in events
+        assert "publish(gaps, root, 'inventory_offset_gaps', run_id)" in events

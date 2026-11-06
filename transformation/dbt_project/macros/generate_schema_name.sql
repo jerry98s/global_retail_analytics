@@ -53,7 +53,7 @@
    must point at source('gold_marketing', 'dim_product') (live). #}
 {% macro wap_live_ref(model_name) -%}
     {%- set rel = ref(model_name) -%}
-    {%- if rel.schema.endswith('_pending') -%}
+    {%- if rel.schema and rel.schema.endswith('_pending') -%}
         {{ api.Relation.create(database=rel.database, schema=rel.schema[:-8], identifier=rel.identifier) }}
     {%- else -%}
         {{ rel }}

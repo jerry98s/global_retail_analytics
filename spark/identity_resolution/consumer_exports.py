@@ -37,11 +37,18 @@ def _spectrum_url(uri: str) -> str:
 
 
 def publish(frame: DataFrame, root: str, name: str, run_id: str) -> str:
-    """Write ``frame`` as a new run of export ``name``; returns the run dir."""
+    """Write ``frame`` as a new run of export ``name``; returns the run dir.
+
+    Every row carries ``export_run_id`` (appended last, so positional Spectrum
+    columns keep their order). Exports from one Spark job share a run id, so a
+    reader can prove it combined one consistent run.
+    """
+    from pyspark.sql import functions as F
+
     spark = frame.sparkSession
     base_uri = f"{root.rstrip('/')}/{name}"
     run_uri = f"{base_uri}/run={run_id}"
-    frame.write.mode("errorifexists").parquet(run_uri)
+    frame.withColumn("export_run_id", F.lit(run_id)).write.mode("errorifexists").parquet(run_uri)
 
     base = _hadoop_path(spark, base_uri)
     fs = base.getFileSystem(spark._jsc.hadoopConfiguration())

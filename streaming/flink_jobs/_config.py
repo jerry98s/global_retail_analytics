@@ -150,8 +150,8 @@ def apply_state_config(
     )
     env.configure(env_config)
 
-    # SQL config: state TTL (mandatory for the dedup self-join in
-    # inventory_silver_job) + source idle timeout (prevents a stalled
+    # SQL config: state TTL (backstop for non-windowed state) + source
+    # idle timeout (prevents a stalled
     # Kafka partition from stalling the whole pipeline's watermark).
     t_config = t_env.get_config().get_configuration()
     t_config.set_string(

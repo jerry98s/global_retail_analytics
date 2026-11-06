@@ -18,11 +18,9 @@
 #     last checkpoint — seconds. Required for any job with >1GB state.
 #
 # State TTL: 7 days.
-#   - Mandatory for the inventory_silver_job's dedup self-join
-#     (ROW_NUMBER OVER (PARTITION BY event_id ORDER BY event_time)) —
-#     without TTL, the dedup state grows by ~1 row per event_id forever.
-#   - 7d is conservative; events older than 7d are essentially impossible
-#     to re-emit by upstream (the producer simulates up to 300s late).
+#   - A backstop for any non-windowed state. inventory_silver_job dedups
+#     per event-time window (window dedup + window aggregate), whose state
+#     is freed when the window closes.
 #
 # Source idle timeout: 1 minute.
 #   - If a Kafka partition stops emitting (e.g. one store goes offline),

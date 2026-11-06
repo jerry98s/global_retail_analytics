@@ -96,8 +96,18 @@ objects:
     freshness_sla_minutes: null
     is_active: true
 
-  - object_fqn: intermediate.int_inventory_hourly
+  - object_fqn: intermediate.int_inventory_coverage_gaps
     object_type: view
+    platform_layer: intermediate
+    domain: supply
+    owner: analytics-engineering
+    grain: one row per missing-offset range in inventory Bronze
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: intermediate.int_inventory_hourly
+    object_type: table
     platform_layer: intermediate
     domain: supply
     owner: analytics-engineering
@@ -222,6 +232,16 @@ objects:
     domain: marketing
     owner: analytics-engineering
     grain: (customer_key)
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
+  - object_fqn: serving.inventory_current_position
+    object_type: view
+    platform_layer: serving
+    domain: finance
+    owner: analytics-engineering
+    grain: (product_id, store_id)
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true

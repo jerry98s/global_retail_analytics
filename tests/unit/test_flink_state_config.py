@@ -74,7 +74,7 @@ class TestStateConfigFile:
         # Accept "7 d" or "7d" — both are valid Flink duration syntax.
         assert re.match(r"^7\s*d$", ttl), (
             f"F-STATE: table.exec.state.ttl should be '7 d' (got {ttl!r}). "
-            f"Mandatory for the inventory_silver_job dedup self-join."
+            f"Backstop for non-windowed state."
         )
 
     def test_source_idle_timeout_set(self, state_cfg: dict) -> None:

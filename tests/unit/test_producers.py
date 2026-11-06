@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import random
 import re
+from collections import deque
 
 import pytest
 
 from ingestion.kafka.producer_sim.clickstream_producer import ClickstreamEvent
-from ingestion.kafka.producer_sim.inventory_producer import QTY_BY_EVENT_TYPE, InventoryEvent
+from ingestion.kafka.producer_sim.inventory_producer import (
+    QTY_BY_EVENT_TYPE,
+    InventoryEvent,
+    message_key,
+    next_message,
+)
 from ingestion.kafka.producer_sim.pos_producer import PosTransactionLine
 from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCTS, STORES
 from streaming.flink_jobs.event_types import (
@@ -118,3 +124,35 @@ class TestInventoryEvent:
         assert all(q > 0 for q in by_type["receipt"])
         assert {q > 0 for q in by_type["adjustment"]} == {True, False}
         assert set(QTY_BY_EVENT_TYPE) == self.ALLOWED_TYPES
+
+
+class TestInventoryScenarios:
+    RATES = {"duplicate_pct": 0.1, "conflict_pct": 0.1, "late_event_pct": 0.3}
+
+    def _seed(self):
+        recent = deque(maxlen=10)
+        _, original, payload = next_message(0.99, recent, **self.RATES)
+        return recent, original, payload
+
+    def test_retry_resends_the_original_bytes_and_key(self):
+        recent, original, payload = self._seed()
+        kind, event, resent = next_message(0.05, recent, **self.RATES)
+        assert kind == "retry"
+        assert resent == payload
+        assert message_key(event) == message_key(original)
+        assert len(recent) == 1
+
+    def test_conflict_keeps_id_and_key_but_changes_the_payload(self):
+        recent, original, payload = self._seed()
+        kind, event, sent = next_message(0.15, recent, **self.RATES)
+        assert kind == "conflict"
+        assert event.event_id == original.event_id
+        assert message_key(event) == message_key(original)
+        assert event.qty_delta != original.qty_delta
+        assert event.event_time > original.event_time
+        assert sent != payload
+        assert len(recent) == 1
+
+    def test_no_retry_before_any_event_was_sent(self):
+        kind, _, _ = next_message(0.05, deque(maxlen=10), **self.RATES)
+        assert kind == "late"
