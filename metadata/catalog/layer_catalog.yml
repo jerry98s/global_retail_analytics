@@ -4,6 +4,13 @@
 # grain is the unique-key tuple, e.g. (date_key, store_key), whenever the
 # object has one; prose only for objects without a key (raw Bronze ledgers,
 # single-row views). object_type external = read through Spectrum on main.
+#
+# freshness_sla_minutes: SLA in minutes for freshness checks (omit for tables
+# without freshness requirements, e.g., static reference dims). For hourly tables
+# with _date_key timestamp columns, the collector infers the companion _hour
+# column (e.g., snapshot_date_key → snapshot_hour) and measures lag against the
+# hour-specific end time. For daily tables, date keys are treated as loaded
+# through end-of-day. For native timestamp columns, lag is measured directly.
 
 objects:
   - object_fqn: bronze.clickstream_records

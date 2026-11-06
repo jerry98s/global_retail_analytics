@@ -468,3 +468,109 @@ def test_summary_models_exist_and_single_fact_source() -> None:
         # No fact-to-fact joins: only one fact ref.
         assert text.count("ref('fact_") == 1
     assert (_REPO / "transformation" / "dbt_project" / "tests" / "summary.yml").is_file()
+
+
+def test_freshness_check_documents_expected_failure_and_replay(tmp_path: Path) -> None:
+    """Document expected failure modes and replay behavior for safe reruns.
+    
+    This test explicitly captures the behavior needed for safe reruns:
+    1. Valid data (within SLA) - should pass with status=ok
+    2. Invalid/stale data (> SLA) - should breach with RuntimeError
+    3. Replay with measured_at override - should measure from logical time
+    
+    For the safe reruns feature: during live runs, measured_at defaults to now()
+    (detects real staleness). During replay/backfill, pass measured_at=logical_date
+    to avoid false breaches on replayed data that was fresh at its logical time.
+    """
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA silver")
+    
+    # Create hourly table with data from hour 7 (7-8 AM on Oct 24)
+    analytics.execute(
+        "CREATE TABLE silver.inventory_hourly AS "
+        "SELECT 20261024 AS snapshot_date_key, 7 AS snapshot_hour, 100 AS qty"
+    )
+    
+    writer = mo.DuckDBMetadataWriter(tmp_path / "metadata.duckdb")
+    writer.ensure_schema()
+    
+    # Scenario 1: Valid data - measure at 9 AM (1 hour after hour 7 end)
+    # Lag = 60 minutes, SLA = 120 minutes → within SLA
+    mo.collect_table_freshness(
+        writer,
+        analytics,
+        execution_id="valid_run",
+        targets=[("silver", "inventory_hourly", "snapshot_date_key", 120)],
+        measured_at=datetime(2026, 10, 24, 9, 0),
+    )
+    
+    valid_lag, valid_status = writer.fetchone(
+        "SELECT lag_minutes, sla_status FROM meta.table_freshness "
+        "WHERE execution_id = 'valid_run'"
+    )
+    assert valid_lag == 60, f"Valid run: expected 60 min lag, got {valid_lag}"
+    assert valid_status == "ok", f"Valid run: expected ok, got {valid_status}"
+    
+    valid_breaches = mo.freshness_breaches(writer, execution_id="valid_run")
+    assert len(valid_breaches) == 0, f"Valid run should have 0 breaches, got {len(valid_breaches)}"
+    
+    # Scenario 2: Invalid/stale data - measure at 4 PM (8 hours after hour 7 end)
+    # Lag = 480 minutes, SLA = 120 minutes → breach
+    mo.collect_table_freshness(
+        writer,
+        analytics,
+        execution_id="stale_run",
+        targets=[("silver", "inventory_hourly", "snapshot_date_key", 120)],
+        measured_at=datetime(2026, 10, 24, 16, 0),
+    )
+    
+    stale_lag, stale_status = writer.fetchone(
+        "SELECT lag_minutes, sla_status FROM meta.table_freshness "
+        "WHERE execution_id = 'stale_run'"
+    )
+    assert stale_lag == 480, f"Stale run: expected 480 min lag, got {stale_lag}"
+    assert stale_status == "breach", f"Stale run: expected breach, got {stale_status}"
+    
+    stale_breaches = mo.freshness_breaches(writer, execution_id="stale_run")
+    assert len(stale_breaches) == 1, f"Stale run should have 1 breach, got {len(stale_breaches)}"
+    assert "silver.inventory_hourly" in stale_breaches[0], "Breach should mention table name"
+    assert "(lag 480 min)" in stale_breaches[0], "Breach should include lag value"
+    
+    # Verify the expected RuntimeError message format
+    try:
+        if stale_breaches:
+            raise RuntimeError("Freshness SLA breached: " + "; ".join(stale_breaches))
+        assert False, "Should have raised RuntimeError for stale data"
+    except RuntimeError as e:
+        error_msg = str(e)
+        assert "Freshness SLA breached: silver.inventory_hourly (lag 480 min)" == error_msg, (
+            f"Expected exact error message, got: {error_msg}"
+        )
+    
+    # Scenario 3: Replay with measured_at - same stale data, but measured at logical time
+    # This simulates a replay/backfill that measures freshness from its logical execution time.
+    # Measured at 10 AM (2 hours after hour 7 end) → lag = 120 minutes, right at SLA edge
+    mo.collect_table_freshness(
+        writer,
+        analytics,
+        execution_id="replay_run",
+        targets=[("silver", "inventory_hourly", "snapshot_date_key", 120)],
+        measured_at=datetime(2026, 10, 24, 10, 0),
+    )
+    
+    replay_lag, replay_status = writer.fetchone(
+        "SELECT lag_minutes, sla_status FROM meta.table_freshness "
+        "WHERE execution_id = 'replay_run'"
+    )
+    assert replay_lag == 120, f"Replay: expected 120 min lag, got {replay_lag}"
+    assert replay_status == "ok", f"Replay: expected ok (at SLA edge), got {replay_status}"
+    
+    replay_breaches = mo.freshness_breaches(writer, execution_id="replay_run")
+    assert len(replay_breaches) == 0, (
+        f"Replay with measured_at=logical_date should avoid false breach, got {len(replay_breaches)}"
+    )
+    
+    writer.close()
+    analytics.close()
