@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://retail-platform/schemas/clickstream-envelope/v1.2.0",
+  "$id": "https://retail-platform/schemas/clickstream-envelope/v1.3.0",
   "title": "Clickstream Event Envelope",
   "type": "object",
   "required": [
@@ -33,11 +33,41 @@
     },
     "event_time": { "type": "string", "format": "date-time" },
     "session_id": { "type": "string", "minLength": 1 },
+    "session_instance_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Producer-issued id of one visit; new after 30 idle minutes, a logout, or another account signing in. Required from 1.3.0."
+    },
     "client_id": { "type": "string", "minLength": 1 },
-    "customer_id": { "type": ["string", "null"], "minLength": 1 },
+    "customer_id": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Signed-in account; set only between a verified login and its logout. Required on login and logout from 1.3.0."
+    },
     "platform": { "type": "string", "enum": ["web", "ios", "android"] },
     "app_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
-    "properties": { "type": "object" },
+    "properties": {
+      "type": "object",
+      "description": "From 1.3.0: login may carry loyalty_id with boolean loyalty_link_verified; marketing_consent / analytics_consent are booleans, need consent_source, and only appear on signed-in events.",
+      "properties": {
+        "loyalty_id": { "type": "string", "minLength": 1 },
+        "loyalty_link_verified": { "type": "boolean" },
+        "marketing_consent": { "type": ["boolean", "string"] },
+        "analytics_consent": { "type": ["boolean", "string"] },
+        "consent_source": { "type": "string", "minLength": 1 }
+      }
+    },
     "schema_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schema_version": { "pattern": "^(1\\.([3-9]|[1-9]\\d+)|[2-9]|[1-9]\\d+)\\." } }
+      },
+      "then": {
+        "required": ["session_instance_id"],
+        "properties": { "session_instance_id": { "type": "string" } }
+      }
+    }
+  ]
 }

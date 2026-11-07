@@ -30,6 +30,25 @@ PRODUCTS: list[str] = [f"PROD-{i:04d}" for i in range(1, 501)]
 # Real deployments replace this with the loyalty member dimension.
 LOYALTY_IDS: list[str] = [f"LOYAL-{i:06d}" for i in range(1, 10_001)]
 
+# Online accounts (clickstream customer_id). CUST-n (n <= 7,000) is verified to
+# LOYAL-n. CUST-(10,000 + n) (n <= 1,000) is the same member's second account,
+# also verified to LOYAL-n, so the identity graph has real merges. The other
+# accounts have no loyalty card.
+ACCOUNT_IDS: list[str] = [f"CUST-{i:06d}" for i in range(1, 12_001)]
+_VERIFIED_FIRST_ACCOUNTS = 7_000
+_SECOND_ACCOUNT_BASE = 10_000
+_SECOND_ACCOUNTS = 1_000
+
+
+def verified_loyalty_id(account_id: str) -> str | None:
+    """Loyalty ID the account has verified, or None."""
+    number = int(account_id.removeprefix("CUST-"))
+    if number <= _VERIFIED_FIRST_ACCOUNTS:
+        return f"LOYAL-{number:06d}"
+    if _SECOND_ACCOUNT_BASE < number <= _SECOND_ACCOUNT_BASE + _SECOND_ACCOUNTS:
+        return f"LOYAL-{number - _SECOND_ACCOUNT_BASE:06d}"
+    return None
+
 
 @dataclass(frozen=True)
 class ProductAttributes:

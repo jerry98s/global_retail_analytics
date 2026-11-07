@@ -128,6 +128,14 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task all
 ```
 
+To send the fixed Customer 360 journeys instead of random load (an anonymous
+visit, a shared tablet, two accounts on one loyalty card, a consent opt-out, a
+late event and a retry; the same `--anchor` resends the same bytes):
+
+```powershell
+.\.venv\Scripts\python.exe -m ingestion.kafka.producer_sim.clickstream_producer --scenario acceptance
+```
+
 Flink UI: <http://localhost:8082> · optional dashboard: <http://localhost:8501>
 
 The AWS deploy (Terraform, MSK, EMR, Redshift, MWAA) is on `main` and is not
