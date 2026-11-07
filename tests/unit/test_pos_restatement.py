@@ -17,7 +17,7 @@ import pytest
 
 from orchestration.airflow.plugins import pos_restatement as pr
 from orchestration.airflow.plugins.row_count_reconciliation import (
-    BASELINE_VAR_NAME,
+    baseline_var_name,
     reconcile_gold_row_counts,
     save_baseline_candidate,
 )
@@ -189,19 +189,22 @@ def test_audit_defers_baseline_until_publish_saves_it() -> None:
         conn=_Conn([100] * 50),
         var_get=lambda name, default_var=None: store.get(name, default_var),
         var_set=store.__setitem__,
+        scope="finance",
+        tables=["finance.fact_sales", "summary.sales_daily_store"],
         save_baseline=False,
     )
-    assert BASELINE_VAR_NAME not in store
+    assert baseline_var_name("finance") not in store
     assert result["baseline_candidate"]
 
     assert save_baseline_candidate(result, var_set=store.__setitem__) is True
-    assert json.loads(store[BASELINE_VAR_NAME]) == result["baseline_candidate"]
+    assert json.loads(store[baseline_var_name("finance")]) == result["baseline_candidate"]
 
 
 def test_no_candidate_leaves_baseline_unchanged() -> None:
-    store = {BASELINE_VAR_NAME: '{"finance.fact_sales": 1}'}
+    var = baseline_var_name("finance")
+    store = {var: '{"finance.fact_sales": 1}'}
     assert save_baseline_candidate(None, var_set=store.__setitem__) is False
     assert save_baseline_candidate(
-        {"baseline_candidate": None}, var_set=store.__setitem__
+        {"baseline_candidate": None, "baseline_var": var}, var_set=store.__setitem__
     ) is False
-    assert store[BASELINE_VAR_NAME] == '{"finance.fact_sales": 1}'
+    assert store[var] == '{"finance.fact_sales": 1}'

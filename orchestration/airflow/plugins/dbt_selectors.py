@@ -21,9 +21,12 @@ WAREHOUSE_LIVE_MODELS: tuple[str, ...] = (
 MARKETING_LIVE_MODELS: tuple[str, ...] = (
     "stg_clickstream_events",
     "int_identity_resolution",
-    "int_identity_public_devices",
+    "int_identity_changes",
+    "int_identity_shared_devices",
     "int_session_reconstruction",
+    "int_order_reconciliation",
     "int_rfm_scoring",
+    "int_consent_events",
     "int_customer_consent",
 )
 

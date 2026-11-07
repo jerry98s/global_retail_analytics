@@ -46,11 +46,13 @@ GraphFrames batch job. Everything downstream stays in dbt.**
   IDs (batch Parquet prefix).
 - Outputs (Iceberg, silver warehouse):
   - `silver.identity_resolution` — one row per identifier with
-    `customer_key`, `confidence_score`, `resolution_method`,
-    `is_public_device`, component rep audit columns. **Full overwrite each
-    run** (recompute is cheap at identifier grain; matches the old
-    `delete+insert` semantics).
-  - `silver.identity_edges` — audit copy of the graph edges.
+    `customer_key`, `confidence_score`, `resolution_method`, component rep
+    audit columns. **Full overwrite each run** (recompute is cheap at
+    identifier grain).
+  - `silver.identity_edges` — the verified loyalty links that merged.
+  - `silver.loyalty_link_claims` and `silver.device_session_associations`
+    (added 2026-11 with the ADR-003 revision) — claim audit and signed-in
+    device intervals; neither feeds the graph.
 - Non-Iceberg consumers read dedicated `consumer_current/*` Parquet exports
   through a manifest the same Spark run replaces atomically
   (`consumer_exports.py`). They never scan the Iceberg `data/`
@@ -64,16 +66,17 @@ GraphFrames batch job. Everything downstream stays in dbt.**
 - Orchestration: `marketing_hourly_customer_360_pipeline` submits the Spark
   EMR step and waits for COMPLETED before the WAP clone. One-off submission
   (no-MWAA dev runs on `main`): the cloud deploy script's spark action.
-- Rules live once: `spark/identity_resolution/graph_logic.py` holds the edge
-  types, blank-ID normalization, public-device threshold, rep priority,
-  confidence/method mapping,
+- Rules live once: `spark/identity_resolution/graph_logic.py` holds the merge
+  edge (ADR-003), blank-ID normalization, rep priority,
+  confidence/method mapping, device-session associations,
   and the `customer_key` formula (byte-identical to dbt's
   `generate_customer_key` — md5, first 8 hex chars, base 16, mod 1e8, +1 —
   so keys are stable across the cutover). The Spark job mirrors it in
   DataFrame ops; the dbt seed fixture is *generated* from it
   (`generate_fixture.py`), and CI fails on drift (`--check`).
-- `int_identity_public_devices` stays in dbt as a staging-derived audit
-  model; Spark remains authoritative for edge exclusion.
+- Since the 2026-11 ADR-003 revision devices are not graph nodes; dbt's
+  `int_identity_shared_devices` audits devices used by several accounts from
+  `silver.device_session_associations`.
 
 ## What GraphFrames gives us over the SQL closure
 

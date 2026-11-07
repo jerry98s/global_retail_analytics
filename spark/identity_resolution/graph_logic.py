@@ -1,65 +1,68 @@
-"""Reference implementation of the identity-resolution graph rules.
+"""Reference implementation of the identity-resolution rules (ADR-003).
 
 This module is the single source of truth for the *rules* of identity
-resolution (ADR-003): node naming, edge types, public-device exclusion,
-component representative priority, confidence scores, resolution methods,
-and the deterministic customer_key formula.
+resolution: node naming, the one merge edge, component representative
+priority, confidence scores, resolution methods, the deterministic
+customer_key formula, loyalty-link claims and device-session associations.
+
+Merge rule: only a login that the account verified to a loyalty card
+(``loyalty_link_verified: true``, envelope 1.3.0+) creates an edge. Devices
+never merge customers; their signed-in intervals are kept separately as
+device-session associations for attribution. Events from before 1.3.0 carry
+no verification evidence, so they never create edges.
 
 Two engines execute these rules:
 
 - ``identity_resolution_job.py`` — PySpark + GraphFrames on EMR (cloud) or
-  local PySpark, reading bronze Iceberg/Parquet and writing
-  ``silver.identity_resolution`` (+ ``silver.identity_edges`` audit table).
-- ``generate_fixture.py`` — regenerates the dbt seed fixture
-  ``seeds/silver/identity_resolution.csv`` used by the DuckDB CI chain, so
-  the fixture can never drift from the rules without CI failing.
-
-The dbt model ``int_identity_resolution`` is a thin view over the Spark
-output; all downstream consumers (sessions, RFM, dim_customer, fact_sales,
-identity_graph) are unchanged.
+  local PySpark, writing ``silver.identity_resolution``,
+  ``silver.identity_edges``, ``silver.loyalty_link_claims`` and
+  ``silver.device_session_associations``.
+- ``generate_fixture.py`` — regenerates the dbt seed fixtures used by the
+  DuckDB CI chain, so the fixtures can never drift from the rules without CI
+  failing.
 
 customer_key parity: the formula below is byte-identical to the dbt macro
-``generate_customer_key`` (md5, first 8 hex chars, base-16, mod 1e8, +1), so
-Spark-produced keys match keys previously produced by dbt/Redshift/DuckDB.
+``generate_customer_key`` (md5, first 8 hex chars, base-16, mod 1e8, +1).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
 # Node ID prefixes (canonical graph node = "<prefix><identifier value>").
 PREFIX_LOYALTY = "loyalty:"
 PREFIX_CUSTOMER = "customer:"
-PREFIX_CLIENT = "client:"
 
 IDENTIFIER_TYPE_BY_PREFIX = {
     PREFIX_LOYALTY: "loyalty_id",
     PREFIX_CUSTOMER: "customer_id",
-    PREFIX_CLIENT: "client_id",
 }
 
-EDGE_SESSION_LINK = "session_link"
-EDGE_LOYALTY_VALUE_MATCH = "loyalty_value_match"
-EDGE_TYPES = (EDGE_SESSION_LINK, EDGE_LOYALTY_VALUE_MATCH)
+EDGE_VERIFIED_LOYALTY_LINK = "verified_loyalty_link"
+EDGE_TYPES = (EDGE_VERIFIED_LOYALTY_LINK,)
 
 METHOD_COMPONENT_ANCHOR = "component_anchor"
 METHOD_LOYALTY_MEMBER = "loyalty_member"
 METHOD_LOYALTY_MATCH = "loyalty_match"
 METHOD_CUSTOMER_STANDALONE = "customer_id_standalone"
-METHOD_SESSION_LINKED = "session_linked"
-METHOD_DEVICE_ONLY = "device_only"
-METHOD_PUBLIC_DEVICE_EXCLUDED = "public_device_excluded"
+RESOLUTION_METHODS = (
+    METHOD_COMPONENT_ANCHOR,
+    METHOD_LOYALTY_MEMBER,
+    METHOD_LOYALTY_MATCH,
+    METHOD_CUSTOMER_STANDALONE,
+)
 
-CONFIDENCE_PUBLIC_DEVICE = 0.3
 CONFIDENCE_ANCHOR = 1.0
 CONFIDENCE_LOYALTY_MATCH = 1.0
 CONFIDENCE_CUSTOMER_STANDALONE = 0.9
-CONFIDENCE_SESSION_LINKED = 0.85
-CONFIDENCE_DEVICE_ONLY = 0.5
 
-DEFAULT_PUBLIC_DEVICE_THRESHOLD = 10
+EVIDENCE_VERIFIED_LOGIN = "verified_login"
+EVIDENCE_SIGNED_IN_SESSION = "signed_in_session"
+END_LOGOUT = "logout"
+END_LAST_EVENT = "last_event"
 
 CUSTOMER_KEY_MODULUS = 100_000_000
 
@@ -90,14 +93,25 @@ def split_node(node: str) -> tuple[str, str]:
 
 
 def node_sort_key(node: str) -> str:
-    """Component representative priority: loyalty < customer < client."""
+    """Component representative priority: loyalty < customer."""
     if node.startswith(PREFIX_LOYALTY):
         return "1:" + node
     if node.startswith(PREFIX_CUSTOMER):
         return "2:" + node
-    if node.startswith(PREFIX_CLIENT):
-        return "3:" + node
     return "9:" + node
+
+
+@dataclass(frozen=True)
+class LoyaltyClaim:
+    """A v1.3 login that named a loyalty card, verified or not."""
+
+    event_id: str
+    event_time: str
+    client_id: str
+    session_instance_id: str
+    customer_id: str
+    loyalty_id: str
+    is_verified: bool
 
 
 @dataclass(frozen=True)
@@ -105,7 +119,9 @@ class Edge:
     src: str
     dst: str
     edge_type: str
-    last_observed_at: Optional[str]
+    first_verified_at: str
+    last_verified_at: str
+    evidence_event_id: str
 
 
 @dataclass(frozen=True)
@@ -115,73 +131,97 @@ class ResolutionRow:
     customer_key: int
     confidence_score: float
     resolution_method: str
-    is_public_device: bool
     component_rep_node: str
     component_rep_type: str
 
 
-def find_public_devices(
-    clickstream_pairs: Iterable[tuple[str, str, object]],
-    threshold: int = DEFAULT_PUBLIC_DEVICE_THRESHOLD,
-) -> set[str]:
-    """client_ids linked to >= threshold distinct customer_ids (shared kiosks)."""
-    customers_by_client: dict[str, set[str]] = {}
-    for client_id, customer_id, _ in clickstream_pairs:
-        customers_by_client.setdefault(client_id, set()).add(customer_id)
-    return {
-        client_id
-        for client_id, customers in customers_by_client.items()
-        if len(customers) >= threshold
-    }
+@dataclass(frozen=True)
+class DeviceSessionAssociation:
+    """One account's signed-in interval on one device in one session instance."""
+
+    client_id: str
+    session_instance_id: str
+    customer_id: str
+    valid_from: str
+    valid_to: str
+    end_reason: str
+    evidence: str
+    event_count: int
+    is_ambiguous: bool
 
 
-def build_edges(
-    clickstream_pairs: Iterable[tuple[str, str, object]],
-    loyalty_ids: Iterable[str],
-    threshold: int = DEFAULT_PUBLIC_DEVICE_THRESHOLD,
-) -> tuple[list[Edge], set[str]]:
-    """Build session_link + loyalty_value_match edges.
+def _properties(row: dict) -> dict:
+    value = row.get("properties")
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
-    Public devices are excluded from edges so they stay isolated singletons.
-    ``clickstream_pairs`` yields (client_id, customer_id, event_time) with both
-    IDs non-null. ``loyalty_ids`` are distinct POS loyalty IDs.
-    """
-    pairs = list(clickstream_pairs)
-    public_devices = find_public_devices(pairs, threshold)
 
-    last_seen_by_pair: dict[tuple[str, str], object] = {}
-    last_seen_by_customer: dict[str, object] = {}
-    for client_id, customer_id, event_time in pairs:
-        key = (client_id, customer_id)
-        if key not in last_seen_by_pair or event_time > last_seen_by_pair[key]:
-            last_seen_by_pair[key] = event_time
-        if customer_id not in last_seen_by_customer or event_time > last_seen_by_customer[customer_id]:
-            last_seen_by_customer[customer_id] = event_time
+def _signed_in_v13(row: dict) -> Optional[tuple[str, str, str]]:
+    """(client_id, session_instance_id, customer_id) for a signed-in v1.3 event."""
+    instance = normalize_identifier(row.get("session_instance_id"))
+    client_id = normalize_identifier(row.get("client_id"))
+    customer_id = normalize_identifier(row.get("customer_id"))
+    if instance and client_id and customer_id:
+        return client_id, instance, customer_id
+    return None
 
-    edges: list[Edge] = [
-        Edge(
-            src=PREFIX_CLIENT + client_id,
-            dst=PREFIX_CUSTOMER + customer_id,
-            edge_type=EDGE_SESSION_LINK,
-            last_observed_at=str(last_seen),
-        )
-        for (client_id, customer_id), last_seen in sorted(last_seen_by_pair.items())
-        if client_id not in public_devices
-    ]
 
-    clickstream_customers = set(last_seen_by_customer)
-    for loyalty_id in sorted(set(loyalty_ids)):
-        if loyalty_id in clickstream_customers:
-            edges.append(
-                Edge(
-                    src=PREFIX_LOYALTY + loyalty_id,
-                    dst=PREFIX_CUSTOMER + loyalty_id,
-                    edge_type=EDGE_LOYALTY_VALUE_MATCH,
-                    last_observed_at=str(last_seen_by_customer[loyalty_id]),
-                )
+def loyalty_claims(clickstream_rows: Iterable[dict]) -> list[LoyaltyClaim]:
+    """Logins that name a loyalty card. Only v1.3 events carry a session instance."""
+    claims = []
+    for row in clickstream_rows:
+        signed_in = _signed_in_v13(row)
+        if row.get("event_type") != "login" or signed_in is None:
+            continue
+        properties = _properties(row)
+        loyalty_id = normalize_identifier(properties.get("loyalty_id"))
+        if loyalty_id is None:
+            continue
+        client_id, instance, customer_id = signed_in
+        claims.append(
+            LoyaltyClaim(
+                event_id=str(row["event_id"]),
+                event_time=str(row["event_time"]),
+                client_id=client_id,
+                session_instance_id=instance,
+                customer_id=customer_id,
+                loyalty_id=loyalty_id,
+                is_verified=properties.get("loyalty_link_verified") is True,
             )
+        )
+    return sorted(claims, key=lambda c: (c.event_time, c.event_id))
 
-    return edges, public_devices
+
+def build_edges(claims: Iterable[LoyaltyClaim]) -> list[Edge]:
+    """One verified_loyalty_link edge per (loyalty, account) pair.
+
+    The evidence event is the earliest verifying login (event_time, event_id).
+    """
+    by_pair: dict[tuple[str, str], list[LoyaltyClaim]] = {}
+    for claim in claims:
+        if claim.is_verified:
+            by_pair.setdefault((claim.loyalty_id, claim.customer_id), []).append(claim)
+    edges = []
+    for (loyalty_id, customer_id), found in sorted(by_pair.items()):
+        ordered = sorted(found, key=lambda c: (c.event_time, c.event_id))
+        edges.append(
+            Edge(
+                src=PREFIX_LOYALTY + loyalty_id,
+                dst=PREFIX_CUSTOMER + customer_id,
+                edge_type=EDGE_VERIFIED_LOYALTY_LINK,
+                first_verified_at=ordered[0].event_time,
+                last_verified_at=ordered[-1].event_time,
+                evidence_event_id=ordered[0].event_id,
+            )
+        )
+    return edges
 
 
 class _UnionFind:
@@ -202,11 +242,7 @@ class _UnionFind:
             self._parent[max(ra, rb)] = min(ra, rb)
 
 
-def assign_resolution(
-    nodes: Iterable[str],
-    edges: Iterable[Edge],
-    public_devices: Iterable[str],
-) -> list[ResolutionRow]:
+def assign_resolution(nodes: Iterable[str], edges: Iterable[Edge]) -> list[ResolutionRow]:
     """Connected components + per-identifier confidence/method assignment."""
     node_list = sorted(set(nodes))
     uf = _UnionFind(node_list)
@@ -223,47 +259,27 @@ def assign_resolution(
         for member in members:
             rep_by_node[member] = rep
 
-    public = set(public_devices)
     rows: list[ResolutionRow] = []
     for node in node_list:
         identifier_type, identifier_value = split_node(node)
         rep = rep_by_node[node]
         rep_type, _ = split_node(rep)
-        is_public = identifier_type == "client_id" and identifier_value in public
-
-        if is_public:
-            key = customer_key(PREFIX_CLIENT + identifier_value)
-            confidence = CONFIDENCE_PUBLIC_DEVICE
-            method = METHOD_PUBLIC_DEVICE_EXCLUDED
-        elif identifier_type == "loyalty_id":
-            key = customer_key(rep)
+        if identifier_type == "loyalty_id":
             confidence = CONFIDENCE_ANCHOR
             method = METHOD_COMPONENT_ANCHOR if node == rep else METHOD_LOYALTY_MEMBER
-        elif identifier_type == "customer_id":
-            key = customer_key(rep)
-            if rep_type == "loyalty_id":
-                confidence = CONFIDENCE_LOYALTY_MATCH
-                method = METHOD_LOYALTY_MATCH
-            else:
-                confidence = CONFIDENCE_CUSTOMER_STANDALONE
-                method = METHOD_CUSTOMER_STANDALONE
-        else:  # client_id
-            key = customer_key(rep)
-            if rep_type in ("loyalty_id", "customer_id"):
-                confidence = CONFIDENCE_SESSION_LINKED
-                method = METHOD_SESSION_LINKED
-            else:
-                confidence = CONFIDENCE_DEVICE_ONLY
-                method = METHOD_DEVICE_ONLY
-
+        elif rep_type == "loyalty_id":
+            confidence = CONFIDENCE_LOYALTY_MATCH
+            method = METHOD_LOYALTY_MATCH
+        else:
+            confidence = CONFIDENCE_CUSTOMER_STANDALONE
+            method = METHOD_CUSTOMER_STANDALONE
         rows.append(
             ResolutionRow(
                 identifier_type=identifier_type,
                 identifier_value=identifier_value,
-                customer_key=key,
+                customer_key=customer_key(rep),
                 confidence_score=confidence,
                 resolution_method=method,
-                is_public_device=is_public,
                 component_rep_node=rep,
                 component_rep_type=rep_type,
             )
@@ -271,44 +287,68 @@ def assign_resolution(
     return rows
 
 
+def device_session_associations(clickstream_rows: Iterable[dict]) -> list[DeviceSessionAssociation]:
+    """Signed-in intervals per (client_id, session_instance_id, customer_id).
+
+    Attribution only: these never feed the identity graph. An instance with
+    more than one account is ambiguous and flagged on every row it produces.
+    """
+    groups: dict[tuple[str, str, str], list[dict]] = {}
+    for row in clickstream_rows:
+        signed_in = _signed_in_v13(row)
+        if signed_in is not None:
+            groups.setdefault(signed_in, []).append(row)
+    accounts_per_instance: dict[tuple[str, str], set[str]] = {}
+    for client_id, instance, customer_id in groups:
+        accounts_per_instance.setdefault((client_id, instance), set()).add(customer_id)
+
+    associations = []
+    for (client_id, instance, customer_id), rows in sorted(groups.items()):
+        times = sorted(str(r["event_time"]) for r in rows)
+        logouts = sorted(str(r["event_time"]) for r in rows if r.get("event_type") == "logout")
+        associations.append(
+            DeviceSessionAssociation(
+                client_id=client_id,
+                session_instance_id=instance,
+                customer_id=customer_id,
+                valid_from=times[0],
+                valid_to=logouts[-1] if logouts else times[-1],
+                end_reason=END_LOGOUT if logouts else END_LAST_EVENT,
+                evidence=(
+                    EVIDENCE_VERIFIED_LOGIN
+                    if any(r.get("event_type") == "login" for r in rows)
+                    else EVIDENCE_SIGNED_IN_SESSION
+                ),
+                event_count=len(rows),
+                is_ambiguous=len(accounts_per_instance[(client_id, instance)]) > 1,
+            )
+        )
+    return associations
+
+
 def resolve_identity_graph(
     clickstream_rows: Iterable[dict],
     pos_rows: Iterable[dict],
-    threshold: int = DEFAULT_PUBLIC_DEVICE_THRESHOLD,
-) -> tuple[list[Edge], list[ResolutionRow], set[str]]:
+) -> tuple[list[Edge], list[ResolutionRow], list[LoyaltyClaim]]:
     """End-to-end reference pipeline over plain dicts.
 
-    ``clickstream_rows`` need client_id/customer_id/event_time keys;
-    ``pos_rows`` need loyalty_id. Returns (edges, resolution, public_devices).
+    ``clickstream_rows`` are canonical Silver events (event_id, event_type,
+    event_time, session_instance_id, client_id, customer_id, properties);
+    ``pos_rows`` need loyalty_id. Returns (edges, resolution, claims).
     """
     clickstream = list(clickstream_rows)
-    pos = list(pos_rows)
+    claims = loyalty_claims(clickstream)
+    edges = build_edges(claims)
 
-    pairs = []
-    for row in clickstream:
-        client_id = normalize_identifier(row.get("client_id"))
-        customer_id = normalize_identifier(row.get("customer_id"))
-        if client_id and customer_id:
-            pairs.append((client_id, customer_id, row["event_time"]))
-
-    loyalty_ids = [
-        loyalty_id
-        for row in pos
+    nodes = {
+        PREFIX_LOYALTY + loyalty_id
+        for row in pos_rows
         if (loyalty_id := normalize_identifier(row.get("loyalty_id")))
-    ]
-
-    edges, public_devices = build_edges(pairs, loyalty_ids, threshold)
-
-    nodes = {PREFIX_LOYALTY + loyalty_id for loyalty_id in loyalty_ids}
+    }
+    nodes |= {edge.src for edge in edges}
     nodes |= {
         PREFIX_CUSTOMER + customer_id
         for row in clickstream
         if (customer_id := normalize_identifier(row.get("customer_id")))
     }
-    nodes |= {
-        PREFIX_CLIENT + client_id
-        for row in clickstream
-        if (client_id := normalize_identifier(row.get("client_id")))
-    }
-
-    return edges, assign_resolution(nodes, edges, public_devices), public_devices
+    return edges, assign_resolution(nodes, edges), claims

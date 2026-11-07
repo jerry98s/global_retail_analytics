@@ -42,6 +42,8 @@ TARGETS = (
     Target(SILVER_CATALOG, "silver.inventory_hourly", "silver", True),
     Target(SILVER_CATALOG, "silver.identity_resolution", "silver", False),
     Target(SILVER_CATALOG, "silver.identity_edges", "silver", False),
+    Target(SILVER_CATALOG, "silver.loyalty_link_claims", "silver", False),
+    Target(SILVER_CATALOG, "silver.device_session_associations", "silver", False),
     *(
         Target(SILVER_CATALOG, f"silver.{stream}_{suffix}", "silver", False)
         for stream in ("clickstream", "inventory")

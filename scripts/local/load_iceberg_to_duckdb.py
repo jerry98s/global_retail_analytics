@@ -14,7 +14,10 @@ the Spectrum tables on ``main``, and materializes them into
   silver.inventory_offset_gaps (missing Kafka offsets in inventory Bronze)
   silver.identity_resolution  (Spark GraphFrames, ADR-010/011 — required in
                                fidelity mode)
-  silver.identity_edges       (same Spark run; audit copy of graph edges)
+  silver.identity_edges       (same Spark run; verified loyalty links that merged)
+  silver.loyalty_link_claims  (same Spark run; every login naming a loyalty card)
+  silver.device_session_associations (same Spark run; signed-in intervals per
+                               device, attribution only)
   bronze.pos_transactions     (from generate_pos_parquet --output-dir)
 
 Reference dims (``finance.dim_date``, ``finance.dim_store``) stay as dbt seeds.
@@ -52,6 +55,8 @@ _EXPORTS: dict[str, str] = {
     "inventory_offset_gaps": "silver",
     "identity_resolution": "silver",
     "identity_edges": "silver",
+    "loyalty_link_claims": "silver",
+    "device_session_associations": "silver",
 }
 
 # POS Bronze is plain Hive-partitioned Parquet (one file per dt=), not Iceberg.

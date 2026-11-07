@@ -1,0 +1,106 @@
+unit_tests:
+  - name: int_rfm_scoring_scores_five_as_best_from_pos_only
+    description: >
+      Customer Li has i transactions of 100 on 2026-11-0i. The voided
+      transaction on 2026-11-09 counts neither as revenue nor as the as-of
+      date, so recency is measured from 2026-11-05. The most recent, most
+      frequent and highest-spending customer scores 5 on every axis.
+    model: int_rfm_scoring
+    given:
+      - input: ref('stg_pos_transactions')
+        rows:
+          - {transaction_id: t11, loyalty_id: L1, transaction_date: "2026-11-01", net_revenue: 100, is_voided: false}
+          - {transaction_id: t19, loyalty_id: L1, transaction_date: "2026-11-09", net_revenue: 9999, is_voided: true}
+          - {transaction_id: t21, loyalty_id: L2, transaction_date: "2026-11-02", net_revenue: 100, is_voided: false}
+          - {transaction_id: t22, loyalty_id: L2, transaction_date: "2026-11-02", net_revenue: 100, is_voided: false}
+          - {transaction_id: t31, loyalty_id: L3, transaction_date: "2026-11-03", net_revenue: 100, is_voided: false}
+          - {transaction_id: t32, loyalty_id: L3, transaction_date: "2026-11-03", net_revenue: 100, is_voided: false}
+          - {transaction_id: t33, loyalty_id: L3, transaction_date: "2026-11-03", net_revenue: 100, is_voided: false}
+          - {transaction_id: t41, loyalty_id: L4, transaction_date: "2026-11-04", net_revenue: 100, is_voided: false}
+          - {transaction_id: t42, loyalty_id: L4, transaction_date: "2026-11-04", net_revenue: 100, is_voided: false}
+          - {transaction_id: t43, loyalty_id: L4, transaction_date: "2026-11-04", net_revenue: 100, is_voided: false}
+          - {transaction_id: t44, loyalty_id: L4, transaction_date: "2026-11-04", net_revenue: 100, is_voided: false}
+          - {transaction_id: t51, loyalty_id: L5, transaction_date: "2026-11-05", net_revenue: 100, is_voided: false}
+          - {transaction_id: t52, loyalty_id: L5, transaction_date: "2026-11-05", net_revenue: 100, is_voided: false}
+          - {transaction_id: t53, loyalty_id: L5, transaction_date: "2026-11-05", net_revenue: 100, is_voided: false}
+          - {transaction_id: t54, loyalty_id: L5, transaction_date: "2026-11-05", net_revenue: 100, is_voided: false}
+          - {transaction_id: t55, loyalty_id: L5, transaction_date: "2026-11-05", net_revenue: 100, is_voided: false}
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: loyalty_id, identifier_value: L1, customer_key: 1}
+          - {identifier_type: loyalty_id, identifier_value: L2, customer_key: 2}
+          - {identifier_type: loyalty_id, identifier_value: L3, customer_key: 3}
+          - {identifier_type: loyalty_id, identifier_value: L4, customer_key: 4}
+          - {identifier_type: loyalty_id, identifier_value: L5, customer_key: 5}
+    expect:
+      rows:
+        - {customer_key: 1, recency_days: 4, frequency_orders: 1, monetary_value: 100, r_score: 1, f_score: 1, m_score: 1, rfm_segment: general}
+        - {customer_key: 2, recency_days: 3, frequency_orders: 2, monetary_value: 200, r_score: 2, f_score: 2, m_score: 2, rfm_segment: general}
+        - {customer_key: 3, recency_days: 2, frequency_orders: 3, monetary_value: 300, r_score: 3, f_score: 3, m_score: 3, rfm_segment: loyal}
+        - {customer_key: 4, recency_days: 1, frequency_orders: 4, monetary_value: 400, r_score: 4, f_score: 4, m_score: 4, rfm_segment: champions}
+        - {customer_key: 5, recency_days: 0, frequency_orders: 5, monetary_value: 500, r_score: 5, f_score: 5, m_score: 5, rfm_segment: champions}
+
+  - name: int_consent_events_keeps_only_sourced_v13_statements
+    description: >
+      e1 states both purposes, so it yields two rows; e2 revokes marketing.
+      e3 is pre-1.3 and e4 has no consent_source, so neither is a statement.
+    model: int_consent_events
+    given:
+      - input: ref('stg_clickstream_events')
+        rows:
+          - {event_id: e1, event_time: "2026-11-07 10:00:00", customer_id: C1, session_instance_id: si-1, properties: '{"marketing_consent": true, "analytics_consent": true, "consent_source": "login_prompt"}'}
+          - {event_id: e2, event_time: "2026-11-07 11:00:00", customer_id: C1, session_instance_id: si-2, properties: '{"marketing_consent": false, "consent_source": "preference_center"}'}
+          - {event_id: e3, event_time: "2026-11-07 12:00:00", customer_id: C1, properties: '{"marketing_consent": true}'}
+          - {event_id: e4, event_time: "2026-11-07 13:00:00", customer_id: C1, session_instance_id: si-3, properties: '{"marketing_consent": true}'}
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: customer_id, identifier_value: C1, customer_key: 100}
+    expect:
+      rows:
+        - {event_id: e1, customer_key: 100, purpose: marketing, is_granted: true, consent_source: login_prompt}
+        - {event_id: e1, customer_key: 100, purpose: analytics, is_granted: true, consent_source: login_prompt}
+        - {event_id: e2, customer_key: 100, purpose: marketing, is_granted: false, consent_source: preference_center}
+
+  - name: int_customer_consent_latest_statement_wins_per_purpose
+    description: >
+      100 opted in, then revoked marketing only. 200 is a merge of two
+      accounts: the later statement (from the second account) wins. 300 only
+      stated analytics, so marketing stays NULL (no statement).
+    model: int_customer_consent
+    given:
+      - input: ref('int_consent_events')
+        format: sql
+        rows: |
+          select 'e1' as event_id, cast('2026-11-07 10:00:00' as timestamp) as event_time, 'C1' as customer_id, 100 as customer_key, 'marketing' as purpose, true as is_granted, 'login_prompt' as consent_source
+          union all select 'e1', cast('2026-11-07 10:00:00' as timestamp), 'C1', 100, 'analytics', true, 'login_prompt'
+          union all select 'e2', cast('2026-11-07 11:00:00' as timestamp), 'C1', 100, 'marketing', false, 'preference_center'
+          union all select 'eA', cast('2026-11-07 09:00:00' as timestamp), 'CA', 200, 'marketing', false, 'login_prompt'
+          union all select 'eB', cast('2026-11-07 12:00:00' as timestamp), 'CB', 200, 'marketing', true, 'preference_center'
+          union all select 'e3', cast('2026-11-07 10:00:00' as timestamp), 'C3', 300, 'analytics', false, 'login_prompt'
+    expect:
+      rows:
+        - {customer_key: 100, marketing_consent: false, marketing_consent_source: preference_center, analytics_consent: true}
+        - {customer_key: 200, marketing_consent: true, marketing_consent_source: preference_center, analytics_consent: null}
+        - {customer_key: 300, marketing_consent: null, marketing_consent_source: null, analytics_consent: false}
+
+  - name: int_order_reconciliation_one_unconfirmed_row_per_order
+    description: >
+      O1 was seen twice (a retry) in an attributed session and collapses to
+      one row at the first checkout time. O2 is from a legacy anonymous
+      session. POS has no order_id, so both are unconfirmed.
+    model: int_order_reconciliation
+    given:
+      - input: ref('stg_clickstream_events')
+        rows:
+          - {event_id: e1, event_type: checkout, event_time: "2026-11-07 10:00:00", session_id: s-1, session_instance_id: si-1, client_id: c1, properties: '{"order_id": "O1", "cart_value": 42.5}'}
+          - {event_id: e2, event_type: checkout, event_time: "2026-11-07 10:05:00", session_id: s-1, session_instance_id: si-1, client_id: c1, properties: '{"order_id": "O1", "cart_value": 42.5}'}
+          - {event_id: e3, event_type: checkout, event_time: "2026-11-07 11:00:00", session_id: s-old, client_id: c4, properties: '{"order_id": "O2", "cart_value": 10}'}
+          - {event_id: e4, event_type: page_view, event_time: "2026-11-07 11:01:00", session_id: s-old, client_id: c4, properties: '{}'}
+      - input: ref('int_session_reconstruction')
+        rows:
+          - {session_id: si-1, customer_key: 100, attribution_status: attributed}
+          - {session_id: "legacy:c4:s-old", customer_key: null, attribution_status: anonymous}
+    expect:
+      rows:
+        - {order_id: O1, session_id: si-1, customer_key: 100, attribution_status: attributed, checkout_at: "2026-11-07 10:00:00", cart_value: 42.5, reconciliation_status: unconfirmed}
+        - {order_id: O2, session_id: "legacy:c4:s-old", customer_key: null, attribution_status: anonymous, checkout_at: "2026-11-07 11:00:00", cart_value: 10, reconciliation_status: unconfirmed}

@@ -35,6 +35,9 @@
   them. The grain is still enforced by the unique_combination_of_columns test.
   Setting vars pos_restate_from / pos_restate_to replaces exactly that date
   range instead, for corrected files older than the lookback.
+  Outside an explicit restatement, any older day whose stored customer_key no
+  longer matches the loyalty_id's current key (an identity change merged two
+  cards) is also reprocessed whole.
   Whole-day replacement assumes a day's lines never land in a dt= partition
   older than the day itself; such lines would be filtered out and deleted.
   `dt` is the Spectrum partition column (aliased from transaction_date on
@@ -51,7 +54,19 @@
           from {{ this }}
 {% endset %}
 
-with base as (
+with
+{% if is_incremental() and not restate %}
+stale_days as (
+    select distinct {{ date_from_date_key('t.date_key') }} as stale_date
+    from {{ this }} t
+    left join {{ ref('int_identity_resolution') }} i
+      on i.identifier_type = 'loyalty_id'
+     and i.identifier_value = t.loyalty_id
+    where t.loyalty_id is not null
+      and coalesce(t.customer_key, -1) <> coalesce(i.customer_key, -1)
+),
+{% endif %}
+base as (
     select *
     from {{ ref('stg_pos_transactions') }}
     {% if is_incremental() and restate %}
@@ -60,8 +75,10 @@ with base as (
         and dt between cast('{{ restate.from_date }}' as date)
                    and cast('{{ restate.to_date }}' as date)
     {% elif is_incremental() %}
-      where transaction_date >= ( {{ lookback }} )
-        and dt >= ( {{ lookback }} )
+      where (transaction_date >= ( {{ lookback }} )
+             and dt >= ( {{ lookback }} ))
+         or (transaction_date in (select stale_date from stale_days)
+             and dt >= (select min(stale_date) from stale_days))
     {% endif %}
 )
 select

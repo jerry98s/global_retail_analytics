@@ -57,8 +57,13 @@ flowchart LR
 2. **Land and clean.** Flink stores every event in the Iceberg lake (Bronze),
    rejects malformed events to dead-letter queues, and aggregates inventory
    into hourly windows (Silver).
-3. **Resolve identity.** Spark links loyalty IDs, web sessions and app devices
-   into one customer, and excludes shared public devices from merges.
+3. **Resolve identity.** Spark merges an online account with a loyalty card
+   only when the account verified that card. Shared devices never merge
+   customers; their sign-ins are kept as device-session associations. dbt
+   builds one session per session instance and attributes it to a customer
+   only when exactly one account signed in; other sessions stay anonymous.
+   Consent comes only from explicit statements, and RFM value only from
+   confirmed POS sales.
 4. **Model and publish.** dbt builds Kimball star-schema marts into a staging
    copy, runs data-quality checks, and only then swaps them live
    (Write-Audit-Publish), so dashboards never see a half-built table.

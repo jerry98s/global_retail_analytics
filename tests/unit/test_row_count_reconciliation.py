@@ -1,4 +1,4 @@
-"""Unit tests for the row-count reconciliation pure functions (P2.5).
+"""Unit tests for the row-count publish gate pure functions (P2.5, ADR-009).
 
 The Airflow entrypoint (``reconcile_gold_row_counts_task``) pulls in
 ``redshift_connector`` and ``airflow.models.Variable`` — both unavailable
@@ -10,39 +10,24 @@ doubles, so they run under ``pytest -m unit`` without any cloud deps.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 
 import pytest
 
 from orchestration.airflow.plugins.row_count_reconciliation import (
     BASELINE_VAR_NAME,
     DEFAULT_THRESHOLD,
-    GOLD_MARTS,
     THRESHOLD_VAR_NAME,
     _delta_pct,
     _resolve_threshold,
+    baseline_var_name,
     reconcile_gold_row_counts,
+    save_baseline_candidate,
 )
 
 pytestmark = pytest.mark.unit
 
-# Counts aligned to GOLD_MARTS order (12 marts including summary.*).
-_DEFAULT_COUNTS = [3653, 20, 100_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
-
-_DEFAULT_BASELINE = {
-    "finance.dim_date": 3653,
-    "finance.dim_store": 20,
-    "finance.fact_sales": 100_000,
-    "finance.fact_inventory_snapshot": 720,
-    "marketing.dim_customer": 5_000,
-    "marketing.dim_product": 100,
-    "marketing.identity_graph": 8_000,
-    "marketing.fact_customer_session": 50_000,
-    "summary.sales_daily_store": 500,
-    "summary.inventory_daily_product_store": 200,
-    "summary.inventory_position_daily": 300,
-    "summary.sessions_daily_platform": 1_000,
-}
+_TABLES = ["marketing.dim_customer", "marketing.fact_customer_session"]
+_BASELINE = {"marketing.dim_customer": 1_000, "marketing.fact_customer_session": 5_000}
 
 
 # ---------- _delta_pct ----------
@@ -63,12 +48,10 @@ def test_delta_pct_returns_none_for_negative_current() -> None:
 
 
 def test_delta_pct_computes_growth() -> None:
-    # 100 -> 150 is +50%
     assert _delta_pct(100, 150) == pytest.approx(0.5)
 
 
 def test_delta_pct_computes_shrinkage() -> None:
-    # 200 -> 150 is -25%
     assert _delta_pct(200, 150) == pytest.approx(-0.25)
 
 
@@ -96,42 +79,33 @@ def test_resolve_threshold_falls_back_on_invalid_string() -> None:
     assert _resolve_threshold(var_get) == DEFAULT_THRESHOLD
 
 
-def test_resolve_threshold_clamps_above_one() -> None:
-    # Nonsensical threshold (>100%) — clamp to 1.0.
-    store = {THRESHOLD_VAR_NAME: "2.5"}
-    var_get = lambda name, default_var=None: store.get(name, default_var)  # noqa: E731
-    assert _resolve_threshold(var_get) == 1.0
-
-
-def test_resolve_threshold_clamps_below_zero() -> None:
-    store = {THRESHOLD_VAR_NAME: "-0.5"}
-    var_get = lambda name, default_var=None: store.get(name, default_var)  # noqa: E731
-    assert _resolve_threshold(var_get) == 0.0
-
-
-def test_gold_marts_include_summary_and_marketing_dim_product() -> None:
-    assert ("marketing", "dim_product") in GOLD_MARTS
-    assert ("summary", "sales_daily_store") in GOLD_MARTS
-    assert ("summary", "sessions_daily_platform") in GOLD_MARTS
+def test_resolve_threshold_clamps_to_unit_interval() -> None:
+    for raw, expected in (("2.5", 1.0), ("-0.5", 0.0)):
+        store = {THRESHOLD_VAR_NAME: raw}
+        var_get = lambda name, default_var=None, s=store: s.get(name, default_var)  # noqa: E731
+        assert _resolve_threshold(var_get) == expected
 
 
 # ---------- reconcile_gold_row_counts (end-to-end with stubs) ----------
 
 
-@dataclass
-class _StubCursor:
-    """Yields successive row counts for ``SELECT COUNT(*)`` queries."""
+class _Cursor:
+    """Answers ``SELECT COUNT(*) FROM <schema>.<table>`` from a dict; -1 raises."""
 
-    counts: list[int]
-    _idx: int = 0
+    def __init__(self, counts: dict[str, int]) -> None:
+        self._counts = counts
+        self.queried: list[str] = []
+        self._last = -1
 
-    def execute(self, _sql: str) -> None:
-        pass  # SQL not validated here — the test inspects call sequence via _idx
+    def execute(self, sql: str) -> None:
+        relation = sql.rsplit(" ", 1)[1]
+        self.queried.append(relation)
+        self._last = self._counts.get(relation, -1)
+        if self._last < 0:
+            raise RuntimeError(f"relation {relation} does not exist")
 
     def fetchone(self) -> tuple[int]:
-        idx = self._idx
-        self._idx += 1
-        return (self.counts[idx],)
+        return (self._last,)
 
     def __enter__(self):
         return self
@@ -140,173 +114,156 @@ class _StubCursor:
         return False
 
 
-class _StubConn:
-    """Returns a single cursor that yields canned COUNT results in order."""
+class _Conn:
+    def __init__(self, counts: dict[str, int]) -> None:
+        self.cur = _Cursor({_pending(k): v for k, v in counts.items()})
 
-    def __init__(self, counts: list[int]) -> None:
-        self._cursor = _StubCursor(counts=counts)
-
-    def cursor(self) -> _StubCursor:
-        return self._cursor
-
-    def close(self) -> None:
-        pass
+    def cursor(self) -> _Cursor:
+        return self.cur
 
 
-def _make_var_stores(baseline: dict[str, int] | None = None,
-                     threshold: str | None = None):
-    """Build (var_get, var_store) pairs backed by an in-memory dict."""
+def _pending(key: str) -> str:
+    schema, table = key.split(".")
+    return f"{schema}_pending.{table}"
+
+
+def _store(baseline: dict[str, int] | None = None, *, legacy: dict[str, int] | None = None,
+           threshold: str | None = None):
     store: dict[str, str] = {}
     if baseline is not None:
-        store[BASELINE_VAR_NAME] = json.dumps(baseline)
+        store[baseline_var_name("marketing")] = json.dumps(baseline)
+    if legacy is not None:
+        store[BASELINE_VAR_NAME] = json.dumps(legacy)
     if threshold is not None:
         store[THRESHOLD_VAR_NAME] = threshold
 
     def var_get(name: str, default_var: str | None = None):
         return store.get(name, default_var)
 
-    def var_set(name: str, value: str):
-        store[name] = value
-
-    return var_get, var_set, store
+    return var_get, store.__setitem__, store
 
 
-def test_reconcile_seeds_baseline_on_first_run() -> None:
-    # No prior baseline — should not warn, and should persist a new baseline.
-    conn = _StubConn(counts=list(_DEFAULT_COUNTS))
-    var_get, var_set, store = _make_var_stores(baseline=None)
-
+def _run(counts: dict[str, int], var_get, var_set, **kwargs):
+    conn = _Conn(counts)
     result = reconcile_gold_row_counts(
-        conn=conn, var_get=var_get, var_set=var_set
+        conn=conn, var_get=var_get, var_set=var_set,
+        scope="marketing", tables=list(_TABLES), **kwargs,
     )
-
-    assert result["warned"] is False
-    persisted = json.loads(store[BASELINE_VAR_NAME])
-    assert persisted["finance.dim_date"] == 3653
-    assert persisted["marketing.dim_product"] == 100
-    assert persisted["marketing.fact_customer_session"] == 50_000
-    assert persisted["summary.sales_daily_store"] == 500
-    assert len(persisted) == len(GOLD_MARTS)
+    return result, conn
 
 
-def test_reconcile_warns_on_large_drop() -> None:
-    # fact_sales dropped from 100k to 30k — -70%, well above the 20% threshold.
-    counts = [3653, 20, 30_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
-    conn = _StubConn(counts=counts)
-    var_get, var_set, store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
-
-    result = reconcile_gold_row_counts(
-        conn=conn, var_get=var_get, var_set=var_set
-    )
-
-    assert result["warned"] is True
-    assert result["deltas"]["finance.fact_sales"]["status"] == "WARN"
-    assert result["deltas"]["finance.fact_sales"]["delta_pct"] == pytest.approx(-0.7)
-    # Baseline NOT updated — previous baseline preserved.
-    persisted = json.loads(store[BASELINE_VAR_NAME])
-    assert persisted["finance.fact_sales"] == 100_000
+def _saved(store: dict[str, str]) -> dict[str, int]:
+    return json.loads(store[baseline_var_name("marketing")])
 
 
-def test_reconcile_warns_on_large_spike() -> None:
-    # fact_customer_session spiked from 50k to 300k — +500%.
-    baseline = {"marketing.fact_customer_session": 50_000}
-    counts = [3653, 20, 100_000, 720, 5_000, 100, 8_000, 300_000, 500, 200, 300, 1_000]
-    conn = _StubConn(counts=counts)
-    var_get, var_set, _store = _make_var_stores(baseline=baseline)
-
-    result = reconcile_gold_row_counts(
-        conn=conn, var_get=var_get, var_set=var_set
-    )
-
-    assert result["warned"] is True
-    assert result["deltas"]["marketing.fact_customer_session"]["status"] == "WARN"
-    # Other marts have no baseline entries -> status "no_baseline", not "WARN".
-    assert result["deltas"]["finance.dim_date"]["status"] == "no_baseline"
+def test_reads_only_owned_pending_tables() -> None:
+    var_get, var_set, _ = _store()
+    _, conn = _run(dict(_BASELINE), var_get, var_set)
+    assert conn.cur.queried == ["marketing_pending.dim_customer",
+                                "marketing_pending.fact_customer_session"]
 
 
-def test_reconcile_no_warning_when_within_threshold() -> None:
-    # Small day-over-day growth (+5%) — under the 20% threshold.
-    counts = [3653, 20, 105_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
-    conn = _StubConn(counts=counts)
-    var_get, var_set, store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
-
-    result = reconcile_gold_row_counts(
-        conn=conn, var_get=var_get, var_set=var_set
-    )
-
-    assert result["warned"] is False
-    # Baseline updated to the new counts.
-    persisted = json.loads(store[BASELINE_VAR_NAME])
-    assert persisted["finance.fact_sales"] == 105_000
+def test_first_run_records_a_baseline_without_blocking() -> None:
+    var_get, var_set, store = _store()
+    result, _ = _run(dict(_BASELINE), var_get, var_set)
+    assert result["blocked"] == [] and result["warned"] is False
+    assert {d["status"] for d in result["deltas"].values()} == {"no_baseline"}
+    assert _saved(store) == _BASELINE
 
 
-def test_reconcile_respects_custom_threshold() -> None:
-    # Tighter 5% threshold; +10% growth should warn.
-    counts = [3653, 20, 110_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
-    conn = _StubConn(counts=counts)
-    var_get, var_set, _store = _make_var_stores(
-        baseline=dict(_DEFAULT_BASELINE), threshold="0.05"
-    )
-
-    result = reconcile_gold_row_counts(
-        conn=conn, var_get=var_get, var_set=var_set
-    )
-
-    assert result["warned"] is True
-    assert result["threshold"] == 0.05
-    assert result["deltas"]["finance.fact_sales"]["status"] == "WARN"
+def test_missing_scope_baseline_falls_back_to_legacy_shared_variable() -> None:
+    legacy = {**_BASELINE, "finance.fact_sales": 9}
+    var_get, var_set, store = _store(legacy=legacy)
+    result, _ = _run({**_BASELINE, "marketing.dim_customer": 100}, var_get, var_set,
+                     save_baseline=False)
+    assert result["blocked"] == ["marketing.dim_customer"]
+    assert "finance.fact_sales" not in result["deltas"]
+    assert baseline_var_name("marketing") not in store
 
 
-def test_reconcile_handles_corrupt_baseline_gracefully() -> None:
-    # Baseline Variable contains invalid JSON — should start fresh, not crash.
-    store = {BASELINE_VAR_NAME: "not-valid-json{"}
-    var_get = lambda name, default_var=None: store.get(name, default_var)  # noqa: E731
-    var_set = lambda name, value: store.__setitem__(name, value)  # noqa: E731
-    conn = _StubConn(counts=list(_DEFAULT_COUNTS))
-
-    result = reconcile_gold_row_counts(
-        conn=conn, var_get=var_get, var_set=var_set
-    )
-
-    # First run with no usable baseline -> no warning, baseline seeded.
-    assert result["warned"] is False
-    persisted = json.loads(store[BASELINE_VAR_NAME])
-    assert persisted["finance.fact_sales"] == 100_000
+def test_scope_baseline_wins_over_legacy() -> None:
+    var_get, var_set, _ = _store(baseline=dict(_BASELINE),
+                                 legacy={"marketing.dim_customer": 1_000_000})
+    result, _ = _run(dict(_BASELINE), var_get, var_set)
+    assert result["deltas"]["marketing.dim_customer"]["status"] == "ok"
 
 
-# ---------- publish gate (owned tables only) ----------
-
-_DROPPED_SALES = [3653, 20, 30_000, 720, 5_000, 100, 8_000, 50_000, 500, 200, 300, 1_000]
-
-
-def test_gate_blocks_owned_table_that_shrank() -> None:
-    var_get, var_set, store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
-    result = reconcile_gold_row_counts(
-        conn=_StubConn(counts=list(_DROPPED_SALES)), var_get=var_get, var_set=var_set,
-        pending_tables=["finance.fact_sales"],
-    )
-    assert result["blocked"] == ["finance.fact_sales"]
-    assert json.loads(store[BASELINE_VAR_NAME])["finance.fact_sales"] == 100_000
+def test_unacknowledged_shrink_blocks_and_keeps_baseline() -> None:
+    var_get, var_set, store = _store(baseline=dict(_BASELINE))
+    result, _ = _run({**_BASELINE, "marketing.dim_customer": 200}, var_get, var_set)
+    assert result["blocked"] == ["marketing.dim_customer"]
+    assert result["baseline_candidate"] is None
+    assert _saved(store) == _BASELINE
 
 
-def test_gate_ignores_tables_another_dag_owns() -> None:
-    var_get, var_set, _store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
-    result = reconcile_gold_row_counts(
-        conn=_StubConn(counts=list(_DROPPED_SALES)), var_get=var_get, var_set=var_set,
-        pending_tables=["marketing.fact_customer_session"],
-    )
+def test_acknowledged_shrink_publishes_and_becomes_the_baseline() -> None:
+    var_get, var_set, store = _store(baseline=dict(_BASELINE))
+    result, _ = _run({**_BASELINE, "marketing.dim_customer": 200}, var_get, var_set,
+                     acknowledge_shrink=["marketing.dim_customer"])
     assert result["blocked"] == []
     assert result["warned"] is True
+    assert result["acknowledged"] == ["marketing.dim_customer"]
+    assert result["deltas"]["marketing.dim_customer"]["status"] == "acknowledged"
+    assert _saved(store)["marketing.dim_customer"] == 200
 
 
-def test_gate_blocks_unreadable_owned_table_and_not_growth() -> None:
-    counts = list(_DEFAULT_COUNTS)
-    counts[2] = -1  # finance.fact_sales unreadable
-    counts[8] = 5_000  # summary.sales_daily_store grew 10x: warn only
-    var_get, var_set, _store = _make_var_stores(baseline=dict(_DEFAULT_BASELINE))
-    result = reconcile_gold_row_counts(
-        conn=_StubConn(counts=counts), var_get=var_get, var_set=var_set,
-        pending_tables=["finance.fact_sales", "summary.sales_daily_store"],
-    )
-    assert result["blocked"] == ["finance.fact_sales"]
-    assert result["deltas"]["summary.sales_daily_store"]["status"] == "WARN"
+def test_acknowledgement_only_covers_the_named_table() -> None:
+    var_get, var_set, _ = _store(baseline=dict(_BASELINE))
+    result, _ = _run({"marketing.dim_customer": 200, "marketing.fact_customer_session": 10},
+                     var_get, var_set, acknowledge_shrink=["marketing.dim_customer"])
+    assert result["blocked"] == ["marketing.fact_customer_session"]
+
+
+def test_growth_warns_but_still_advances_the_baseline() -> None:
+    var_get, var_set, store = _store(baseline=dict(_BASELINE))
+    result, _ = _run({**_BASELINE, "marketing.fact_customer_session": 50_000},
+                     var_get, var_set)
+    assert result["warned"] is True and result["blocked"] == []
+    assert result["deltas"]["marketing.fact_customer_session"]["status"] == "WARN"
+    assert _saved(store)["marketing.fact_customer_session"] == 50_000
+
+
+def test_unreadable_table_blocks_even_when_acknowledged() -> None:
+    var_get, var_set, _ = _store(baseline=dict(_BASELINE))
+    result, _ = _run({"marketing.fact_customer_session": 5_000}, var_get, var_set,
+                     acknowledge_shrink=["marketing.dim_customer"])
+    assert result["blocked"] == ["marketing.dim_customer"]
+    assert result["deltas"]["marketing.dim_customer"]["status"] == "unavailable"
+
+
+def test_acknowledging_a_table_the_scope_does_not_own_is_rejected() -> None:
+    var_get, var_set, _ = _store()
+    with pytest.raises(ValueError, match="finance.fact_sales"):
+        _run(dict(_BASELINE), var_get, var_set, acknowledge_shrink=["finance.fact_sales"])
+
+
+def test_empty_table_list_is_rejected() -> None:
+    var_get, var_set, _ = _store()
+    with pytest.raises(ValueError, match="no tables"):
+        reconcile_gold_row_counts(conn=_Conn({}), var_get=var_get, var_set=var_set,
+                                  scope="marketing", tables=[])
+
+
+def test_custom_threshold_applies() -> None:
+    var_get, var_set, _ = _store(baseline=dict(_BASELINE), threshold="0.05")
+    result, _ = _run({**_BASELINE, "marketing.dim_customer": 900}, var_get, var_set)
+    assert result["threshold"] == 0.05
+    assert result["blocked"] == ["marketing.dim_customer"]
+
+
+def test_corrupt_baseline_starts_fresh() -> None:
+    var_get, var_set, store = _store()
+    store[baseline_var_name("marketing")] = "not-valid-json{"
+    result, _ = _run(dict(_BASELINE), var_get, var_set)
+    assert result["blocked"] == []
+    assert _saved(store) == _BASELINE
+
+
+def test_save_candidate_writes_the_scope_variable() -> None:
+    var_get, var_set, store = _store(baseline=dict(_BASELINE))
+    result, _ = _run({**_BASELINE, "marketing.dim_customer": 1_050}, var_get, var_set,
+                     save_baseline=False)
+    assert _saved(store) == _BASELINE
+    assert save_baseline_candidate(result, var_set=var_set) is True
+    assert _saved(store)["marketing.dim_customer"] == 1_050
+    assert BASELINE_VAR_NAME not in store

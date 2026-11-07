@@ -27,7 +27,11 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$RestateFrom = "",
     [Parameter(Mandatory = $false)]
-    [string]$RestateTo = ""
+    [string]$RestateTo = "",
+    # Row-count gate (same contract as the DAGs' acknowledge_shrink param):
+    # owned schema.table names allowed to shrink past the threshold this run.
+    [Parameter(Mandatory = $false)]
+    [string[]]$AcknowledgeShrink = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -338,13 +342,17 @@ except ValueError as exc:
     return $script:PendingDbtVars
 }
 
-# Same publish gate as the warehouse DAG's row_count_reconciliation task
-# (shared plugin code); the baseline is saved only after publish.
+# Same publish gate as each owning DAG's row_count_reconciliation task (shared
+# plugin code), one baseline per scope; baselines are saved only after publish.
 $RowCountGateState = Join-Path $RepoRoot '.local\row_count_gate.json'
 function Invoke-RowCountGateLocal {
-    Invoke-ProjectPython scripts/local/row_count_gate.py audit `
-        --duckdb (Join-Path $DbtDir 'local_retail.duckdb') `
-        --state $RowCountGateState
+    $gateArgs = @(
+        'scripts/local/row_count_gate.py', 'audit',
+        '--duckdb', (Join-Path $DbtDir 'local_retail.duckdb'),
+        '--state', $RowCountGateState
+    )
+    foreach ($table in $AcknowledgeShrink) { $gateArgs += @('--acknowledge-shrink', $table) }
+    Invoke-ProjectPython @gateArgs
 }
 
 function Save-RowCountBaselineLocal {

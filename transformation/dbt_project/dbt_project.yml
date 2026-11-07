@@ -19,9 +19,9 @@ seeds:
     # loads Flink/POS Parquet into DuckDB instead and only seeds
     # finance.dim_date + finance.dim_store (reference dims the pipeline
     # cannot generate). Bronze clickstream/pos CSVs encode specific
-    # identity-graph scenarios (loyalty match, session link, multi-hop,
-    # public device, singleton) that the random pipeline producers cannot
-    # deterministically reproduce, so they stay as CI fixtures.
+    # identity scenarios (verified link, two accounts on one card, shared
+    # tablet, unverified claim, legacy no-merge) for the DuckDB CI chain; see
+    # seeds/bronze/README.md.
     bronze:
       +schema: bronze
       clickstream_events:
@@ -88,7 +88,15 @@ seeds:
         +column_types:
           customer_key: bigint
           confidence_score: decimal(5,4)
-          is_public_device: boolean
+      device_session_associations:
+        +column_types:
+          client_id: varchar
+          session_instance_id: varchar
+          customer_id: varchar
+          valid_from: timestamp
+          valid_to: timestamp
+          event_count: integer
+          is_ambiguous: boolean
 
 models:
   global_retail_analytics:

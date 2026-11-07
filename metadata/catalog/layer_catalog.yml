@@ -62,7 +62,27 @@ objects:
     domain: marketing
     owner: data-platform
     grain: (src, dst, edge_type)
-    timestamp_column: last_observed_at
+    timestamp_column: last_verified_at
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: silver.loyalty_link_claims
+    object_type: external
+    platform_layer: silver
+    domain: marketing
+    owner: data-platform
+    grain: (event_id)
+    timestamp_column: event_time
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: silver.device_session_associations
+    object_type: external
+    platform_layer: silver
+    domain: marketing
+    owner: data-platform
+    grain: (client_id, session_instance_id, customer_id)
+    timestamp_column: valid_to
     freshness_sla_minutes: 120
     is_active: true
 

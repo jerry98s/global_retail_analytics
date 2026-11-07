@@ -1,0 +1,32 @@
+unit_tests:
+  - name: fact_customer_session_restates_only_changed_sessions
+    description: >
+      S1 is unchanged and is not rewritten. S2's fingerprint changed (a late
+      event or a rekeyed customer), S3 is new and S4 predates fingerprints, so
+      those three are delete+inserted.
+    model: fact_customer_session
+    overrides:
+      macros:
+        is_incremental: true
+        column_exists: true
+    given:
+      # SQL fixtures: dbt types row fixtures from the existing tables, which
+      # still have the pre-rebuild columns.
+      - input: ref('int_session_reconstruction')
+        format: sql
+        rows: |
+          select 'S1' as session_id, 20261107 as session_date_key, timestamp '2026-11-07 10:00:00' as session_start_time, 100 as customer_key, 'c1' as client_id, 60 as session_duration_seconds, 1 as page_view_count, 0 as product_view_count, 0 as add_to_cart_count, false as converted, cast(null as varchar) as order_id, 1 as funnel_depth, 'web' as platform, 's1' as producer_session_id, 'attributed' as attribution_status, false as is_legacy, 'f1' as session_fingerprint
+          union all select 'S2', 20261107, timestamp '2026-11-07 11:00:00', 200, 'c2', 60, 1, 0, 0, false, null, 1, 'web', 's2', 'attributed', false, 'f2-new'
+          union all select 'S3', 20261107, timestamp '2026-11-07 12:00:00', null, 'c3', 0, 1, 0, 0, false, null, 1, 'ios', 's3', 'anonymous', false, 'f3'
+          union all select 'S4', 20261107, timestamp '2026-11-07 13:00:00', null, 'c4', 0, 1, 0, 0, false, null, 1, 'web', 's4', 'anonymous', true, 'f4'
+      - input: this
+        format: sql
+        rows: |
+          select 'S1' as session_id, 'f1' as session_fingerprint
+          union all select 'S2', 'f2-old'
+          union all select 'S4', cast(null as varchar)
+    expect:
+      rows:
+        - {session_id: S2, customer_key: 200, attribution_status: attributed, session_fingerprint: f2-new}
+        - {session_id: S3, customer_key: null, attribution_status: anonymous, session_fingerprint: f3}
+        - {session_id: S4, customer_key: null, attribution_status: anonymous, session_fingerprint: f4}

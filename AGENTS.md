@@ -79,7 +79,7 @@ uv sync --group dev
  can start in either order; a restart resumes from committed offsets.
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
-- `-Task quality`: `dbt test` + row-count gate (the Gold WAP audit; baseline saved after publish) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
+- `-Task quality`: `dbt test` + row-count gate (the Gold WAP audit, one baseline per owning DAG, saved after publish; pass `-AcknowledgeShrink <schema.table>` for an expected shrink) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
 - POS restatement: pass `-RestateFrom`/`-RestateTo` to both `-Task dbt` and `-Task quality` (validated by the DAG's `pos_restatement` plugin).
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
@@ -111,9 +111,12 @@ live on `main`.
 
 - `spark/identity_resolution/identity_resolution_job.py` (PySpark +
   GraphFrames) builds edges + connected components and writes
-  `silver.identity_resolution` / `silver.identity_edges` (Iceberg), plus
-  local DuckDB bridge (never glob Iceberg `data/` dirs — superseded snapshot
-  files can linger). Blank identifiers are normalized away before graph build.
+  `silver.identity_resolution` / `silver.identity_edges` /
+  `silver.loyalty_link_claims` / `silver.device_session_associations`
+  (Iceberg), plus local DuckDB bridge (never glob Iceberg `data/` dirs —
+  superseded snapshot files can linger). Blank identifiers are normalized
+  away before graph build. Only verified v1.3 account-to-loyalty logins merge
+  (ADR-003); devices never merge customers.
 - `spark/identity_resolution/graph_logic.py` is the rules source of truth;
   `generate_fixture.py` regenerates the dbt seed fixture (CI `--check`).
   CI also runs the real DataFrame/GraphFrames path via

@@ -11,13 +11,16 @@ revisiting ADR-006.
 
 - Reads bronze `clickstream_events` (Iceberg, Hadoop catalog) and POS loyalty
   IDs (batch Parquet prefix).
-- Builds identity edges (`session_link`, `loyalty_value_match`), excludes
-  public devices, runs GraphFrames `connectedComponents` (no hop bound).
-- Writes `silver.identity_resolution` (consumed by dbt as a source) and
-  `silver.identity_edges` (audit) to the silver Iceberg warehouse. Full
+- Builds one edge type, `verified_loyalty_link`, from v1.3 logins verified to
+  a loyalty card (ADR-003), and runs GraphFrames `connectedComponents` (no hop
+  bound). Devices are never nodes.
+- Writes `silver.identity_resolution` (consumed by dbt as a source),
+  `silver.identity_edges`, `silver.loyalty_link_claims` (every claim, verified
+  or not) and `silver.device_session_associations` (signed-in intervals per
+  device and session instance) to the silver Iceberg warehouse. Full
   overwrite per run — recompute is cheap at identifier grain.
 - Publishes `consumer_current/<name>/` exports (`consumer_exports.py`):
-  identity resolution, identity edges, the canonical event/quarantine/duplicate
+  the four identity outputs, the canonical event/quarantine/duplicate
   sets, and `silver.inventory_hourly` read from its committed Iceberg snapshot.
   Each run writes `run=<utc ts>/` and then atomically replaces `manifest`;
   Spectrum's `LOCATION` and the local DuckDB loader both read only the files
@@ -26,16 +29,16 @@ revisiting ADR-006.
   directories, where superseded snapshot files may remain.
 
 `graph_logic.py` — engine-independent source of truth for the rules (identifier
-normalization, edge
-types, public-device threshold, representative priority, confidence/method
-mapping, deterministic `customer_key` formula matching dbt's
+normalization, the
+merge edge, device-session associations, representative priority,
+confidence/method mapping, deterministic `customer_key` formula matching dbt's
 `generate_customer_key`). Covered by `tests/unit/test_spark_identity_resolution.py`;
 CI also executes the real DataFrame/GraphFrames path through
 `tests/integration/verify_spark_identity.py`.
 
 `generate_fixture.py` — regenerates
-`transformation/dbt_project/seeds/silver/identity_resolution.csv` from the
-bronze fixture CSVs so the DuckDB CI chain can run without Spark. CI runs
+`transformation/dbt_project/seeds/silver/identity_resolution.csv` and
+`device_session_associations.csv` from the bronze fixture CSVs so the DuckDB CI chain can run without Spark. CI runs
 `--check` to fail on drift.
 
 ## Cloud

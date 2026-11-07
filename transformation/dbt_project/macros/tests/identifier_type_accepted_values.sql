@@ -2,5 +2,5 @@
 select *
 from {{ model }}
 where {{ column_name }} is null
-   or {{ column_name }} not in ('loyalty_id', 'customer_id', 'client_id')
+   or {{ column_name }} not in ('loyalty_id', 'customer_id')
 {% endtest %}

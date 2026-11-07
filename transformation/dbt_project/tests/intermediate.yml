@@ -5,14 +5,27 @@ models:
   # edge construction and connected components now run in the Spark
   # GraphFrames job (spark/identity_resolution/), covered by
   # tests/unit/test_spark_identity_resolution.py.
-  - name: int_identity_public_devices
+  - name: int_identity_shared_devices
     columns:
       - name: client_id
         tests:
           - not_null_unique
-      - name: distinct_customer_count
+      - name: account_count
         tests:
           - not_null
+
+  - name: int_identity_changes
+    columns:
+      - name: change_type
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [added, removed, rekeyed]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [identifier_type, identifier_value]
 
   - name: int_identity_resolution
     columns:
@@ -39,12 +52,12 @@ models:
                   - loyalty_member
                   - loyalty_match
                   - customer_id_standalone
-                  - session_linked
-                  - device_only
-                  - public_device_excluded
-                  - unknown
 
   - name: int_session_reconstruction
+    description: >
+      One row per session: the producer's session_instance_id (v1.3+), or one
+      legacy session per (client_id, producer session_id) for older events.
+      customer_key only when exactly one account signed in during the instance.
     columns:
       - name: session_id
         tests:
@@ -52,21 +65,80 @@ models:
       - name: session_date_key
         tests:
           - not_null
+      - name: attribution_status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [attributed, anonymous, ambiguous]
+      - name: is_legacy
+        tests: [not_null]
+      - name: session_fingerprint
+        tests: [not_null]
+
+  - name: int_consent_events
+    description: >
+      Explicit consent statements, one row per (event_id, purpose), from
+      signed-in envelope 1.3+ events with a boolean flag and consent_source.
+    columns:
+      - name: customer_key
+        tests: [not_null]
+      - name: purpose
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['marketing', 'analytics']
+      - name: is_granted
+        tests: [not_null]
+      - name: consent_source
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [event_id, purpose]
 
   - name: int_customer_consent
+    description: >
+      Latest explicit statement per customer_key and purpose. NULL means the
+      customer never stated that purpose.
     columns:
       - name: customer_key
         tests:
           - not_null_unique
 
+  - name: int_order_reconciliation
+    description: >
+      Online checkout observations, one row per order_id. Every order is
+      unconfirmed until POS carries order_id.
+    columns:
+      - name: order_id
+        tests: [not_null_unique]
+      - name: session_id
+        tests: [not_null]
+      - name: reconciliation_status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['confirmed', 'unconfirmed']
+
   - name: int_rfm_scoring
     description: >
-      Omnichannel RFM by customer_key: POS via loyalty_id plus converted
-      clickstream sessions (conversion_value / order_id).
+      RFM by customer_key from confirmed POS transactions (via loyalty_id).
+      Scores run 1 (worst) to 5 (best); recency is measured from the latest
+      non-voided transaction date.
     columns:
       - name: customer_key
         description: "Resolved customer key."
         tests: [not_null_unique]
+      - name: r_score
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                max_value: 5
       - name: rfm_segment
         description: "Derived RFM segment."
 

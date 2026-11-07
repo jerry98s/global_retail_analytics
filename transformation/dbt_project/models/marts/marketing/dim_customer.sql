@@ -1,9 +1,6 @@
 {{
   config(
-    materialized='incremental',
-    unique_key='customer_key',
-    incremental_strategy='delete+insert',
-    on_schema_change='sync_all_columns',
+    materialized='table',
     dist='customer_key',
     sort='loyalty_id'
   )
@@ -14,18 +11,18 @@
 
   Grain: one row per customer_key (resolved by int_identity_resolution).
   Source: int_identity_resolution (loyalty_id anchor) + int_rfm_scoring
-          (omnichannel RFM: POS net_revenue + converted clickstream sessions)
-          + int_customer_consent (explicit consent flags).
+          (confirmed POS transactions only)
+          + int_customer_consent (latest explicit statement per purpose).
   Notes:
     - email_hashed is NULL today — placeholder for future PII ingestion
       behind the marketing_consent gate.
-    - Consent flags take the customer's latest explicit statement, so an
-      opt-out revokes on the next run. Without a statement, loyalty members
-      default to marketing consent and authenticated or loyalty customers to
-      analytics consent. marketing_consent is the PII gate. See
-      docs/data-model/identity-resolution.md.
-    - last_updated_at is current_timestamp — every dbt run on an affected
-      customer_key overwrites the row via delete+insert.
+    - Consent is the customer's latest explicit statement for each purpose,
+      so an opt-out revokes on the next run. With no statement, consent is
+      false; loyalty membership is not consent. marketing_consent is the PII
+      gate. See docs/data-model/identity-resolution.md.
+    - Rebuilt in full each run, so customer keys that leave the identity
+      graph (merges, removed client-only nodes) leave the dimension.
+    - last_updated_at is current_timestamp of the run.
 */
 
 with identity_base as (
@@ -59,15 +56,8 @@ select
         else 0.10
     end as decimal(10, 4)) as churn_risk_score,
     cast(coalesce(r.monetary_value, 0) as decimal(18, 2)) as total_lifetime_value,
-    -- An explicit statement always wins; loyalty enrolment is only the default.
-    coalesce(
-        c.explicit_marketing_consent,
-        i.loyalty_id is not null
-    ) as marketing_consent,
-    coalesce(
-        c.explicit_analytics_consent,
-        c.customer_key is not null or i.loyalty_id is not null
-    ) as analytics_consent,
+    coalesce(c.marketing_consent, false) as marketing_consent,
+    coalesce(c.analytics_consent, false) as analytics_consent,
     current_timestamp as last_updated_at
 from identity_base i
 left join rfm r

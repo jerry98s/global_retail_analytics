@@ -1,0 +1,36 @@
+unit_tests:
+  - name: fact_sales_reprocesses_days_with_stale_customer_keys
+    description: >
+      The latest loaded day is 2026-11-06, so the 3-day lookback starts at
+      2026-11-03. 2026-11-01 is older, but its stored key for L1 (100) no
+      longer matches L1's current key (200), so that whole day is reprocessed
+      with the new key. 2026-11-02 is older and up to date, so it is skipped.
+    model: fact_sales
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: this
+        rows:
+          - {date_key: 20261101, loyalty_id: L1, customer_key: 100}
+          - {date_key: 20261102, loyalty_id: L2, customer_key: 300}
+          - {date_key: 20261106, loyalty_id: L2, customer_key: 300}
+      - input: ref('stg_pos_transactions')
+        rows:
+          - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-11-01", dt: "2026-11-01", loyalty_id: L1, product_id: P1, store_id: S1}
+          - {transaction_id: T2, line_item_number: 1, transaction_date: "2026-11-02", dt: "2026-11-02", loyalty_id: L2, product_id: P1, store_id: S1}
+          - {transaction_id: T3, line_item_number: 1, transaction_date: "2026-11-06", dt: "2026-11-06", loyalty_id: L2, product_id: P1, store_id: S1}
+      - input: ref('dim_product')
+        rows:
+          - {product_id: P1, product_key: 11, is_current: true}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_id: S1, store_key: 21}
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: loyalty_id, identifier_value: L1, customer_key: 200}
+          - {identifier_type: loyalty_id, identifier_value: L2, customer_key: 300}
+    expect:
+      rows:
+        - {date_key: 20261101, transaction_id: T1, customer_key: 200, product_key: 11, store_key: 21}
+        - {date_key: 20261106, transaction_id: T3, customer_key: 300, product_key: 11, store_key: 21}

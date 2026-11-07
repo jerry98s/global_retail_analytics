@@ -1,4 +1,4 @@
-"""Local stack runs the same POS restatement and row-count gate as the warehouse DAG."""
+"""Local stack runs the same POS restatement and row-count gate as the owning DAGs."""
 
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from orchestration.airflow.plugins.row_count_reconciliation import BASELINE_VAR_NAME
-from orchestration.airflow.plugins.wap_publish import FINANCE_SUMMARY_TABLES
+from orchestration.airflow.plugins.row_count_reconciliation import (
+    BASELINE_VAR_NAME,
+    baseline_var_name,
+)
+from orchestration.airflow.plugins.wap_publish import WAP_SCOPES
 
 pytestmark = pytest.mark.unit
 
@@ -28,45 +31,89 @@ def _gate():
     return module
 
 
-def _pending_db(path: Path, fact_sales_rows: int) -> None:
+def _pending_db(path: Path, **rows: int) -> None:
+    """Every WAP table's pending twin with 10 rows, overridden by table name."""
     con = duckdb.connect(str(path))
-    for schema, table in FINANCE_SUMMARY_TABLES:
-        rows = fact_sales_rows if table == "fact_sales" else 10
-        con.execute(f"create schema if not exists {schema}_pending")
-        con.execute(f"create or replace table {schema}_pending.{table} as select range as id from range({rows})")
+    for tables in WAP_SCOPES.values():
+        for schema, table in tables:
+            con.execute(f"create schema if not exists {schema}_pending")
+            con.execute(
+                f"create or replace table {schema}_pending.{table} as "
+                f"select range as id from range({rows.get(table, 10)})"
+            )
     con.close()
 
 
-def _baseline(state: Path) -> dict:
-    return json.loads(json.loads(state.read_text())["variables"][BASELINE_VAR_NAME])
+def _variables(state: Path) -> dict:
+    return json.loads(state.read_text())["variables"]
+
+
+def _baseline(state: Path, scope: str) -> dict:
+    return json.loads(_variables(state)[baseline_var_name(scope)])
+
+
+def _audit(gate, db: Path, state: Path, *ack: str) -> int:
+    argv = ["audit", "--duckdb", str(db), "--state", str(state)]
+    for table in ack:
+        argv += ["--acknowledge-shrink", table]
+    return gate.main(argv)
 
 
 class TestRowCountGate:
-    def test_clean_audit_saves_baseline_only_on_save(self, tmp_path):
+    def test_audit_saves_one_baseline_per_scope_only_on_save(self, tmp_path):
         gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
-        _pending_db(db, 100)
+        _pending_db(db, fact_sales=100, dim_customer=50)
 
-        assert gate.main(["audit", "--duckdb", str(db), "--state", str(state)]) == 0
-        assert BASELINE_VAR_NAME not in json.loads(state.read_text())["variables"]
+        assert _audit(gate, db, state) == 0
+        assert not any(k.startswith(BASELINE_VAR_NAME) for k in _variables(state))
 
         assert gate.main(["save", "--state", str(state)]) == 0
-        assert _baseline(state)["finance.fact_sales"] == 100
+        assert _baseline(state, "finance")["finance.fact_sales"] == 100
+        assert _baseline(state, "marketing")["marketing.dim_customer"] == 50
+        assert set(_baseline(state, "catalog")) == {"marketing.dim_product"}
 
-    def test_shrunk_pending_table_blocks_and_keeps_baseline(self, tmp_path):
+    def test_marketing_shrink_blocks_until_acknowledged(self, tmp_path):
         gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
-        _pending_db(db, 100)
-        gate.main(["audit", "--duckdb", str(db), "--state", str(state)])
+        _pending_db(db, dim_customer=100)
+        _audit(gate, db, state)
         gate.main(["save", "--state", str(state)])
 
-        _pending_db(db, 40)
-        assert gate.main(["audit", "--duckdb", str(db), "--state", str(state)]) == 1
+        _pending_db(db, dim_customer=20)
+        assert _audit(gate, db, state) == 1
         gate.main(["save", "--state", str(state)])
-        assert _baseline(state)["finance.fact_sales"] == 100
+        assert _baseline(state, "marketing")["marketing.dim_customer"] == 100
+
+        assert _audit(gate, db, state, "marketing.dim_customer") == 0
+        gate.main(["save", "--state", str(state)])
+        assert _baseline(state, "marketing")["marketing.dim_customer"] == 20
+
+    def test_growth_does_not_freeze_the_baseline(self, tmp_path):
+        gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
+        _pending_db(db, fact_sales=100)
+        _audit(gate, db, state)
+        gate.main(["save", "--state", str(state)])
+
+        _pending_db(db, fact_sales=1_000)
+        assert _audit(gate, db, state) == 0
+        gate.main(["save", "--state", str(state)])
+        assert _baseline(state, "finance")["finance.fact_sales"] == 1_000
+
+    def test_legacy_shared_baseline_seeds_each_scope(self, tmp_path):
+        gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
+        legacy = {"marketing.dim_customer": 1_000, "finance.fact_sales": 10}
+        state.write_text(json.dumps({"variables": {BASELINE_VAR_NAME: json.dumps(legacy)}}))
+        _pending_db(db, dim_customer=100)
+        assert _audit(gate, db, state) == 1
+
+    def test_unknown_acknowledgement_is_rejected(self, tmp_path):
+        gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
+        _pending_db(db)
+        assert _audit(gate, db, state, "finance.dim_date") == 2
 
     def test_missing_pending_table_blocks(self, tmp_path):
         gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
         duckdb.connect(str(db)).close()
-        assert gate.main(["audit", "--duckdb", str(db), "--state", str(state)]) == 1
+        assert _audit(gate, db, state) == 1
 
 
 class TestStackWiring:
@@ -87,3 +134,8 @@ class TestStackWiring:
             publish = body.index("Invoke-WapPublishLocal")
             save = body.index("Save-RowCountBaselineLocal")
             assert gate < publish < save, task
+
+    def test_acknowledge_shrink_reaches_the_gate(self):
+        assert "[string[]]$AcknowledgeShrink" in _STACK
+        body = _STACK.split("function Invoke-RowCountGateLocal {", 1)[1].split("\n}", 1)[0]
+        assert "'--acknowledge-shrink', $table" in body

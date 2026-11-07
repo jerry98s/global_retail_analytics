@@ -12,7 +12,8 @@ One job under `spark/identity_resolution/`. No Spark Streaming and no Spark SQL 
 
 - `graph_logic.py` is the rules source. `identity_resolution_job.py` mirrors it in DataFrames.
 - `event_contract.py` and `canonical_events.py` promote Bronze `*_records` to `silver.*_events`, `*_quarantine`, and `*_duplicates`. The job fails if input rows do not equal those three counts.
-- Iceberg `silver.identity_resolution` and `silver.identity_edges`, plus `consumer_current/*` exports (run dir + atomic `manifest`, `consumer_exports.py`), including `inventory_hourly`. Spectrum and the DuckDB bridge read only the manifest's files. Never glob Iceberg `data/` dirs or export run dirs.
+- Only a verified v1.3 account-to-loyalty login merges (ADR-003). Devices are never graph nodes.
+- Iceberg `silver.identity_resolution`, `silver.identity_edges`, `silver.loyalty_link_claims` and `silver.device_session_associations`, plus `consumer_current/*` exports (run dir + atomic `manifest`, `consumer_exports.py`), including `inventory_hourly`. Spectrum and the DuckDB bridge read only the manifest's files. Never glob Iceberg `data/` dirs or export run dirs.
 
 ## Commands
 
@@ -26,7 +27,7 @@ Local submit is Docker Compose profile `spark` (`infra/docker/spark`), not a hos
 
 ## Traps
 
-- Do not hand-edit `transformation/dbt_project/seeds/silver/identity_resolution.csv`. Regenerate it with `generate_fixture.py`. CI runs `--check`.
+- Do not hand-edit `transformation/dbt_project/seeds/silver/identity_resolution.csv` or `device_session_associations.csv`. Regenerate them with `generate_fixture.py`. CI runs `--check`.
 - Tests import the package; spark-submit imports the scripts. Keep the `try/except` import.
 - GraphFrames checkpoints go to gitignored `.local/graphframes-checkpoints`.
 - Pins: Spark 3.4.1 (EMR 6.15 parity), Iceberg runtime 1.4.3, GraphFrames 0.8.3-spark3.4-s_2.12.
