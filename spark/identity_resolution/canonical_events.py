@@ -17,7 +17,7 @@ except ImportError:
     from event_contract import parse_event
 
 TRANSPORT = ['source_system', 'kafka_topic', 'kafka_partition', 'kafka_offset']
-CLICK_FIELDS = ['event_id', 'event_type', 'event_time', 'session_id', 'client_id',
+CLICK_FIELDS = ['event_id', 'event_type', 'event_time', 'session_id', 'session_instance_id', 'client_id',
                 'customer_id', 'platform', 'app_version', 'properties', 'schema_version', 'event_date']
 INV_FIELDS = ['event_id', 'event_time', 'store_id', 'product_id', 'qty_delta',
               'event_type', 'scanner_id', 'is_late', 'schema_version', 'event_date']

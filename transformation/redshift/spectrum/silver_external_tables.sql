@@ -91,6 +91,7 @@ CREATE EXTERNAL TABLE silver.clickstream_events (
     event_type varchar(64),
     event_time timestamp,
     session_id varchar(256),
+    session_instance_id varchar(256),
     client_id varchar(256),
     customer_id varchar(256),
     platform varchar(16),

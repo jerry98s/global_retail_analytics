@@ -13,6 +13,29 @@ from datetime import datetime, timezone
 CLICKSTREAM_TYPES = {'page_view', 'product_view', 'search', 'add_to_cart',
                     'remove_from_cart', 'checkout_start', 'checkout', 'login', 'logout', 'error'}
 INVENTORY_TYPES = {'sale_deduction', 'receipt', 'adjustment', 'transfer'}
+# Envelope 1.3.0 adds session_instance_id and the identity/consent evidence
+# rules below. Older events replay unchanged with session_instance_id NULL.
+CLICKSTREAM_V13 = (1, 3, 0)
+CONSENT_FLAGS = ('marketing_consent', 'analytics_consent')
+
+
+def _clickstream_v13_error(event: dict, properties: dict, customer: str | None) -> str | None:
+    instance = event.get('session_instance_id')
+    if not isinstance(instance, str) or not instance.strip():
+        return 'missing_session_instance_id'
+    if event['event_type'] in ('login', 'logout') and customer is None:
+        return event['event_type'] + '_missing_customer_id'
+    if 'loyalty_id' in properties or 'loyalty_link_verified' in properties:
+        loyalty = properties.get('loyalty_id')
+        if (event['event_type'] != 'login' or not isinstance(loyalty, str) or not loyalty.strip()
+                or not isinstance(properties.get('loyalty_link_verified'), bool)):
+            return 'invalid_loyalty_link'
+    if any(flag in properties for flag in CONSENT_FLAGS):
+        source = properties.get('consent_source')
+        if (customer is None or not isinstance(source, str) or not source.strip()
+                or any(not isinstance(properties[f], bool) for f in CONSENT_FLAGS if f in properties)):
+            return 'invalid_consent'
+    return None
 
 
 def _object(pairs):
@@ -95,7 +118,14 @@ def parse_event(payload: bytes | None, stream: str) -> dict:
             cart = properties.get('cart_value')
             if type(cart) not in (float, int) or not 0 <= cart <= 1e308 or not math.isfinite(cart):
                 return invalid('checkout_invalid_cart_value')
-        result.update(customer_id=customer.strip() or None if customer is not None else None,
+        customer = customer.strip() or None if customer is not None else None
+        instance = None
+        if tuple(int(part) for part in event['schema_version'].split('.')) >= CLICKSTREAM_V13:
+            error = _clickstream_v13_error(event, properties, customer)
+            if error:
+                return invalid(error)
+            instance = event['session_instance_id'].strip()
+        result.update(customer_id=customer, session_instance_id=instance,
                       client_id=event['client_id'].strip(),
                       properties=json.dumps(properties, separators=(',', ':'), sort_keys=True))
     else:

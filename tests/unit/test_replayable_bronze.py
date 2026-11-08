@@ -52,6 +52,55 @@ def test_invalid_business_data_does_not_enter_canonical_events(changes, reason):
     assert parser()(click(**changes), 'clickstream')['error_reason'] == reason
 
 
+def test_v12_events_replay_without_a_session_instance():
+    result = parser()(click(session_instance_id='SI-ignored'), 'clickstream')
+    assert result['error_reason'] is None
+    assert result['session_instance_id'] is None
+
+
+def v13(**changes):
+    value = dict(schema_version='1.3.0', session_instance_id='SI-1')
+    value.update(changes)
+    return click(**value)
+
+
+def test_v13_keeps_the_session_instance():
+    result = parser()(v13(session_instance_id=' SI-1 '), 'clickstream')
+    assert result['error_reason'] is None
+    assert result['session_instance_id'] == 'SI-1'
+
+
+SIGNED_IN = {'customer_id': 'CUST-000001'}
+CONSENT = {'marketing_consent': False, 'consent_source': 'preference_center'}
+
+
+@pytest.mark.parametrize('changes,reason', [
+    ({'session_instance_id': None}, 'missing_session_instance_id'),
+    ({'session_instance_id': ' '}, 'missing_session_instance_id'),
+    ({'event_type': 'login'}, 'login_missing_customer_id'),
+    ({'event_type': 'logout', 'customer_id': ' '}, 'logout_missing_customer_id'),
+    ({**SIGNED_IN, 'properties': {'loyalty_id': 'LOYAL-000001', 'loyalty_link_verified': True}},
+     'invalid_loyalty_link'),
+    ({**SIGNED_IN, 'event_type': 'login', 'properties': {'loyalty_id': 'LOYAL-000001'}}, 'invalid_loyalty_link'),
+    ({**SIGNED_IN, 'event_type': 'login', 'properties': {'loyalty_link_verified': 'yes', 'loyalty_id': 'L'}},
+     'invalid_loyalty_link'),
+    ({'properties': CONSENT}, 'invalid_consent'),
+    ({**SIGNED_IN, 'properties': {'marketing_consent': False}}, 'invalid_consent'),
+    ({**SIGNED_IN, 'properties': {**CONSENT, 'marketing_consent': 'false'}}, 'invalid_consent'),
+])
+def test_v13_identity_and_consent_need_explicit_evidence(changes, reason):
+    assert parser()(v13(**changes), 'clickstream')['error_reason'] == reason
+
+
+@pytest.mark.parametrize('changes', [
+    {**SIGNED_IN, 'event_type': 'login',
+     'properties': {'loyalty_id': 'LOYAL-000099', 'loyalty_link_verified': False}},
+    {**SIGNED_IN, 'properties': CONSENT},
+])
+def test_v13_accepts_well_formed_evidence(changes):
+    assert parser()(v13(**changes), 'clickstream')['error_reason'] is None
+
+
 def test_inventory_requires_integer_delta():
     payload = json.dumps(dict(event_id='I1', event_time='2026-09-17T00:00:00Z',
         store_id='S1', product_id='P1', qty_delta=True, event_type='receipt',

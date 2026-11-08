@@ -11,10 +11,17 @@ from __future__ import annotations
 import random
 import re
 from collections import deque
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ingestion.kafka.producer_sim.clickstream_producer import ClickstreamEvent
+from ingestion.kafka.producer_sim.clickstream_producer import (
+    INACTIVITY_GAP,
+    SCENARIO_ACCOUNTS,
+    Ids,
+    acceptance_scenarios,
+    load_messages,
+)
 from ingestion.kafka.producer_sim.inventory_producer import (
     QTY_BY_EVENT_TYPE,
     InventoryEvent,
@@ -22,7 +29,8 @@ from ingestion.kafka.producer_sim.inventory_producer import (
     next_message,
 )
 from ingestion.kafka.producer_sim.pos_producer import PosTransactionLine
-from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCTS, STORES
+from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCTS, STORES, verified_loyalty_id
+from spark.identity_resolution.event_contract import parse_event
 from streaming.flink_jobs.event_types import (
     CLICKSTREAM_EVENT_TYPES,
     INVENTORY_EVENT_TYPES,
@@ -38,33 +46,149 @@ def _seeded_rng():
     yield
 
 
-class TestClickstreamEvent:
-    def test_schema_version_pinned(self):
-        assert ClickstreamEvent.generate().schema_version == "1.2.0"
+ANCHOR = datetime(2026, 11, 7, 6, 0, tzinfo=timezone.utc)
 
-    def test_invariants_over_sample(self):
-        product_re = re.compile(r"^PROD-\d{4}$")
-        for _ in range(500):
-            ev = ClickstreamEvent.generate()
-            assert ev.event_type in CLICKSTREAM_EVENT_TYPES
-            assert ev.platform in PLATFORMS
-            assert ev.customer_id is None or ev.customer_id.startswith("LOYAL-")
-            if ev.event_type == "login":
-                assert "marketing_consent" in ev.properties
-            assert ev.session_id.startswith("SESS-")
-            assert ev.client_id.startswith("CLIENT-")
-            assert product_re.match(ev.properties["product_id"])
-            # order_id exists iff this was a checkout event
-            if ev.event_type == "checkout":
-                assert ev.properties["order_id"].startswith("ORDER-")
-            else:
-                assert "order_id" not in ev.properties
 
-    def test_checkout_branch_is_actually_covered(self):
-        # Guard against the sample never hitting the conditional branch.
-        assert any(
-            ClickstreamEvent.generate().event_type == "checkout" for _ in range(2000)
-        )
+def _scenario(name):
+    return [m.event for m in acceptance_scenarios(ANCHOR) if m.scenario == name and m.kind == "event"]
+
+
+def _contract(event):
+    return parse_event(event.payload(), "clickstream")
+
+
+def _check_device_timeline(events):
+    """Producer invariants per device, in event-time order."""
+    by_client = {}
+    for event in events:
+        by_client.setdefault(event.client_id, []).append(event)
+    for timeline in by_client.values():
+        timeline.sort(key=lambda e: e.event_time)
+        previous = None
+        for event in timeline:
+            if previous is not None and event.session_instance_id == previous.session_instance_id:
+                gap = datetime.fromisoformat(event.event_time) - datetime.fromisoformat(previous.event_time)
+                assert gap <= INACTIVITY_GAP
+                assert previous.event_type != "logout"
+                if previous.customer_id and event.customer_id:
+                    assert previous.customer_id == event.customer_id
+            if event.event_type in ("login", "logout"):
+                assert event.customer_id is not None
+            previous = event
+
+
+class TestClickstreamScenarios:
+    def test_every_scenario_event_passes_the_replay_contract(self):
+        for message in acceptance_scenarios(ANCHOR):
+            event = message.event
+            assert event.schema_version == "1.3.0"
+            assert event.event_type in CLICKSTREAM_EVENT_TYPES
+            assert event.platform in PLATFORMS
+            assert _contract(event)["error_reason"] is None, message
+            assert datetime.fromisoformat(event.event_time) <= ANCHOR
+
+    def test_same_anchor_repeats_the_same_bytes(self):
+        first = [m.event.payload() for m in acceptance_scenarios(ANCHOR)]
+        again = [m.event.payload() for m in acceptance_scenarios(ANCHOR)]
+        later = [m.event.payload() for m in acceptance_scenarios(ANCHOR + timedelta(hours=1))]
+        assert first == again
+        assert set(first).isdisjoint(later)
+
+    def test_journey_is_one_attributable_session(self):
+        events = _scenario("journey")
+        assert [e.event_type for e in events] == ["product_view", "login", "add_to_cart", "checkout", "logout"]
+        assert len({e.session_instance_id for e in events}) == 1
+        assert [e.customer_id for e in events] == [None] + ["CUST-000001"] * 4
+        login = events[1].properties
+        assert login["loyalty_id"] == verified_loyalty_id("CUST-000001")
+        assert login["loyalty_link_verified"] is True
+        assert re.fullmatch(r"ORDER-[0-9A-F]{12}", events[3].properties["order_id"])
+
+    def test_inactivity_gap_keeps_session_id_but_splits_the_instance(self):
+        events = _scenario("inactivity_gap")
+        assert len({e.session_id for e in events}) == 1
+        instances = [e.session_instance_id for e in events]
+        assert instances[0] == instances[1] != instances[2]
+        assert all(e.customer_id is None for e in events)
+
+    def test_shared_tablet_keeps_each_person_in_their_own_instance(self):
+        events = _scenario("shared_tablet")
+        assert len({e.client_id for e in events}) == 1
+        customers_by_instance = {}
+        for event in events:
+            customers_by_instance.setdefault(event.session_instance_id, set()).add(event.customer_id)
+        assert sorted(customers_by_instance.values(), key=sorted) == [{"CUST-000002"}, {"CUST-000003"}]
+
+    def test_dual_accounts_are_verified_to_one_loyalty_card(self):
+        logins = [e for e in _scenario("dual_accounts") if e.event_type == "login"]
+        assert {e.customer_id for e in logins} == {"CUST-000004", "CUST-010004"}
+        assert {e.properties["loyalty_id"] for e in logins} == {"LOYAL-000004"}
+        assert {verified_loyalty_id(e.customer_id) for e in logins} == {"LOYAL-000004"}
+        assert len({e.client_id for e in logins}) == 2
+
+    def test_consent_change_ends_opted_out_of_marketing(self):
+        statements = [e for e in _scenario("consent_change") if "marketing_consent" in e.properties]
+        assert [e.properties["marketing_consent"] for e in statements] == [True, False]
+        assert [e.properties["consent_source"] for e in statements] == ["login_prompt", "preference_center"]
+        assert all(e.customer_id == "CUST-000005" for e in statements)
+
+    def test_unverified_loyalty_claim_is_marked_unverified(self):
+        login = next(e for e in _scenario("unverified_loyalty") if e.event_type == "login")
+        assert login.properties["loyalty_id"] == "LOYAL-000099"
+        assert login.properties["loyalty_link_verified"] is False
+        assert verified_loyalty_id("CUST-000006") != "LOYAL-000099"
+
+    def test_late_and_retry_delivery_order(self):
+        messages = [m for m in acceptance_scenarios(ANCHOR) if m.scenario == "late_and_retry"]
+        kinds = [m.kind for m in messages]
+        assert kinds == ["event", "event", "retry", "late"]
+        retry = messages[2].event
+        assert retry.payload() == messages[0].event.payload()
+        late = messages[3].event
+        assert messages[0].event.event_time < late.event_time < messages[1].event.event_time
+
+    def test_scenario_timelines_hold_the_producer_invariants(self):
+        _check_device_timeline([m.event for m in acceptance_scenarios(ANCHOR) if m.kind == "event"])
+
+
+class TestClickstreamLoad:
+    def _sample(self, count=5000):
+        clock = [ANCHOR]
+
+        def now():
+            clock[0] += timedelta(seconds=1)
+            return clock[0]
+
+        stream = load_messages(random.Random(7), Ids(seed="load-test"), now, device_pool=300)
+        return [next(stream) for _ in range(count)]
+
+    def test_load_events_pass_the_replay_contract(self):
+        for event in self._sample(2000):
+            assert _contract(event)["error_reason"] is None, event
+
+    def test_load_devices_are_reused_with_coherent_sessions(self):
+        events = self._sample()
+        _check_device_timeline(events)
+        visits = {}
+        for event in events:
+            visits.setdefault(event.client_id, set()).add(event.session_instance_id)
+        assert any(len(instances) > 1 for instances in visits.values())
+
+    def test_load_has_anonymous_and_signed_in_journeys(self):
+        events = self._sample()
+        assert any(e.customer_id is None for e in events)
+        assert any(e.event_type == "login" for e in events)
+        assert any(e.event_type == "checkout" for e in events)
+        assert all(e.customer_id not in SCENARIO_ACCOUNTS for e in events)
+        assert all(e.client_id.startswith("CLIENT-") for e in events)
+
+    def test_some_load_devices_are_shared_by_two_accounts(self):
+        events = self._sample()
+        accounts = {}
+        for event in events:
+            if event.customer_id:
+                accounts.setdefault(event.client_id, set()).add(event.customer_id)
+        assert any(len(found) > 1 for found in accounts.values())
 
 
 class TestPosTransactionLine:

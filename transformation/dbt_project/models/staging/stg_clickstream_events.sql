@@ -5,6 +5,8 @@ select
     cast(event_type as varchar) as event_type,
     cast(event_time as timestamp) as event_time,
     cast(session_id as varchar) as session_id,
+    -- Producer-issued from envelope 1.3.0; NULL for older events.
+    nullif(cast(session_instance_id as varchar), '') as session_instance_id,
     cast(client_id as varchar) as client_id,
     nullif(cast(customer_id as varchar), '') as customer_id,
     cast(platform as varchar) as platform,

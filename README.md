@@ -211,6 +211,14 @@ uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task quality
 ```
 
+To send the fixed Customer 360 journeys instead of random load (an anonymous
+visit, a shared tablet, two accounts on one loyalty card, a consent opt-out, a
+late event and a retry; the same `--anchor` resends the same bytes):
+
+```powershell
+.\.venv\Scripts\python.exe -m ingestion.kafka.producer_sim.clickstream_producer --scenario acceptance
+```
+
 | Mode | Flag | What dbt reads |
 |---|---|---|
 | Fidelity (default) | `-DbtSource iceberg` | Flink Parquet under `.local/iceberg` + local POS Parquet; seeds only `dim_date` / `dim_store` |

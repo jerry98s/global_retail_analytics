@@ -32,6 +32,7 @@ seeds:
           customer_id: varchar
           client_id: varchar
           session_id: varchar
+          session_instance_id: varchar
           schema_version: varchar
           event_date: date
           app_version: varchar
