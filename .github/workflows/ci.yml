@@ -174,18 +174,21 @@ jobs:
         run: dbt seed --profiles-dir . --target local
 
       - name: dbt run identity graph chain
-        # int_identity_public_devices is no longer upstream of identity_graph
-        # (ADR-010: Spark owns public-device exclusion); build it explicitly
-        # so verify_local_identity.py can audit it.
-        run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_public_devices --full-refresh
+        # int_identity_shared_devices is not upstream of identity_graph (devices
+        # never merge customers); build it explicitly so verify_local_identity.py
+        # can audit it.
+        run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_shared_devices --full-refresh
 
       - name: dbt test identity graph chain
         # cautious: skip tests that also read unbuilt marts (fact_sales).
+        # The unit-test intersection covers identity changes; step 5 widens it
+        # to every model.
         run: >
           dbt test --profiles-dir . --target local --indirect-selection cautious
-          --select int_identity_public_devices int_identity_resolution identity_graph
+          --select int_identity_shared_devices int_identity_resolution identity_graph
+          int_identity_changes,test_type:unit
 
-      - name: verify identity scenarios (loyalty match, session link, multi-hop, public device, singleton)
+      - name: verify identity scenarios (verified link, two accounts, shared tablet, unverified claim, legacy)
         working-directory: ${{ github.workspace }}
         run: python tests/integration/verify_local_identity.py
 

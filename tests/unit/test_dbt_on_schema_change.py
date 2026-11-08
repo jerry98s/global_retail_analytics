@@ -119,15 +119,16 @@ def test_all_incremental_models_covered() -> None:
     properly (the parametrized test above will catch the missing
     on_schema_change; this test catches accidental removal of the
     incremental materialization itself)."""
-    # Known count as of 2026-08-29 (ADR-010: int_identity_resolution became a
-    # view over the Spark silver.identity_resolution source, dropping the
-    # count from 12 to 11; inventory_position_daily brought it back to 12):
+    # identity_graph is a full rebuild (ADR-003): identifiers that leave the
+    # graph must leave the published table, which delete+insert would keep.
+    # int_session_reconstruction and sessions_daily_platform are full rebuilds
+    # too: sessions of any age can change after late events or identity changes.
+    # dim_customer and int_rfm_scoring are full rebuilds: RFM scores are
+    # relative across customers, and merged-away customer keys must leave.
     #   fact_sales, fact_inventory_snapshot, fact_customer_session,
-    #   dim_customer, dim_product, identity_graph,
-    #   int_rfm_scoring, int_session_reconstruction,
-    #   sales_daily_store, inventory_daily_product_store,
-    #   inventory_position_daily, sessions_daily_platform
-    assert len(_INCREMENTAL_MODELS) == 12, (
-        f"Expected 12 incremental models, found {len(_INCREMENTAL_MODELS)}: "
+    #   dim_product, sales_daily_store, inventory_daily_product_store,
+    #   inventory_position_daily
+    assert len(_INCREMENTAL_MODELS) == 7, (
+        f"Expected 7 incremental models, found {len(_INCREMENTAL_MODELS)}: "
         f"{[str(p.relative_to(_REPO_ROOT)) for p in _INCREMENTAL_MODELS]}"
     )

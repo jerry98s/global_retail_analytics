@@ -17,8 +17,11 @@ Write-Audit-Publish (ADR-009): live marketing/summary Gold is cloned into
 on success. A failing run leaves live `marketing` / `summary` untouched. The
 clone is what lets the incremental models resume from prior state.
 
-The audit gate here is dbt tests; Great Expectations checks the Silver event
-contract hourly via `quality_hourly_ge_checkpoint`.
+The audit gate here is dbt tests plus the row-count gate on this DAG's pending
+tables (baseline `gold_row_counts_baseline_marketing`). An expected shrink, such
+as a full rebuild that drops merged customers, is published only when the run
+lists the table in the `acknowledge_shrink` param. Great Expectations checks
+the Silver event contract hourly via `quality_hourly_ge_checkpoint`.
 
 Owns marketing Gold: dim_customer, fact_customer_session, identity_graph,
 customer_360_view, serving.customer_360_serving, plus the live clickstream
@@ -40,6 +43,7 @@ plus `emr_cluster_id`, `bronze_iceberg_warehouse`, `silver_iceberg_warehouse`,
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
@@ -53,7 +57,11 @@ from metadata_airflow import (
     on_dag_start,
     on_dag_success,
 )
-from wap_publish import clone_marketing_task, publish_marketing_task
+from row_count_reconciliation import (
+    reconcile_gold_row_counts_task,
+    save_row_count_baseline_task,
+)
+from wap_publish import MARKETING_TABLES, clone_marketing_task, publish_marketing_task
 
 # WAP: owned staging + intermediate write in place; marketing/summary mart
 # *tables* route to *_pending via wap_phase. Exclusions:
@@ -67,6 +75,8 @@ SELECT_PENDING = (
 VARS_PENDING = '{"wap_phase": "pending"}'
 
 SELECT_SERVING = "customer_360_view customer_360_serving"
+
+OWNED_TABLES = [f"{schema}.{table}" for schema, table in MARKETING_TABLES]
 
 # ADR-010: Spark + GraphFrames identity resolution on the existing EMR
 # cluster (Spark 3.4 on emr-6.15.0; Iceberg runtime matches Flink's 1.4.3).
@@ -116,6 +126,14 @@ with DAG(
     max_active_runs  = 1,
     tags             = ["batch", "marketing", "hourly"],
     doc_md           = __doc__,
+    params           = {
+        "acknowledge_shrink": Param(
+            [],
+            type="array",
+            items={"type": "string"},
+            description="Owned schema.table names allowed to shrink in this run (row-count gate).",
+        ),
+    },
     on_success_callback = on_dag_success,
     on_failure_callback = on_dag_failure,
 ) as dag:
@@ -164,9 +182,24 @@ with DAG(
         ),
     )
 
+    # Publish gate: an owned table that cannot be read, or shrank without an
+    # acknowledge_shrink entry, fails here.
+    row_count_reconcile = PythonOperator(
+        task_id          = "row_count_reconciliation",
+        python_callable  = reconcile_gold_row_counts_task,
+        op_kwargs        = {"scope": "marketing", "tables": OWNED_TABLES, "save_baseline": False},
+    )
+
     wap_publish = PythonOperator(
         task_id         = "wap_publish_marketing",
         python_callable = publish_marketing_task,
+    )
+
+    # Runs only after a successful publish, so the next gate compares against
+    # counts that actually went live.
+    save_baseline = PythonOperator(
+        task_id         = "save_row_count_baseline",
+        python_callable = save_row_count_baseline_task,
     )
 
     # Build the C360 views against the freshly published live marketing Gold.
@@ -184,6 +217,7 @@ with DAG(
         >> wap_clone
         >> dbt_run_pending
         >> dbt_test_pending
+        >> row_count_reconcile
         >> wap_publish
-        >> dbt_serving
+        >> [save_baseline, dbt_serving]
     )

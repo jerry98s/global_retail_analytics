@@ -41,6 +41,8 @@ views/dim_product_current.sql
 views/customer_360_serving.sql
 ```
 
+`ddl/10_customer_360_columns.sql` is not part of a fresh deploy. Run it once on a cluster whose `identity_graph` still has `is_public_device` or whose `fact_customer_session` predates the session-instance columns. A fresh run of 06 and 09 already has the new shape.
+
 Generate a filled bootstrap script (terraform outputs substituted):
 
 ```powershell

@@ -48,11 +48,20 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts, with a
    only those three schemas; `staging`, `intermediate`, `serving`, and `bronze`
    are never redirected. Gold *views* (`customer_360_view`) stay in the live
    schema — they are not published.
-3. **Audit pending.** `dbt test` and row-count reconciliation run against an
-   explicit `schema.table` list owned by that DAG (`pending_tables`). A blanket
-   schema suffix would point at pending twins the calling DAG never cloned.
+3. **Audit pending.** `dbt test` and the row-count gate run against an
+   explicit `schema.table` list owned by that DAG. A blanket schema suffix
+   would point at pending twins the calling DAG never cloned. Each owning DAG
+   (finance, marketing, catalog scope) runs the gate on its own tables against
+   its own baseline (`gold_row_counts_baseline_<scope>`):
+   - an unreadable table, or a shrink past the threshold (default 20%),
+     blocks the publish;
+   - an expected shrink (a full rebuild that drops merged customers) is
+     published only when the run names the table in `acknowledge_shrink`; it
+     still alerts;
+   - growth alerts but never blocks;
+   - whenever nothing is blocked, the counts become the baseline after publish.
    Great Expectations does not audit Gold; it checks the Silver event
-   contract only, so dbt tests are the single Gold gate.
+   contract only.
 4. **Publish atomically.** After every audit passes, preflight that every
    DAG-owned pending table exists and has the same columns as live, then
    promote the **entire set** in one transaction: `DELETE FROM live.x` +

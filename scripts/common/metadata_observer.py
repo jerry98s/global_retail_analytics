@@ -924,11 +924,11 @@ def record_reconciliation_results(
     warned: bool,
     blocked: Sequence[str] = (),
 ) -> int:
-    """Per-mart rows: ``fail`` blocked publish, ``warn`` only alerted."""
+    """Per-mart rows: ``fail`` blocked publish, ``warn`` alerted or acknowledged shrink."""
     def status_of(key: str, item: dict[str, Any]) -> str:
         if key in blocked:
             return "fail"
-        return "warn" if item.get("status") == "WARN" else "pass"
+        return "warn" if item.get("status") in ("WARN", "acknowledged") else "pass"
 
     results = [
         DqCheckResult(

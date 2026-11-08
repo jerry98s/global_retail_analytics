@@ -55,9 +55,12 @@ Required Airflow Variables (seed from `.\scripts\cloud\deploy_platform.ps1 -Env 
   - alert_topic_arn             : SNS topic for task-failure alerts
 
 Optional Airflow Variables for row-count reconciliation (P2.5):
-  - gold_row_counts_baseline    : JSON map of {"schema.table": row_count}; default "{}".
-                                  Seeded automatically on the first clean run.
+  - gold_row_counts_baseline_finance : JSON map of {"schema.table": row_count}, written
+                                  after each publish that nothing blocked.
   - row_count_delta_threshold   : float in [0,1]; default 0.20 (warn on >20% day-over-day delta).
+
+Run param `acknowledge_shrink`: owned tables allowed to shrink past the
+threshold in this run only (an expected rebuild); the gate still alerts.
 """
 
 from datetime import datetime, timedelta
@@ -154,6 +157,12 @@ with DAG(
             pattern=r"^\d{4}-\d{2}-\d{2}$",
             description="Last POS date to restate (inclusive). Set together with restate_from.",
         ),
+        "acknowledge_shrink": Param(
+            [],
+            type="array",
+            items={"type": "string"},
+            description="Owned schema.table names allowed to shrink in this run (row-count gate).",
+        ),
     },
     user_defined_macros = POS_RESTATEMENT_MACROS,
     on_success_callback = on_dag_success,
@@ -231,11 +240,12 @@ with DAG(
         "dbt_tests", "test", TEST_SELECT, vars_json="{{ pos_dbt_vars(params) }}"
     )
 
-    # Publish gate: an owned table that shrank or cannot be read fails here.
+    # Publish gate: an owned table that cannot be read, or shrank without an
+    # acknowledge_shrink entry, fails here.
     row_count_reconcile = PythonOperator(
         task_id          = "row_count_reconciliation",
         python_callable  = reconcile_gold_row_counts_task,
-        op_kwargs        = {"pending_tables": OWNED_TABLES, "save_baseline": False},
+        op_kwargs        = {"scope": "finance", "tables": OWNED_TABLES, "save_baseline": False},
     )
 
     # Audit gate passed — atomically promote pending marts into live schemas.

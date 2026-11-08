@@ -14,24 +14,34 @@ def _read(path: Path) -> str:
 
 
 class TestClickstreamDbtGapFixes:
-    def test_session_uses_portable_json_and_dateadd(self) -> None:
+    def test_session_keys_on_instance_and_attributes_via_associations(self) -> None:
         src = _read(_DBT / "models/intermediate/int_session_reconstruction.sql")
         assert "json_path_text(" in src
-        assert "dateadd_unit(" in src
         assert "json_extract_path_text(properties" not in src
-        assert "dateadd(hour" not in src
+        assert "session_instance_id" in src
+        assert "source('silver', 'device_session_associations')" in src
+        assert "account_count = 1" in src
+        assert "'client_id'" not in src
 
-    def test_fact_session_uses_dateadd_unit(self) -> None:
+    def test_fact_session_restates_on_fingerprint(self) -> None:
         src = _read(_DBT / "models/marts/marketing/fact_customer_session.sql")
-        assert "dateadd_unit(" in src
-        assert "dateadd(" not in src or "dateadd_unit" in src
+        assert "session_fingerprint <> s.session_fingerprint" in src
+        assert "column_exists(this, 'session_fingerprint')" in src
+        assert "post_hook" in src
+        assert "dateadd(" not in src
 
-    def test_rfm_includes_clickstream_conversions(self) -> None:
+    def test_rfm_counts_confirmed_pos_revenue_only(self) -> None:
         src = _read(_DBT / "models/intermediate/int_rfm_scoring.sql")
-        assert "int_session_reconstruction" in src
-        assert "online_conversions" in src
-        assert "conversion_value" in src
-        assert "full outer join" in src.lower()
+        assert "stg_pos_transactions" in src
+        assert "int_session_reconstruction" not in src
+        assert "current_date" not in src
+
+    def test_consent_has_no_loyalty_default(self) -> None:
+        src = _read(_DBT / "models/marts/marketing/dim_customer.sql")
+        assert "coalesce(c.marketing_consent, false)" in src
+        assert "coalesce(c.analytics_consent, false)" in src
+        consent = _read(_DBT / "models/intermediate/int_customer_consent.sql")
+        assert "client_id" not in consent
 
     def test_identity_graph_runs_in_spark(self) -> None:
         # ADR-010: edges + connected components moved to the Spark

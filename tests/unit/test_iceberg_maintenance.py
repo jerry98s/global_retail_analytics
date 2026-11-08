@@ -20,6 +20,8 @@ def test_every_iceberg_table_is_expired_and_streaming_sinks_compacted():
     for name in (
         "silver.identity_resolution",
         "silver.identity_edges",
+        "silver.loyalty_link_claims",
+        "silver.device_session_associations",
         "silver.clickstream_events",
         "silver.inventory_quarantine",
     ):

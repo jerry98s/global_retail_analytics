@@ -151,6 +151,12 @@ models:
       - name: platform
         tests: [not_null]
       - name: session_count
+        description: All sessions, anonymous included; the conversion_rate denominator.
+        tests:
+          - not_null
+          - non_negative
+      - name: anonymous_session_count
+        description: Sessions with no signed-in account.
         tests:
           - not_null
           - non_negative

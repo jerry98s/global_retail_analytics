@@ -5,53 +5,45 @@
     incremental_strategy='delete+insert',
     on_schema_change='append_new_columns',
     dist='customer_key',
-    sort='session_date_key'
+    sort='session_date_key',
+    post_hook="delete from {{ this }} where session_id not in (select session_id from {{ ref('int_session_reconstruction') }})"
   )
 }}
 
 /*
   Session-grain customer behavior fact.
 
-  Grain: one row per session_id (from int_session_reconstruction).
-  Source: int_session_reconstruction (which handles 30-min inactivity
-          boundaries and producer session_id changes).
+  Grain: one row per session_id (int_session_reconstruction): the producer's
+  session_instance_id, or 'legacy:<client>:<session>' for pre-1.3 events.
+  customer_key is NULL for anonymous and ambiguous sessions
+  (attribution_status says which).
 
-  Incremental strategy: crash-resilient lookback anchored on
-  max(session_start_time) from {{ this }} (NOT current_timestamp).
-  int_session_reconstruction re-emits every session that new events can
-  extend, including long sessions that started before its window, so this
-  model selects on session_end_time >= max(session_start_time) - 2h30m
-  (2h late-event window + 30 min inactivity gap) and `delete+insert` on
-  session_id overwrites them in place. If a run dies after a partial
-  insert, the next run picks up from the max committed session_start_time
-  - no cliff, no skipped hours.
-
-  Lookback cutoff is computed in a CTE (not a scalar subquery under WHERE)
-  so DuckDB accepts the aggregate.
+  Incremental strategy: int_session_reconstruction is rebuilt from full
+  Silver history each run, so this model compares against {{ this }} (the WAP
+  pending clone of live) and delete+inserts every session that is new or whose
+  session_fingerprint changed: a late event, or a customer key that moved
+  after an identity change. The post_hook deletes sessions that no longer
+  exist upstream, which relies on Silver holding the full clickstream history.
 */
 
-{% if is_incremental() %}
-with lookback as (
-    select
-        {{ dateadd_unit(
-            'minute',
-            -150,
-            "coalesce(max(session_start_time), cast('1970-01-01' as timestamp))"
-        ) }} as cutoff_ts
-    from {{ this }}
-),
-sessions as (
+with sessions as (
     select s.*
     from {{ ref('int_session_reconstruction') }} s
-    cross join lookback l
-    where s.session_end_time >= l.cutoff_ts
+    {% if is_incremental() %}
+    left join {{ this }} t
+      on t.session_id = s.session_id
+    {# The cloned table predates session_fingerprint. Until the column exists,
+       restate every session; the post_hook drops ids that no longer exist. #}
+    where t.session_id is null
+       {% if column_exists(this, 'session_fingerprint') %}
+       or t.session_fingerprint is null
+       or t.session_fingerprint <> s.session_fingerprint
+       {% else %}
+       or true
+       {% endif %}
+    {% endif %}
 )
-{% else %}
-with sessions as (
-    select *
-    from {{ ref('int_session_reconstruction') }}
-)
-{% endif %}
+
 select
     s.session_id,
     s.session_date_key,
@@ -65,5 +57,9 @@ select
     s.converted,
     s.order_id,
     s.funnel_depth,
-    s.platform
+    s.platform,
+    s.producer_session_id,
+    s.attribution_status,
+    s.is_legacy,
+    s.session_fingerprint
 from sessions s

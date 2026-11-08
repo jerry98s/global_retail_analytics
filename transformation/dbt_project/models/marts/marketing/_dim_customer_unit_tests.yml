@@ -1,0 +1,26 @@
+unit_tests:
+  - name: dim_customer_consent_is_explicit_only
+    description: >
+      100 revoked marketing and kept analytics. 200 (account only) and 300
+      (loyalty member) never made a statement, so both purposes are false:
+      loyalty membership is not consent.
+    model: dim_customer
+    given:
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: loyalty_id, identifier_value: L1, customer_key: 100}
+          - {identifier_type: customer_id, identifier_value: C1, customer_key: 100}
+          - {identifier_type: customer_id, identifier_value: C2, customer_key: 200}
+          - {identifier_type: loyalty_id, identifier_value: L3, customer_key: 300}
+      - input: ref('int_rfm_scoring')
+        rows:
+          - {customer_key: 100, recency_days: 3, frequency_orders: 2, monetary_value: 1200, rfm_segment: loyal}
+      - input: ref('int_customer_consent')
+        format: sql
+        rows: |
+          select 100 as customer_key, false as marketing_consent, true as analytics_consent
+    expect:
+      rows:
+        - {customer_key: 100, loyalty_id: L1, loyalty_tier: gold, rfm_segment: loyal, total_lifetime_value: 1200, marketing_consent: false, analytics_consent: true}
+        - {customer_key: 200, loyalty_id: null, loyalty_tier: standard, rfm_segment: general, total_lifetime_value: 0, marketing_consent: false, analytics_consent: false}
+        - {customer_key: 300, loyalty_id: L3, loyalty_tier: standard, rfm_segment: general, total_lifetime_value: 0, marketing_consent: false, analytics_consent: false}

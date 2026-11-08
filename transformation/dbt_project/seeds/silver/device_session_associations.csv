@@ -1,0 +1,11 @@
+client_id,session_instance_id,customer_id,valid_from,valid_to,end_reason,evidence,event_count,is_ambiguous
+c-aaa,si-a1,C1001,2026-07-01 10:01:00,2026-07-01 10:04:00,logout,verified_login,3,false
+c-bbb,si-b1,C2002,2026-07-01 11:00:00,2026-07-01 11:02:00,logout,verified_login,2,false
+c-ccc,si-c1,C2003,2026-07-01 11:30:00,2026-07-01 11:31:00,logout,verified_login,2,false
+c-ddd,si-d1,C4001,2026-07-01 13:00:00,2026-07-01 13:00:00,last_event,verified_login,1,false
+c-eee,si-e1,C5001,2026-07-01 14:00:00,2026-07-01 14:00:00,last_event,verified_login,1,false
+c-eee,si-e2,C5001,2026-07-01 15:00:00,2026-07-01 15:00:00,last_event,signed_in_session,1,false
+c-fff,si-f1,C6001,2026-07-01 16:00:00,2026-07-01 16:00:00,last_event,verified_login,1,true
+c-fff,si-f1,C6002,2026-07-01 16:01:00,2026-07-01 16:01:00,last_event,verified_login,1,true
+c-tab,si-t1,C3001,2026-07-01 12:00:00,2026-07-01 12:05:00,logout,verified_login,2,false
+c-tab,si-t2,C3002,2026-07-01 12:10:00,2026-07-01 12:12:00,logout,verified_login,3,false

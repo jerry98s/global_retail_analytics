@@ -31,7 +31,6 @@ GOLD_INCREMENTAL_MODELS = [
     "models/marts/summary/sales_daily_store.sql",
     "models/marts/summary/inventory_daily_product_store.sql",
     "models/marts/summary/inventory_position_daily.sql",
-    "models/marts/summary/sessions_daily_platform.sql",
 ]
 GOLD_DIST_SORT = {
     "models/marts/finance/fact_sales.sql": ("product_key", "date_key"),
@@ -442,7 +441,8 @@ class TestDagWapContract:
         # Pending vars come from pos_restatement.pos_dbt_vars (tested there).
         assert src.count("{{ pos_dbt_vars(params) }}") == 2
         assert "wap_publish" in src
-        assert "pending_tables" in src
+        assert '"scope": "finance", "tables": OWNED_TABLES' in src
+        assert src.index("row_count_reconcile\n") < src.index(">> wap_publish")
         # dbt tests are the publish gate; GE no longer re-audits Gold.
         assert "--pending-tables" not in src
         assert src.index("dbt_tests") < src.index("wap_publish_gold")
@@ -461,6 +461,17 @@ class TestDagWapContract:
         assert src.index("wap_clone") < src.index("dbt_run_pending")
         assert src.index("wap_publish") < src.index("dbt_serving")
         assert "max_active_runs  = 1" in src
+
+    @pytest.mark.parametrize("dag, scope, publish", [
+        ("marketing_hourly_customer_360_pipeline.py", "marketing", "wap_publish"),
+        ("catalog_bihourly_product_scd2_refresh.py", "catalog", "publish_dim_product"),
+    ])
+    def test_owning_dag_gates_its_own_tables_before_publish(self, dag, scope, publish) -> None:
+        src = _read(_DAGS / dag)
+        chain = src.rsplit("metadata_start\n", 1)[1]
+        assert f'"scope": "{scope}", "tables": OWNED_TABLES, "save_baseline": False' in src
+        assert chain.index("row_count_reconcile") < chain.index(publish) < chain.index("save_baseline")
+        assert '"acknowledge_shrink": Param(' in src
 
     def test_ci_compiles_pending_finance_catalog_and_marketing(self) -> None:
         src = _read(_REPO / ".github" / "workflows" / "ci.yml")

@@ -5,6 +5,7 @@ SCD2 product refresh DAG.
 from datetime import datetime, timedelta
 
 from airflow import DAG
+from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 
@@ -16,12 +17,18 @@ from metadata_airflow import (
     on_dag_start,
     on_dag_success,
 )
-from wap_publish import clone_dim_product_task, publish_dim_product_task
+from row_count_reconciliation import (
+    reconcile_gold_row_counts_task,
+    save_row_count_baseline_task,
+)
+from wap_publish import DIM_PRODUCT_TABLES, clone_dim_product_task, publish_dim_product_task
 
 WAP_VARS = '{"wap_phase": "pending"}'
 # int_product_catalog builds live (intermediate is never WAP-routed);
 # dim_product builds into marketing_pending.
 SELECT = select(CATALOG_LIVE_MODELS, "dim_product")
+
+OWNED_TABLES = [f"{schema}.{table}" for schema, table in DIM_PRODUCT_TABLES]
 
 DAG_DOC_MD = """
 ## catalog_bihourly_product_scd2_refresh
@@ -56,6 +63,12 @@ same effective_from timestamp will close + re-open the same SCD2 row, so
 operators should only force-rerun this DAG if the upstream catalog source
 has actually changed. There is no full-refresh needed.
 
+### Row-count gate
+SCD2 history only grows, so `row_count_reconciliation` blocks the publish when
+pending `dim_product` is unreadable or shrank past the threshold against
+`gold_row_counts_baseline_catalog`. A deliberate shrink is published only when
+the run lists `marketing.dim_product` in the `acknowledge_shrink` param.
+
 ### Recovery
 If `dbt_test_dim_product` fails:
 1. Inspect the failing test (often `dbt_utils.unique_combination_of_columns`
@@ -88,6 +101,14 @@ with DAG(
     catchup=False,
     tags=["dbt", "scd2"],
     doc_md=DAG_DOC_MD,
+    params={
+        "acknowledge_shrink": Param(
+            [],
+            type="array",
+            items={"type": "string"},
+            description="Owned schema.table names allowed to shrink in this run (row-count gate).",
+        ),
+    },
     on_success_callback=on_dag_success,
     on_failure_callback=on_dag_failure,
 ) as dag:
@@ -113,9 +134,20 @@ with DAG(
         bash_command=dbt_task_bash(f"test --select {SELECT} --vars '{WAP_VARS}'"),
     )
 
+    row_count_reconcile = PythonOperator(
+        task_id="row_count_reconciliation",
+        python_callable=reconcile_gold_row_counts_task,
+        op_kwargs={"scope": "catalog", "tables": OWNED_TABLES, "save_baseline": False},
+    )
+
     publish_dim_product = PythonOperator(
         task_id="wap_publish_dim_product",
         python_callable=publish_dim_product_task,
+    )
+
+    save_baseline = PythonOperator(
+        task_id="save_row_count_baseline",
+        python_callable=save_row_count_baseline_task,
     )
 
     (
@@ -123,5 +155,7 @@ with DAG(
         >> clone_dim_product
         >> refresh_dim_product
         >> test_dim_product
+        >> row_count_reconcile
         >> publish_dim_product
+        >> save_baseline
     )

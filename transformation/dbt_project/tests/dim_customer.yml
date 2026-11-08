@@ -41,10 +41,10 @@ models:
               arguments:
                 min_value: 0
       - name: marketing_consent
-        description: "Marketing consent flag. The customer's latest explicit statement wins (an opt-out overrides loyalty); with no statement, true for loyalty members."
+        description: "Marketing consent flag: the customer's latest explicit marketing statement; false with no statement (loyalty membership is not consent)."
         tests: [not_null]
       - name: analytics_consent
-        description: "Analytics consent flag. The latest explicit statement wins; with no statement, true for authenticated or loyalty customers."
+        description: "Analytics consent flag: the customer's latest explicit analytics statement; false with no statement."
         tests: [not_null]
       - name: last_updated_at
         description: "Timestamp of last dbt refresh (current_timestamp at run time)."
@@ -54,7 +54,7 @@ models:
     description: "Session-grain customer behavior fact. One row per session_id from int_session_reconstruction."
     columns:
       - name: session_id
-        description: "Session identifier (producer session_id or reconstructed from 30-min inactivity boundary)."
+        description: "Session key: the producer's session_instance_id (envelope 1.3+), or 'legacy:<client_id>:<producer session_id>' for older events."
         tests: [not_null_unique]
       - name: session_date_key
         description: "Session start date key (YYYYMMDD); joins to dim_date.date_key."
@@ -65,7 +65,7 @@ models:
                 to: source('gold_finance', 'dim_date')
                 field: date_key
       - name: customer_key
-        description: "Resolved customer key. NULL for anonymous sessions (no loyalty_id and no client_id match in int_identity_resolution)."
+        description: "Resolved customer key when exactly one account signed in during the session (login or remembered sign-in); applies to every event in the session. NULL for anonymous, ambiguous and legacy sessions."
       - name: client_id
         description: "Client device identifier from clickstream."
         tests: [not_null]
@@ -86,6 +86,21 @@ models:
         description: "Maximum funnel depth reached (1=page_view, 2=product_view, 3=add_to_cart, 4=checkout_start, 5=checkout)."
       - name: platform
         description: "Client platform (web, ios, android) from clickstream."
+      - name: producer_session_id
+        description: "The producer's session_id (several session instances can share one)."
+      - name: attribution_status
+        description: "attributed (one account), anonymous (none) or ambiguous (more than one; customer_key NULL)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [attributed, anonymous, ambiguous]
+      - name: is_legacy
+        description: "True for sessions built from pre-1.3 events, which carry no session_instance_id."
+        tests: [not_null]
+      - name: session_fingerprint
+        description: "Hash of the stored session columns; a change restates the row."
+        tests: [not_null]
 
   - name: customer_360_view
     description: "Consent-gated Customer 360 serving view at (customer_key, session_id) grain. dim_customer LEFT JOIN fact_customer_session: one row per consented customer x session; customers with no sessions appear once with NULL session columns. Filtered to marketing_consent = true. serving.customer_360_serving rolls this up to one row per customer."
@@ -129,7 +144,7 @@ models:
               - session_id
 
   - name: identity_graph
-    description: "Physical identity graph (identifier -> customer_key). Public devices excluded; see int_identity_resolution for the audit/full version."
+    description: "Physical identity graph (customer_id / loyalty_id -> customer_key), rebuilt in full each run. Devices are never identities; see source silver.device_session_associations."
     columns:
       - name: identifier_type
         description: "Identifier namespace."
@@ -137,13 +152,13 @@ models:
           - not_null
           - identifier_type_accepted_values
       - name: identifier_value
-        description: "Identifier value (loyalty id, customer id, or client id)."
+        description: "Identifier value (loyalty id or customer id)."
         tests: [not_null]
       - name: customer_key
         description: "Resolved customer surrogate key."
         tests: [not_null]
       - name: confidence_score
-        description: "Resolution confidence in [0, 1] per ADR-003. 1.0 for loyalty anchors, 0.85 for session-linked clients, 0.5 for device-only, 0.3 for public devices."
+        description: "Resolution confidence in [0, 1] per ADR-003. 1.0 for loyalty ids and accounts verified to one, 0.9 for standalone accounts."
         tests:
           - not_null
           - dbt_utils.accepted_range:
@@ -151,7 +166,7 @@ models:
                 min_value: 0
                 max_value: 1
       - name: resolution_method
-        description: "Audit label describing how the identifier was resolved. Note: public_device_excluded is intentionally absent from accepted_values — those rows are filtered out upstream in int_identity_resolution, and this test guards against filter regressions."
+        description: "Audit label describing how the identifier was resolved."
         tests:
           - not_null
           - accepted_values:
@@ -161,16 +176,6 @@ models:
                   - 'loyalty_member'
                   - 'loyalty_match'
                   - 'customer_id_standalone'
-                  - 'session_linked'
-                  - 'device_only'
-                  - 'unknown'
-      - name: is_public_device
-        description: "True for client_ids that hit the public-device threshold (excluded from identity merge but kept for audit). Always false in identity_graph (filtered out upstream in int_identity_resolution)."
-        tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: [false]
       - name: is_active
         description: "Row activity flag for future soft-delete support. Currently always true."
         tests: [not_null]

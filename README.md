@@ -394,7 +394,8 @@ AWS production deployment or a measured 10k events/s load test.
 | BI | `serving.customer_360_serving` | consent-gated Customer 360 |
 
 - SCD Type 2 **only** on `dim_product`.
-- Identity: deterministic graph; public devices excluded from C360 merges —
+- Identity: an account merges with a loyalty card only when that account
+  verified the card. Devices never merge customers —
   [identity-resolution.md](./docs/data-model/identity-resolution.md).
 - Full grains/ERD: [dimensional-model.md](./docs/data-model/dimensional-model.md).
 

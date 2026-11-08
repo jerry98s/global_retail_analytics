@@ -38,7 +38,7 @@ cd transformation\dbt_project
 
 - `staging/`: `source()` cleanup only. `intermediate/`: business logic, no raw `source()`.
 - `marts/`: no Bronze/Silver `source()`. A mart may `ref()` staging when the source grain is the fact (POS lines).
-- Grains: `fact_sales` `(transaction_id, line_item_number)`; `fact_inventory_snapshot` `(snapshot_date_key, snapshot_hour, product_key, store_key)`; `fact_customer_session` `session_id`.
+- Grains: `fact_sales` `(transaction_id, line_item_number)`; `fact_inventory_snapshot` `(snapshot_date_key, snapshot_hour, product_key, store_key)`; `fact_customer_session` `session_id` (= `session_instance_id`, or `legacy:<client>:<session>` before envelope 1.3). It restates on `session_fingerprint`; do not add a time lookback.
 - Shared SQL uses `datediff_unit`, `dateadd_unit`, `json_path_text`, `date_key_from_date`, `date_from_date_key`, `record_hash_sha256`, `generate_product_key`, `generate_customer_key`, `generate_surrogate_key`.
 - YAML descriptions and column tests. Incrementals need `unique_key`, strategy, `on_schema_change`. Gold `dist`/`sort` match `transformation/redshift/ddl/`. `+bind: false`. `dim_date` / `dim_store` are never WAP-published.
 - Identity source is `silver.identity_resolution`; `int_identity_resolution` is a thin view. Spark owns the graph.

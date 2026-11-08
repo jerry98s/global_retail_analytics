@@ -1,0 +1,41 @@
+unit_tests:
+  - name: int_identity_changes_diffs_against_the_published_graph
+    description: >
+      C2 merged into L1's customer (rekeyed), C3 is new (added), the old
+      device row is no longer an identity (removed), and C1 is unchanged so
+      it is not listed.
+    model: int_identity_changes
+    overrides:
+      macros:
+        relation_exists: true
+    given:
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: customer_id, identifier_value: C1, customer_key: 100}
+          - {identifier_type: customer_id, identifier_value: C2, customer_key: 100}
+          - {identifier_type: customer_id, identifier_value: C3, customer_key: 300}
+      - input: source('gold_marketing', 'identity_graph')
+        rows:
+          - {identifier_type: customer_id, identifier_value: C1, customer_key: 100}
+          - {identifier_type: customer_id, identifier_value: C2, customer_key: 200}
+          - {identifier_type: client_id, identifier_value: D1, customer_key: 100}
+    expect:
+      rows:
+        - {identifier_type: customer_id, identifier_value: C2, change_type: rekeyed, published_customer_key: 200, current_customer_key: 100}
+        - {identifier_type: customer_id, identifier_value: C3, change_type: added, published_customer_key: null, current_customer_key: 300}
+        - {identifier_type: client_id, identifier_value: D1, change_type: removed, published_customer_key: 100, current_customer_key: null}
+
+  - name: int_identity_changes_before_first_publish_lists_everything_as_added
+    model: int_identity_changes
+    overrides:
+      macros:
+        relation_exists: false
+    given:
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: loyalty_id, identifier_value: L1, customer_key: 100}
+      - input: source('gold_marketing', 'identity_graph')
+        rows: []
+    expect:
+      rows:
+        - {identifier_type: loyalty_id, identifier_value: L1, change_type: added, published_customer_key: null, current_customer_key: 100}

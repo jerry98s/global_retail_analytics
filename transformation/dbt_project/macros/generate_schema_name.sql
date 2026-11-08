@@ -60,6 +60,12 @@
     {%- endif -%}
 {%- endmacro %}
 
+{# True when the relation exists in the warehouse. A macro so dbt unit tests
+   can override it; parse time (execute = false) reports false. #}
+{% macro relation_exists(relation) -%}
+    {{- return(execute and adapter.get_relation(database=relation.database, schema=relation.schema, identifier=relation.identifier) is not none) -}}
+{%- endmacro %}
+
 {# Adapter-aware datediff: Redshift takes bare unit keyword, DuckDB takes quoted string. #}
 {% macro datediff_unit(unit, start_expr, end_expr) %}
     {% if target.type == 'duckdb' -%}

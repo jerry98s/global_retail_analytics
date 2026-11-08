@@ -215,8 +215,11 @@ inventory upserts). Flink writes `silver.inventory_hourly`; Spark rebuilds
 `silver.inventory_events` from the Bronze ledger. `fact_inventory_snapshot`
 uses Spark's events for hours Spark has covered and Flink's hours after that
 (ADR-012).
-The Spark GraphFrames job (ADR-010) writes `silver.identity_resolution` +
-`silver.identity_edges` hourly from bronze clickstream + POS.
+The Spark GraphFrames job (ADR-010) writes `silver.identity_resolution`,
+`silver.identity_edges`, `silver.loyalty_link_claims` and
+`silver.device_session_associations` hourly from bronze clickstream + POS.
+Only verified account-to-loyalty logins merge customers; devices never do
+(ADR-003).
 
 Spark pins Bronze snapshots and rebuilds `silver.clickstream_events` and
 `silver.inventory_events`, plus quarantine/duplicate audits, before identity.

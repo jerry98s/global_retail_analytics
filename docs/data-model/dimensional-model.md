@@ -12,7 +12,10 @@ This project uses a three-source Kimball model with shared conformed dimensions.
 
 - `fact_sales`: one row per `(transaction_id, line_item_number)`
 - `fact_inventory_snapshot`: one row per `(snapshot_date_key, snapshot_hour, product_key, store_key)`
-- `fact_customer_session`: one row per `session_id`
+- `fact_customer_session`: one row per `session_id` (the producer's
+  `session_instance_id`; one legacy session per client and producer session
+  for pre-1.3 events). `customer_key` is NULL unless exactly one account
+  signed in during the session.
 
 ## Dimensions
 

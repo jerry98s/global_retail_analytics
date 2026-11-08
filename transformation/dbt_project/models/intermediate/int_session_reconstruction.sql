@@ -1,115 +1,57 @@
--- int_session_reconstruction.sql
--- Groups raw clickstream events into sessions.
--- Session boundary: 30 minutes of inactivity OR new producer session_id.
--- Grain: one row per session per client_id.
---
--- Incremental: events at or after late_cutoff (max session_end_time - 2h)
--- are new. A session that ended within 30 minutes of late_cutoff can still be
--- extended by them, so its client's events are re-read from that session's
--- start; rebuilding it from the new tail only would overwrite the stored
--- session with a truncated one. Events older than late_cutoff that arrive
--- later are not picked up (2h late-event window).
+{{ config(materialized='table') }}
 
-{{
-  config(
-    materialized = 'incremental',
-    unique_key   = 'session_id',
-    on_schema_change = 'append_new_columns'
-  )
-}}
+/*
+  One row per session, rebuilt in full from canonical Silver each run.
 
-{% if is_incremental() %}
-with bounds as (
+  Session key:
+    - v1.3+ events: the producer-issued session_instance_id. The producer
+      starts a new instance after 30 idle minutes, a logout or an account
+      switch, so dbt does not derive boundaries. A late event joins its
+      instance by id, so there is no late-event window.
+    - Pre-1.3 events (no instance id): one legacy session per
+      (client_id, producer session_id), keyed 'legacy:<client>:<session>'.
+      Legacy sessions are always anonymous.
+
+  Attribution (ADR-003): a session gets a customer_key only when
+  silver.device_session_associations holds exactly one account for the
+  instance, whether from a login or a remembered sign-in. Every event in the
+  session counts for that customer, including events before the login.
+  No account: anonymous. More than one: ambiguous. Both keep
+  customer_key NULL and stay in conversion denominators.
+
+  session_fingerprint changes whenever a column fact_customer_session stores
+  changes (late event, rekeyed customer), which drives its restatement.
+*/
+
+with events as (
     select
-        {{ dateadd_unit(
-            'hour',
-            -2,
-            "coalesce(max(session_end_time), cast('1970-01-01' as timestamp))"
-        ) }} as late_cutoff
-    from {{ this }}
+        {{ session_key() }}                 as session_key,
+        session_instance_id,
+        session_id                          as producer_session_id,
+        client_id,
+        event_time,
+        event_type,
+        platform,
+        properties
+    from {{ ref('stg_clickstream_events') }}
 ),
 
-open_sessions as (
+accounts as (
     select
-        t.client_id,
-        min(t.session_start_time) as restart_ts
-    from {{ this }} t
-    cross join bounds b
-    where t.session_end_time >= {{ dateadd_unit('minute', -30, 'b.late_cutoff') }}
-    group by t.client_id
-),
-
-events_with_lag as (
-{% else %}
-with events_with_lag as (
-{% endif %}
-    select
-        e.event_id,
-        e.client_id,
-        i.customer_key,
-        e.event_time,
-        e.event_type,
-        e.session_id,
-        e.platform,
-        e.properties,
-        lag(event_time) over (
-            partition by e.client_id
-            order by e.event_time
-        ) as prev_event_time,
-        lag(session_id) over (
-            partition by e.client_id
-            order by e.event_time
-        ) as prev_session_id
-    from {{ ref('stg_clickstream_events') }} e
-    left join {{ ref('int_identity_resolution') }} i
-      on i.identifier_type = case
-            when e.customer_id is not null then 'customer_id'
-            else 'client_id'
-         end
-     and i.identifier_value = coalesce(e.customer_id, e.client_id)
-    {% if is_incremental() %}
-    cross join bounds b
-    left join open_sessions o
-      on o.client_id = e.client_id
-    where e.event_time >= case
-            when o.restart_ts is not null and o.restart_ts < b.late_cutoff
-            then o.restart_ts
-            else b.late_cutoff
-          end
-    {% endif %}
-),
-
-session_boundaries as (
-    select
-        *,
-        case
-            when {{ datediff_unit('minute', 'prev_event_time', 'event_time') }} > 30
-              or prev_session_id != session_id
-              or prev_event_time is null
-            then 1
-            else 0
-        end as is_session_start
-    from events_with_lag
-),
-
-sessions_numbered as (
-    select
-        *,
-        sum(is_session_start) over (
-            partition by client_id
-            order by event_time
-            rows unbounded preceding
-        ) as session_number
-    from session_boundaries
+        session_instance_id,
+        count(distinct customer_id) as account_count,
+        max(customer_id)            as customer_id
+    from {{ source('silver', 'device_session_associations') }}
+    group by session_instance_id
 ),
 
 session_summary as (
     select
-        client_id,
-        session_number,
-        max(session_id)                                     as session_id,
-        -- Prefer authenticated customer_key (non-null wins)
-        max(customer_key)                                   as customer_key,
+        session_key                                         as session_id,
+        max(session_instance_id)                            as session_instance_id,
+        max(producer_session_id)                            as producer_session_id,
+        max(client_id)                                      as client_id,
+        max(session_instance_id) is null                    as is_legacy,
         min(event_time)                                     as session_start_time,
         max(event_time)                                     as session_end_time,
         {{ datediff_unit('second', 'min(event_time)', 'max(event_time)') }} as session_duration_seconds,
@@ -137,13 +79,46 @@ session_summary as (
         end)                                                as funnel_depth,
         max(platform)                                       as platform,
         cast(min(event_time) as date)                       as session_date
-    from sessions_numbered
-    group by client_id, session_number
+    from events
+    group by session_key
+),
+
+attributed as (
+    select
+        s.*,
+        case when a.account_count = 1 then i.customer_key end as customer_key,
+        case
+            when coalesce(a.account_count, 0) = 0 then 'anonymous'
+            when a.account_count > 1 then 'ambiguous'
+            else 'attributed'
+        end                                                   as attribution_status
+    from session_summary s
+    left join accounts a
+      on a.session_instance_id = s.session_instance_id
+    left join {{ ref('int_identity_resolution') }} i
+      on i.identifier_type = 'customer_id'
+     and i.identifier_value = a.customer_id
 )
 
 select
     s.*,
-    d.date_key as session_date_key
-from session_summary s
+    d.date_key as session_date_key,
+    {{ record_hash_sha256(
+        "coalesce(cast(d.date_key as varchar), '') || '|' ||"
+        ~ " cast(s.session_start_time as varchar) || '|' ||"
+        ~ " cast(s.session_end_time as varchar) || '|' ||"
+        ~ " cast(s.event_count as varchar) || '|' ||"
+        ~ " coalesce(cast(s.customer_key as varchar), '') || '|' ||"
+        ~ " s.attribution_status || '|' ||"
+        ~ " cast(s.page_view_count as varchar) || '|' ||"
+        ~ " cast(s.product_view_count as varchar) || '|' ||"
+        ~ " cast(s.add_to_cart_count as varchar) || '|' ||"
+        ~ " case when s.converted then '1' else '0' end || '|' ||"
+        ~ " coalesce(s.order_id, '') || '|' ||"
+        ~ " coalesce(cast(s.conversion_value as varchar), '') || '|' ||"
+        ~ " cast(s.funnel_depth as varchar) || '|' ||"
+        ~ " coalesce(s.platform, '')"
+    ) }} as session_fingerprint
+from attributed s
 left join {{ source('gold_finance', 'dim_date') }} d
     on s.session_date = d.full_date

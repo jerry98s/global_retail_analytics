@@ -1,79 +1,38 @@
-{{
-  config(
-    materialized='view'
-  )
-}}
+{{ config(materialized='view') }}
 
 /*
-  Latest explicit consent statement per customer_key.
+  Current consent per customer_key and purpose: the latest explicit statement
+  in int_consent_events. NULL means the customer never stated that purpose;
+  dim_customer treats NULL as no consent.
 
-  Source: marketing_consent / analytics_consent in clickstream event
-  properties (login/checkout). Each flag takes the most recent event that
-  states it, so a later opt-out overrides an earlier opt-in. NULL means the
-  customer never stated that preference; dim_customer applies the defaults.
+  When accounts merge into one customer, the latest statement across them
+  wins for each purpose.
 */
 
--- One equi-join per identifier type. An OR across the two join keys forces
--- a nested-loop join (events x identities). Each identity row has exactly
--- one identifier_type, so UNION ALL returns the same rows.
-with matched as (
-    select i.customer_key, e.event_time, e.event_id, e.properties
-    from {{ ref('stg_clickstream_events') }} e
-    inner join {{ ref('int_identity_resolution') }} i
-      on i.identifier_type = 'customer_id'
-     and i.identifier_value = e.customer_id
-    union all
-    select i.customer_key, e.event_time, e.event_id, e.properties
-    from {{ ref('stg_clickstream_events') }} e
-    inner join {{ ref('int_identity_resolution') }} i
-      on i.identifier_type = 'client_id'
-     and i.identifier_value = e.client_id
-),
-
-statements as (
+with ranked as (
     select
         customer_key,
+        purpose,
+        is_granted,
         event_time,
-        event_id,
-        lower({{ json_path_text('properties', 'marketing_consent') }}) as marketing_raw,
-        lower({{ json_path_text('properties', 'analytics_consent') }}) as analytics_raw
-    from matched
-),
-
-marketing as (
-    select
-        customer_key,
-        marketing_raw in ('true', '1', 'yes') as explicit_marketing_consent,
+        consent_source,
         row_number() over (
-            partition by customer_key order by event_time desc, event_id desc
+            partition by customer_key, purpose
+            order by event_time desc, event_id desc
         ) as rn
-    from statements
-    where marketing_raw in ('true', '1', 'yes', 'false', '0', 'no')
-),
-
-analytics as (
-    select
-        customer_key,
-        analytics_raw in ('true', '1', 'yes') as explicit_analytics_consent,
-        row_number() over (
-            partition by customer_key order by event_time desc, event_id desc
-        ) as rn
-    from statements
-    where analytics_raw in ('true', '1', 'yes', 'false', '0', 'no')
-),
-
-customers as (
-    select distinct customer_key from statements
+    from {{ ref('int_consent_events') }}
 )
 
 select
-    c.customer_key,
-    m.explicit_marketing_consent,
-    a.explicit_analytics_consent
-from customers c
-left join marketing m
-  on c.customer_key = m.customer_key
- and m.rn = 1
-left join analytics a
-  on c.customer_key = a.customer_key
- and a.rn = 1
+    customer_key,
+    max(case when purpose = 'marketing' then case when is_granted then 1 else 0 end end) = 1
+        as marketing_consent,
+    max(case when purpose = 'marketing' then event_time end)     as marketing_consent_at,
+    max(case when purpose = 'marketing' then consent_source end) as marketing_consent_source,
+    max(case when purpose = 'analytics' then case when is_granted then 1 else 0 end end) = 1
+        as analytics_consent,
+    max(case when purpose = 'analytics' then event_time end)     as analytics_consent_at,
+    max(case when purpose = 'analytics' then consent_source end) as analytics_consent_source
+from ranked
+where rn = 1
+group by customer_key

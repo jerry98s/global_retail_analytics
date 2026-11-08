@@ -50,10 +50,8 @@ LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_hourly/manifes
 SELECT COUNT(*) AS inventory_hourly_rows FROM silver.inventory_hourly;
 
 -- ---------------------------------------------------------------------------
--- silver.identity_resolution + silver.identity_edges (ADR-010)
--- Written by the Spark GraphFrames job as Iceberg tables plus exports.
--- dbt reads identity_resolution via source('silver', 'identity_resolution')
--- (int_identity_resolution view).
+-- Identity exports (ADR-010). Column order matches the Spark select, and
+-- publish() appends export_run_id last. Devices are not graph nodes.
 -- ---------------------------------------------------------------------------
 DROP TABLE IF EXISTS silver.identity_resolution;
 CREATE EXTERNAL TABLE silver.identity_resolution (
@@ -62,7 +60,6 @@ CREATE EXTERNAL TABLE silver.identity_resolution (
     customer_key        bigint,
     confidence_score    decimal(5,4),
     resolution_method   varchar(100),
-    is_public_device    boolean,
     component_rep_node  varchar(320),
     component_rep_type  varchar(50),
     computed_at         timestamp,
@@ -76,11 +73,43 @@ CREATE EXTERNAL TABLE silver.identity_edges (
     src                 varchar(320),
     dst                 varchar(320),
     edge_type           varchar(50),
-    last_observed_at    timestamp,
+    first_verified_at   timestamp,
+    last_verified_at    timestamp,
+    evidence_event_id   varchar(256),
     export_run_id       varchar(64)
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/identity_edges/manifest';
+
+DROP TABLE IF EXISTS silver.loyalty_link_claims;
+CREATE EXTERNAL TABLE silver.loyalty_link_claims (
+    event_id              varchar(256),
+    event_time            timestamp,
+    client_id             varchar(256),
+    session_instance_id   varchar(256),
+    customer_id           varchar(256),
+    loyalty_id            varchar(256),
+    is_verified           boolean,
+    export_run_id         varchar(64)
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/loyalty_link_claims/manifest';
+
+DROP TABLE IF EXISTS silver.device_session_associations;
+CREATE EXTERNAL TABLE silver.device_session_associations (
+    client_id             varchar(256),
+    session_instance_id   varchar(256),
+    customer_id           varchar(256),
+    valid_from            timestamp,
+    valid_to              timestamp,
+    end_reason            varchar(32),
+    evidence              varchar(64),
+    event_count           bigint,
+    is_ambiguous          boolean,
+    export_run_id         varchar(64)
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/device_session_associations/manifest';
 
 SELECT COUNT(*) AS identity_resolution_rows FROM silver.identity_resolution;
 

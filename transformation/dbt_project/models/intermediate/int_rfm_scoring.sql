@@ -1,25 +1,17 @@
-{{
-  config(
-    materialized='incremental',
-    unique_key='customer_key',
-    incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
-  )
-}}
+{{ config(materialized='table') }}
 
 /*
-  RFM scoring by customer_key.
+  RFM scoring by customer_key from confirmed POS transactions only.
 
-  Monetary / frequency / recency combine:
-    - POS: stg_pos_transactions via loyalty_id → int_identity_resolution
-    - Clickstream: converted sessions from int_session_reconstruction
-      (conversion_value = checkout cart_value, frequency = distinct order_id
-      or session_id when order_id is null)
+  Online checkout observations are not revenue until reconciled to a POS
+  transaction (int_order_reconciliation), so they are not in monetary_value
+  or frequency.
 
-  Omnichannel note: POS net_revenue and online cart_value are summed. If the
-  same physical sale appears in both sources, monetary_value can double-count.
-  Prefer POS as the finance source of truth; clickstream conversion fills gaps
-  for customers who convert online without a linked POS loyalty ticket.
+  Scores run 1 (worst) to 5 (best): most recent, most frequent and highest
+  spend get 5. Recency is measured from the latest non-voided transaction
+  date in the data, not the run date, so a replay scores the same.
+  Rebuilt in full: scores are relative across all customers, and customer
+  keys that leave the identity graph must leave this table.
 */
 
 with pos_sales as (
@@ -36,46 +28,23 @@ with pos_sales as (
     group by i.customer_key
 ),
 
-online_conversions as (
-    select
-        s.customer_key,
-        max(cast(s.session_start_time as date)) as last_purchase_date,
-        count(distinct coalesce(nullif(s.order_id, ''), s.session_id)) as frequency_orders,
-        cast(sum(coalesce(s.conversion_value, 0)) as decimal(18, 2)) as monetary_value
-    from {{ ref('int_session_reconstruction') }} s
-    where s.converted
-      and s.customer_key is not null
-    group by s.customer_key
-),
-
-sales as (
-    select
-        coalesce(p.customer_key, o.customer_key) as customer_key,
-        case
-            when p.last_purchase_date is null then o.last_purchase_date
-            when o.last_purchase_date is null then p.last_purchase_date
-            when p.last_purchase_date >= o.last_purchase_date then p.last_purchase_date
-            else o.last_purchase_date
-        end as last_purchase_date,
-        coalesce(p.frequency_orders, 0) + coalesce(o.frequency_orders, 0) as frequency_orders,
-        coalesce(p.monetary_value, 0) + coalesce(o.monetary_value, 0) as monetary_value
-    from pos_sales p
-    full outer join online_conversions o
-      on p.customer_key = o.customer_key
+as_of as (
+    select max(transaction_date) as as_of_date
+    from {{ ref('stg_pos_transactions') }}
+    where not coalesce(is_voided, false)
 ),
 
 scored as (
     select
-        customer_key,
-        {{ datediff_unit('day', 'last_purchase_date', 'current_date') }} as recency_days,
-        frequency_orders,
-        monetary_value,
-        ntile(5) over (order by {{ datediff_unit('day', 'last_purchase_date', 'current_date') }} asc) as r_score,
-        ntile(5) over (order by frequency_orders desc) as f_score,
-        ntile(5) over (order by monetary_value desc) as m_score
-    from sales
-    where frequency_orders > 0
-       or monetary_value > 0
+        s.customer_key,
+        {{ datediff_unit('day', 's.last_purchase_date', 'a.as_of_date') }} as recency_days,
+        s.frequency_orders,
+        s.monetary_value,
+        ntile(5) over (order by s.last_purchase_date asc, s.customer_key) as r_score,
+        ntile(5) over (order by s.frequency_orders asc, s.customer_key) as f_score,
+        ntile(5) over (order by s.monetary_value asc, s.customer_key) as m_score
+    from pos_sales s
+    cross join as_of a
 )
 
 select
