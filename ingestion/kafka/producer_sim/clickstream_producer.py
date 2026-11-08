@@ -434,6 +434,9 @@ def run_producer(
     producer = Producer(KAFKA_CONFIG)
     started_at = time.time()
     emitted = 0
+    # Sequence is the only tie-break. Late events share a release time and do
+    # not advance `emitted`, and ClickstreamEvent has no ordering.
+    seq = 0
     held: List[Tuple[float, int, ClickstreamEvent, bytes]] = []
     stream = load_messages(rng, Ids(), lambda: datetime.now(timezone.utc), device_pool)
 
@@ -453,7 +456,8 @@ def run_producer(
             event = next(stream)
             payload = event.payload()
             if rng.random() < late_pct:
-                heapq.heappush(held, (tick_started + late_delay_seconds, emitted, event, payload))
+                heapq.heappush(held, (tick_started + late_delay_seconds, seq, event, payload))
+                seq += 1
                 continue
             _produce(producer, event, payload)
             emitted += 1
@@ -468,7 +472,7 @@ def run_producer(
         if elapsed_tick < 1.0:
             time.sleep(1.0 - elapsed_tick)
 
-    for _, _, event, payload in sorted(held):
+    for _, _, event, payload in sorted(held, key=lambda item: (item[0], item[1])):
         _produce(producer, event, payload)
         emitted += 1
     producer.flush()

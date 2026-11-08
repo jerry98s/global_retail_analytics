@@ -12,6 +12,7 @@ import random
 import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -161,6 +162,26 @@ class TestClickstreamLoad:
 
         stream = load_messages(random.Random(7), Ids(seed="load-test"), now, device_pool=300)
         return [next(stream) for _ in range(count)]
+
+    def test_same_release_time_does_not_order_the_events_themselves(self):
+        import heapq
+
+        events = self._sample(2)
+        with pytest.raises(TypeError):
+            sorted([(1.0, 0, events[0], b"a"), (1.0, 0, events[1], b"b")])
+        held: list = []
+        for seq, event in enumerate(events):
+            heapq.heappush(held, (1.0, seq, event, event.payload()))
+        released = [item[1] for item in sorted(held, key=lambda item: (item[0], item[1]))]
+        assert released == [0, 1]
+
+    def test_late_hold_uses_its_own_sequence(self):
+        src = Path(__file__).resolve().parents[2].joinpath(
+            "ingestion/kafka/producer_sim/clickstream_producer.py"
+        ).read_text(encoding="utf-8")
+        push = src.split("heappush(held,", 1)[1].split(")", 1)[0]
+        assert "seq" in push and "emitted" not in push
+        assert "key=lambda item: (item[0], item[1])" in src
 
     def test_load_events_pass_the_replay_contract(self):
         for event in self._sample(2000):

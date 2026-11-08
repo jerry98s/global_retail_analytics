@@ -135,6 +135,12 @@ class TestStackWiring:
             save = body.index("Save-RowCountBaselineLocal")
             assert gate < publish < save, task
 
+    def test_checked_command_uses_the_exit_code_not_stderr(self):
+        body = _STACK.split("function Invoke-CheckedCommand {", 1)[1].split("\nfunction ", 1)[0]
+        assert body.index('$ErrorActionPreference = "Continue"') < body.index("Invoke-Expression")
+        assert "$code = $LASTEXITCODE" in body
+        assert "if ($code -ne 0)" in body
+
     def test_acknowledge_shrink_reaches_the_gate(self):
         assert "[string[]]$AcknowledgeShrink" in _STACK
         body = _STACK.split("function Invoke-RowCountGateLocal {", 1)[1].split("\n}", 1)[0]

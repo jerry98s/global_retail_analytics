@@ -254,9 +254,20 @@ function Invoke-CheckedCommand {
         [string]$Command
     )
     Write-Host ">> $Command" -ForegroundColor DarkGray
-    Invoke-Expression $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Command"
+    # Docker writes progress ("Container ... Running") to stderr. Under
+    # $ErrorActionPreference = Stop that becomes a terminating error even
+    # when the command exits 0, so a rerun against an already-up stack aborts.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        Invoke-Expression $Command
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    if ($code -ne 0) {
+        throw "Command failed with exit code ${code}: $Command"
     }
 }
 
