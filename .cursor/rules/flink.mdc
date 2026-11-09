@@ -36,7 +36,7 @@ alwaysApply: false
 ## Local
 
 - Warehouse bind-mount: repo `.local/iceberg` → `/tmp/iceberg` (not a named volume alone).
-- Start Flink **before** simulate (`run_local_stack.ps1 -Task all` order).
+- Sources use `group-offsets` (reset `earliest`), so simulate and Flink can start in either order; a restart resumes. `-Task all` still starts Flink, then simulate.
 - Flink UI: `http://localhost:8082`.
 
 Reference: `docs/runbooks/flink-operations.md`.

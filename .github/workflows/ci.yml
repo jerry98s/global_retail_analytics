@@ -3,7 +3,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main, local-testing-version, showcase]
+    branches: [main, local-testing-version]
   workflow_dispatch:
 
 permissions:

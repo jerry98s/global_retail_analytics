@@ -15,7 +15,7 @@ Airflow · Great Expectations · Terraform · Streamlit
 | Team | What they need | What the platform delivers |
 |---|---|---|
 | **Finance** | Sales figures that reconcile to the till, every day | `finance.fact_sales`: one row per POS line item, built daily and only published after automated checks pass |
-| **Store operations** | Current stock per product and store | `serving.inventory_current_position`: last published balance plus the newest Flink hours (about an hour old); `finance.fact_inventory_snapshot` holds hourly history, corrected by the full event history once each hour closes |
+| **Store operations** | Current stock per product and store | `serving.inventory_current_position`: that pair's last published balance, plus Flink hours after its own hour and outside Spark coverage (about an hour old); `finance.fact_inventory_snapshot` holds hourly history, corrected by the full event history once each hour closes |
 | **Marketing** | One view of each customer across loyalty card, web and app, respecting consent | `serving.customer_360_serving`: identities merged by a graph algorithm, with personal data shown only where `marketing_consent` is given |
 | **Engineering** | Recoverable data and visible failures | Raw events kept in a replayable lake, bad events routed to dead-letter queues, a runbook for every incident |
 
@@ -74,8 +74,10 @@ the Flink jobs; Terraform defines all the AWS infrastructure.
 
 ## Verified results
 
-From the latest full end-to-end run (2026-08-31, fresh environment; raw output
-in [docs/evidence](./docs/evidence/README.md)):
+The last full local end-to-end run is 2026-08-31 (fresh environment; raw output
+in [docs/evidence](./docs/evidence/README.md)). Its identity output includes
+device-only rows the current graph no longer emits. Later ledger rows are
+offline or partial checks, not a newer full run:
 
 | Stage | Result |
 |---|---|
@@ -181,6 +183,16 @@ publishes finance both times. The real warehouse is not changed:
 .\.venv\Scripts\python.exe scripts/local/demo_wap_isolation.py
 ```
 
+Corrected POS days use the same contract as the warehouse DAG. Fix the Parquet
+under `.local/iceberg/bronze/pos_transactions`, then pass the inclusive range
+to both steps. A day whose corrected file has no lines must also be listed in
+`-RestateEmptyDates`, or the audit blocks:
+
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task dbt -RestateFrom 2026-10-10 -RestateTo 2026-10-11 -RestateEmptyDates 2026-10-11
+.\scripts\local\run_local_stack.ps1 -Task quality -RestateFrom 2026-10-10 -RestateTo 2026-10-11 -RestateEmptyDates 2026-10-11
+```
+
 The Spark identity benchmark copies the current Bronze into `.local/benchmark`
 at 1×, 5× and 10×, with ids remapped so the copies are different people. It
 does not write the real lake, and it is not a streaming throughput result:
@@ -213,7 +225,7 @@ in this checkout.
 | `ingestion/` | Event contracts (JSON Schema), Kafka producers, POS batch generator |
 | `streaming/` | Flink jobs and their config |
 | `spark/` | GraphFrames identity-resolution job |
-| `transformation/` | dbt project (staging → intermediate → marts) and Redshift DDL |
+| `transformation/` | dbt project (staging → intermediate → marts). Redshift DDL is on `main` |
 | `orchestration/` | Airflow DAGs |
 | `quality/` | Great Expectations Silver event contract checks |
 | `infra/` | Docker images for Kafka, Flink, and Spark |
