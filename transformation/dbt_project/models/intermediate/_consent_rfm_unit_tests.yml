@@ -65,7 +65,9 @@ unit_tests:
     description: >
       100 opted in, then revoked marketing only. 200 is a merge of two
       accounts: the later statement (from the second account) wins. 300 only
-      stated analytics, so marketing stays NULL (no statement).
+      stated analytics, so marketing stays NULL (no statement). 400 granted
+      and revoked marketing at the same instant; the revoke wins even though
+      the grant has the larger event_id.
     model: int_customer_consent
     given:
       - input: ref('int_consent_events')
@@ -77,11 +79,14 @@ unit_tests:
           union all select 'eA', cast('2026-11-07 09:00:00' as timestamp), 'CA', 200, 'marketing', false, 'login_prompt'
           union all select 'eB', cast('2026-11-07 12:00:00' as timestamp), 'CB', 200, 'marketing', true, 'preference_center'
           union all select 'e3', cast('2026-11-07 10:00:00' as timestamp), 'C3', 300, 'analytics', false, 'login_prompt'
+          union all select 'e4a', cast('2026-11-07 10:00:00' as timestamp), 'C4', 400, 'marketing', false, 'preference_center'
+          union all select 'e4b', cast('2026-11-07 10:00:00' as timestamp), 'C4', 400, 'marketing', true, 'login_prompt'
     expect:
       rows:
         - {customer_key: 100, marketing_consent: false, marketing_consent_source: preference_center, analytics_consent: true}
         - {customer_key: 200, marketing_consent: true, marketing_consent_source: preference_center, analytics_consent: null}
         - {customer_key: 300, marketing_consent: null, marketing_consent_source: null, analytics_consent: false}
+        - {customer_key: 400, marketing_consent: false, marketing_consent_source: preference_center, analytics_consent: null}
 
   - name: int_order_reconciliation_one_unconfirmed_row_per_order
     description: >
