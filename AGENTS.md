@@ -27,7 +27,6 @@ Docker Kafka/Flink/Spark and DuckDB.
 |---|---|
 | **`main`** | Fully cloud-deployed platform (dev/prod AWS). |
 | **`local-testing-version`** | Local Docker/Flink/DuckDB testing and demos. |
-| **`showcase`** | Trimmed laptop run of the critical flow. Do not copy its deletions onto `main`. |
 
 Do **not** merge local-only compose bind-mounts, short Flink windows, or
 DuckDB-only wiring into `main` as a blanket merge. Cherry-pick shared cloud
