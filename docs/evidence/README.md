@@ -30,7 +30,6 @@ Environment: Windows, Python 3.11, local project virtual environment.
 | 2026-10-24 | `local-testing-version`: `python -m pytest tests/unit -q`, Ruff, dbt full + WAP pending compiles, CI identity chain (`dbt seed`, `run +identity_graph`, `test`) | 381 passed; compiles passed; identity chain 9/9 models, 21/21 tests |
 | 2026-10-24 | `local-testing-version`: two WAP rounds on `.local/iceberg` output loaded into a scratch DuckDB (clone → pending build → `dbt test` → publish → serving views) | Each round: 23/23 models, 158/158 dbt tests, 10 Gold tables published; round 2 left all 10 Gold row counts unchanged |
 | 2026-11-08 | `port/customer-360`: `dbt test --profiles-dir . --target local --select test_type:unit` on a fresh `local_retail.duckdb` after seed and the models those tests describe | 12/12 unit tests PASS in 2.76s. Offline only; Redshift was not used |
-| 2026-11-08 | `port/customer-360`: `dbt test --profiles-dir . --target local --select test_type:unit` on a fresh `local_retail.duckdb` after seed and the models those tests describe | 12/12 unit tests PASS in 2.76s. Offline only; Redshift was not used |
 
 Re-run these commands after any material change and update the table only from
 captured output.
