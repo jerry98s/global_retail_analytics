@@ -10,10 +10,18 @@
 
   published_on_hand_qty is the latest balance in live
   finance.fact_inventory_snapshot (rebuilt by the warehouse DAG). Flink
-  silver.inventory_hourly hours after the fact's newest hour are added on top as
-  provisional_qty_delta, so this view moves as soon as a new Flink hour is
-  exported, without waiting for the daily rebuild. The next rebuild replaces
-  those hours with Spark-canonical ones where Spark covers them.
+  silver.inventory_hourly hours after that pair's own newest fact hour are
+  added on top as provisional_qty_delta, so this view moves as soon as a new
+  Flink hour is exported, without waiting for the daily rebuild. The cutoff is
+  per (product_id, store_id): another product's newer hour must not hide this
+  one's movement.
+
+  Hours Spark covers (int_inventory_batch_coverage, outside every
+  int_inventory_coverage_gaps range) are never added from Flink. Spark is
+  canonical there, so a covered hour with no fact row had no movement, and a
+  Flink delta for it (a retry duplicate, say) must not be counted. This is the
+  same split int_inventory_hourly uses. The next rebuild replaces the
+  remaining Flink hours with Spark-canonical ones where Spark covers them.
 
   A view, so every query recomputes from the current tables. Freshness is
   bounded by the Flink window (1 hour) plus the inventory_hourly export.
@@ -51,22 +59,47 @@ published as (
     where rn = 1
 ),
 
-published_through as (
-    select max(hour_key) as hour_key
-    from fact_hours
+coverage as (
+    select batch_start_hour_key, batch_end_hour_key
+    from {{ ref('int_inventory_batch_coverage') }}
+),
+
+gaps as (
+    select gap_start_hour_key, gap_end_hour_key
+    from {{ ref('int_inventory_coverage_gaps') }}
+),
+
+speed_hours as (
+    select
+        cast(h.product_id as varchar) as product_id,
+        cast(h.store_id as varchar) as store_id,
+        h.snapshot_date_key * 100 + h.snapshot_hour as hour_key,
+        h.qty_delta_hour
+    from {{ source('silver', 'inventory_hourly') }} h
+    cross join coverage c
+    where c.batch_start_hour_key is null
+       or h.snapshot_date_key * 100 + h.snapshot_hour < c.batch_start_hour_key
+       or h.snapshot_date_key * 100 + h.snapshot_hour >= c.batch_end_hour_key
+       or exists (
+          select 1 from gaps g
+          where h.snapshot_date_key * 100 + h.snapshot_hour
+                between g.gap_start_hour_key and g.gap_end_hour_key
+       )
 ),
 
 provisional as (
     select
-        cast(h.product_id as varchar) as product_id,
-        cast(h.store_id as varchar) as store_id,
-        cast(sum(h.qty_delta_hour) as numeric(38, 0)) as qty_delta,
-        max(h.snapshot_date_key * 100 + h.snapshot_hour) as hour_key
-    from {{ source('silver', 'inventory_hourly') }} h
-    cross join published_through t
-    where t.hour_key is null
-       or h.snapshot_date_key * 100 + h.snapshot_hour > t.hour_key
-    group by cast(h.product_id as varchar), cast(h.store_id as varchar)
+        s.product_id,
+        s.store_id,
+        cast(sum(s.qty_delta_hour) as numeric(38, 0)) as qty_delta,
+        max(s.hour_key) as hour_key
+    from speed_hours s
+    left join published pub
+      on s.product_id = pub.product_id
+     and s.store_id = pub.store_id
+    where pub.hour_key is null
+       or s.hour_key > pub.hour_key
+    group by s.product_id, s.store_id
 ),
 
 opening as (

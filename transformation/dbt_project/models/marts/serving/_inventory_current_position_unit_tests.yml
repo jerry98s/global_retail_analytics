@@ -1,0 +1,47 @@
+unit_tests:
+  - name: inventory_current_position_cuts_off_per_product_store
+    description: >
+      Spark covers hours before 10:00. P1's newest fact hour is 09:00 and Flink
+      later exported -5 at 10:00, while P2 already has a fact row at 12:00:
+      P1 must read 95, not 100. P2's Flink 12:00 is already in the fact, so
+      only its 13:00 hour is added. P3's Flink 09:00 lies inside Spark
+      coverage, where Spark saw no movement, so it is not added.
+    model: inventory_current_position
+    given:
+      - input: ref('fact_inventory_snapshot')
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_key: 1, store_key: 1, quantity_on_hand: 100, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 12, product_key: 2, store_key: 1, quantity_on_hand: 50, is_estimated: true}
+          - {snapshot_date_key: 20261104, snapshot_hour: 8, product_key: 3, store_key: 1, quantity_on_hand: 20, is_estimated: false}
+      - input: ref('dim_product')
+        rows:
+          - {product_key: 1, product_id: P1}
+          - {product_key: 2, product_id: P2}
+          - {product_key: 3, product_id: P3}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_key: 1, store_id: S1}
+      - input: ref('int_inventory_batch_coverage')
+        rows:
+          - {batch_start_hour_key: 2026110400, batch_end_hour_key: 2026110410}
+      - input: ref('int_inventory_coverage_gaps')
+        format: sql
+        rows: |
+          select cast(null as integer) as gap_start_hour_key, cast(null as integer) as gap_end_hour_key
+          where 1 = 0
+      - input: source('silver', 'inventory_hourly')
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 10, product_id: P1, store_id: S1, qty_delta_hour: -5}
+          - {snapshot_date_key: 20261104, snapshot_hour: 12, product_id: P2, store_id: S1, qty_delta_hour: -2}
+          - {snapshot_date_key: 20261104, snapshot_hour: 13, product_id: P2, store_id: S1, qty_delta_hour: 3}
+          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_id: P3, store_id: S1, qty_delta_hour: -7}
+      - input: ref('inventory_opening_balance')
+        rows:
+          - {product_id: P1, store_id: S1, opening_qty: 0}
+          - {product_id: P2, store_id: S1, opening_qty: 0}
+          - {product_id: P3, store_id: S1, opening_qty: 0}
+    expect:
+      rows:
+        - {product_id: P1, store_id: S1, published_on_hand_qty: 100, provisional_qty_delta: -5, current_on_hand_qty: 95, as_of_hour_key: 2026110410, is_provisional: true}
+        - {product_id: P2, store_id: S1, published_on_hand_qty: 50, provisional_qty_delta: 3, current_on_hand_qty: 53, as_of_hour_key: 2026110413, is_provisional: true}
+        - {product_id: P3, store_id: S1, published_on_hand_qty: 20, provisional_qty_delta: 0, current_on_hand_qty: 20, as_of_hour_key: 2026110408, is_provisional: false}

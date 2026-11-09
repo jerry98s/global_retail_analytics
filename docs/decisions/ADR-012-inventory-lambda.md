@@ -57,8 +57,9 @@ Split each hour by who has complete data for it:
   also keeps the earliest copy of an `event_id`, and labels a later copy with
   a different payload `payload_conflict` rather than a retry.
 - `serving.inventory_current_position` is the speed-layer read: the latest
-  published balance per product and store plus Flink hours after the fact's
-  newest hour. It is a view built after the warehouse publish, so it follows
+  published balance per product and store plus Flink hours after that
+  pair's own newest fact hour. Hours Spark covers are never added from Flink,
+  since Spark is canonical there. It is a view built after the warehouse publish, so it follows
   every `inventory_hourly` export without waiting for the daily rebuild.
 - `fact_inventory_snapshot` reads `int_inventory_hourly`. Each run recomputes
   every running balance and upserts only rows that are new or whose balance
