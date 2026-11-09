@@ -6,7 +6,8 @@
   dim_customer treats NULL as no consent.
 
   When accounts merge into one customer, the latest statement across them
-  wins for each purpose.
+  wins for each purpose. A grant and a revoke at the same event_time resolve
+  to the revoke.
 */
 
 with ranked as (
@@ -18,7 +19,10 @@ with ranked as (
         consent_source,
         row_number() over (
             partition by customer_key, purpose
-            order by event_time desc, event_id desc
+            order by
+                event_time desc,
+                case when is_granted then 1 else 0 end,
+                event_id desc
         ) as rn
     from {{ ref('int_consent_events') }}
 )
