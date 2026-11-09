@@ -37,11 +37,12 @@ ddl/06_identity_graph.sql
 ddl/07_fact_sales.sql
 ddl/08_fact_inventory_snapshot.sql
 ddl/09_fact_customer_session.sql
+ddl/11_summary_customer_360.sql
 views/dim_product_current.sql
 views/customer_360_serving.sql
 ```
 
-`ddl/10_customer_360_columns.sql` is not part of a fresh deploy. Run it once on a cluster whose `identity_graph` still has `is_public_device` or whose `fact_customer_session` predates the session-instance columns. A fresh run of 06 and 09 already has the new shape.
+`ddl/10_customer_360_columns.sql` is not part of a fresh deploy. Run it once on a cluster whose `identity_graph` still has `is_public_device`, whose `fact_customer_session` predates the session-instance columns, or whose `summary.sessions_daily_platform` has no `anonymous_session_count`. A fresh run of 06, 09 and 11 already has the new shape. Skip a statement when that table or column is already in the new shape.
 
 Generate a filled bootstrap script (terraform outputs substituted):
 

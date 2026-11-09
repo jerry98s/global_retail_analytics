@@ -159,7 +159,7 @@ jobs:
           dbt compile --no-partial-parse --profiles-dir . --target local
           --vars '{"wap_phase": "pending"}'
           --select stg_clickstream_events stg_pos_transactions intermediate
-          marts.marketing sessions_daily_platform
+          marts.marketing sessions_daily_platform consent_identity_daily customer_segments
           --exclude int_product_catalog dim_product customer_360_view
 
       - name: identity fixture matches Spark graph logic (ADR-010)
@@ -173,20 +173,62 @@ jobs:
       - name: dbt seed
         run: dbt seed --profiles-dir . --target local
 
+      - name: empty inventory sources for unit-test column lookup
+        # DuckDB unit tests read the live relation to learn column types.
+        # These Silver tables have no seed; an empty stand-in is enough.
+        run: |
+          python - <<'PY'
+          import duckdb
+          con = duckdb.connect("local_retail.duckdb")
+          con.execute("create schema if not exists silver")
+          con.execute(
+              """
+              create table if not exists silver.inventory_events (
+                event_id varchar, event_time timestamp, store_id varchar, product_id varchar,
+                qty_delta integer, event_type varchar, scanner_id varchar, is_late boolean,
+                schema_version varchar, event_date date, source_system varchar, kafka_topic varchar,
+                kafka_partition integer, kafka_offset bigint, kafka_timestamp timestamp,
+                ingested_at timestamp, export_run_id varchar
+              )
+              """
+          )
+          con.execute(
+              """
+              create table if not exists silver.inventory_hourly (
+                snapshot_date_key integer, snapshot_hour integer, product_id varchar, store_id varchar,
+                qty_delta_hour bigint, qty_received_hour bigint, is_estimated boolean, export_run_id varchar
+              )
+              """
+          )
+          con.execute(
+              """
+              create table if not exists silver.inventory_offset_gaps (
+                source_system varchar, kafka_topic varchar, kafka_partition integer,
+                last_offset_before bigint, first_offset_after bigint, missing_offsets bigint,
+                gap_start_ts timestamp, gap_end_ts timestamp, export_run_id varchar
+              )
+              """
+          )
+          PY
+
       - name: dbt run identity graph chain
         # int_identity_shared_devices is not upstream of identity_graph (devices
         # never merge customers); build it explicitly so verify_local_identity.py
-        # can audit it.
-        run: dbt run --profiles-dir . --target local --select +identity_graph int_identity_shared_devices --full-refresh
+        # can audit it. The finance and inventory models are here so every unit
+        # test can read its relation's columns.
+        run: >
+          dbt run --profiles-dir . --target local --full-refresh
+          --select +identity_graph int_identity_shared_devices int_session_reconstruction
+          +fact_sales +fact_inventory_snapshot int_inventory_batch_coverage int_inventory_hourly
 
-      - name: dbt test identity graph chain
-        # cautious: skip tests that also read unbuilt marts (fact_sales).
-        # The unit-test intersection covers identity changes; step 5 widens it
-        # to every model.
+      - name: dbt test identity graph chain and every unit test
+        # cautious: skip data tests that also depend on models this job doesn't
+        # build (fact_sales_customer_key_matches_identity needs fact_sales).
+        # test_type:unit is every model's unit test; each one mocks its inputs.
         run: >
           dbt test --profiles-dir . --target local --indirect-selection cautious
           --select int_identity_shared_devices int_identity_resolution identity_graph
-          int_identity_changes,test_type:unit
+          test_type:unit
 
       - name: verify identity scenarios (verified link, two accounts, shared tablet, unverified claim, legacy)
         working-directory: ${{ github.workspace }}

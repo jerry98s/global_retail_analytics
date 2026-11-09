@@ -113,7 +113,7 @@ and recreate a table without dropping its views. Gold models declare `dist` / `s
 | DAG | Clones / writes pending / publishes |
 |-----|--------------------------------------|
 | `warehouse_daily_batch_pipeline` | finance facts + finance summaries |
-| `marketing_hourly_customer_360_pipeline` | marketing marts + `sessions_daily_platform` |
+| `marketing_hourly_customer_360_pipeline` | marketing marts + `sessions_daily_platform`, `consent_identity_daily`, `customer_segments` |
 | `catalog_bihourly_product_scd2_refresh` | `dim_product` only |
 
 The hourly `quality_hourly_ge_checkpoint` DAG checks the canonical Silver

@@ -98,6 +98,8 @@ WAP_TABLES: list[tuple[str, str]] = [
     ("summary", "inventory_daily_product_store"),
     ("summary", "inventory_position_daily"),
     ("summary", "sessions_daily_platform"),
+    ("summary", "consent_identity_daily"),
+    ("summary", "customer_segments"),
 ]
 
 # Per-DAG subsets. These are disjoint by design — see "Table ownership" above.
@@ -115,6 +117,8 @@ MARKETING_TABLES: list[tuple[str, str]] = [
     ("marketing", "fact_customer_session"),
     ("marketing", "identity_graph"),
     ("summary", "sessions_daily_platform"),
+    ("summary", "consent_identity_daily"),
+    ("summary", "customer_segments"),
 ]
 
 DIM_PRODUCT_TABLES: list[tuple[str, str]] = [

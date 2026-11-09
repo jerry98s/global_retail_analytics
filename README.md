@@ -397,6 +397,9 @@ AWS production deployment or a measured 10k events/s load test.
 - Identity: an account merges with a loyalty card only when that account
   verified the card. Devices never merge customers —
   [identity-resolution.md](./docs/data-model/identity-resolution.md).
+- Customer 360 summaries: `summary.consent_identity_daily` from sessions and
+  `summary.customer_segments` from customers. The dashboard reads those two
+  tables, and reads pipeline signals from the metadata database.
 - Full grains/ERD: [dimensional-model.md](./docs/data-model/dimensional-model.md).
 
 ## Suggested portfolio walkthrough

@@ -14,3 +14,8 @@ ALTER TABLE marketing.fact_customer_session ADD COLUMN producer_session_id VARCH
 ALTER TABLE marketing.fact_customer_session ADD COLUMN attribution_status VARCHAR(16);
 ALTER TABLE marketing.fact_customer_session ADD COLUMN is_legacy BOOLEAN;
 ALTER TABLE marketing.fact_customer_session ADD COLUMN session_fingerprint VARCHAR(64);
+
+-- Skip when summary.sessions_daily_platform does not exist yet. A later dbt
+-- rebuild creates it with this column. When the table already exists, the
+-- next publish inserts the column and fails without it.
+ALTER TABLE summary.sessions_daily_platform ADD COLUMN anonymous_session_count INTEGER;

@@ -10,6 +10,22 @@ A Streamlit app that visualizes the platform's data in two modes:
 The mode is chosen by `DASHBOARD_MODE`. `data.py` holds all data access (no
 Streamlit import, so it stays testable); `app.py` is the UI.
 
+Customer 360 has four sections. Session analytics and customer segments read
+`summary.consent_identity_daily` and `summary.customer_segments`. Consent counts
+shared devices from `intermediate.int_identity_shared_devices`. Pipeline
+reliability reads `meta.pipeline_signal` and `meta.table_freshness` in the
+metadata database (`RS_METADATA_DATABASE`, default `metadata`). Set
+`METADATA_DUCKDB_PATH` to read those two tables from a local metadata file
+instead.
+
+Customer 360 has four sections. Session analytics and customer segments read
+`summary.consent_identity_daily` and `summary.customer_segments`. Consent counts
+shared devices from `intermediate.int_identity_shared_devices`. Pipeline
+reliability reads `meta.pipeline_signal` and `meta.table_freshness` in the
+metadata database (`RS_METADATA_DATABASE`, default `metadata`). Set
+`METADATA_DUCKDB_PATH` to read those two tables from a local metadata file
+instead.
+
 ## Run locally
 
 ### Against the local Iceberg volume (Docker)

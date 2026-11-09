@@ -250,6 +250,8 @@ class TestWapPublishHelper:
         assert ("finance", "fact_sales") in tables
         assert ("marketing", "dim_product") in tables
         assert ("summary", "sessions_daily_platform") in tables
+        assert ("summary", "consent_identity_daily") in tables
+        assert ("summary", "customer_segments") in tables
 
     def test_per_dag_subsets_are_disjoint_and_cover_wap_tables(self) -> None:
         from orchestration.airflow.plugins import wap_publish

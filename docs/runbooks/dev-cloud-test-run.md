@@ -193,8 +193,8 @@ Pop-Location
 # Marketing owner plus sessions summary; dim_product remains catalog-owned.
 .\.venv-cloud\Scripts\python.exe $Wap clone marketing
 Push-Location transformation\dbt_project
-& $Dbt run --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
-& $Dbt test --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
+& $Dbt run --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform consent_identity_daily customer_segments --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
+& $Dbt test --target dev --select stg_clickstream_events stg_pos_transactions intermediate marts.marketing sessions_daily_platform consent_identity_daily customer_segments --exclude int_product_catalog dim_product customer_360_view --vars '{"wap_phase":"pending"}'
 Pop-Location
 .\.venv-cloud\Scripts\python.exe $Wap publish marketing
 

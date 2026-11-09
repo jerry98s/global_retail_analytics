@@ -167,10 +167,14 @@ across normal restarts and change it after Kafka topic/cluster recreation.
 
 ## Metadata + Summary
 
-- Analytics schema `summary.*` (dbt `marts.summary`) holds daily rollups from
-  one Gold fact each — see `docs/data-model/platform-layers.md`.
+- Analytics schema `summary.*` (dbt `marts.summary`) holds rollups from
+  one Gold table each — see `docs/data-model/platform-layers.md`.
+  `consent_identity_daily` reads `fact_customer_session` and
+  `customer_segments` reads `dim_customer`.
 - Operational DB `metadata.meta.*` (local: `local_metadata.duckdb`) is written
-  by `scripts/common/metadata_observer.py` (fail-open). Not a Glue replacement.
+  by `scripts/common/metadata_observer.py` (fail-open). `meta.pipeline_signal`
+  stores identity-change counts, and a quarantine rate or replay result when
+  those inputs are present. Not a Glue replacement.
 - Cloud bootstrap: `.\scripts\cloud\bootstrap_redshift.ps1 -Env dev -MetadataOnly`
   (two Query Editor scripts; switch database between create and schema DDL).
 - Implement shared contracts on `local-testing-version` first; cherry-pick

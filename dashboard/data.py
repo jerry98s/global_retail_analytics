@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import glob
 import os
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -101,6 +102,58 @@ def semantic_query(name: str) -> pd.DataFrame:
     return run_query(SEMANTIC_QUERIES[MODE_REDSHIFT][name])
 
 
+def _metadata_duckdb() -> Path | None:
+    override = os.environ.get("METADATA_DUCKDB_PATH")
+    if override:
+        path = Path(override)
+        return path if path.is_file() else None
+    return None
+
+
+def _metadata_frame(sql: str) -> pd.DataFrame:
+    """Latest metadata rows. DuckDB when METADATA_DUCKDB_PATH is set, else the metadata database."""
+    path = _metadata_duckdb()
+    if path is not None:
+        import duckdb
+
+        con = duckdb.connect(str(path), read_only=True)
+        try:
+            return con.execute(sql).df()
+        finally:
+            con.close()
+    import redshift_connector
+
+    missing = [v for v in ("RS_HOST", "RS_USER", "RS_PASSWORD") if not os.environ.get(v)]
+    if missing:
+        raise RuntimeError(
+            "Missing Redshift environment variables: " + ", ".join(missing)
+        )
+    conn = redshift_connector.connect(
+        host=os.environ["RS_HOST"],
+        port=int(os.environ.get("RS_PORT", "5439")),
+        database=os.environ.get("RS_METADATA_DATABASE", "metadata"),
+        user=os.environ["RS_USER"],
+        password=os.environ["RS_PASSWORD"],
+    )
+    try:
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        frame = cursor.fetch_dataframe()
+        return frame if frame is not None else pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def load_pipeline_signals() -> pd.DataFrame:
+    """Latest run's identity, quarantine and replay signals. Empty when unrecorded."""
+    return _metadata_frame(_SIGNAL_SQL)
+
+
+def load_freshness() -> pd.DataFrame:
+    """Latest freshness measurement per table. Empty when unrecorded."""
+    return _metadata_frame(_FRESHNESS_SQL)
+
+
 def redshift_healthcheck() -> Optional[str]:
     """Return None when Redshift is reachable, else a short error string."""
     try:
@@ -121,6 +174,52 @@ CUSTOMER_360 = """
            total_lifetime_value
     FROM serving.customer_360_serving
     LIMIT 500
+"""
+
+SESSION_ATTRIBUTION = """
+    SELECT attribution_status,
+           SUM(session_count) AS session_count,
+           SUM(converted_sessions) AS converted_sessions,
+           SUM(page_view_sessions) AS page_view_sessions,
+           SUM(product_view_sessions) AS product_view_sessions,
+           SUM(cart_sessions) AS cart_sessions
+    FROM summary.consent_identity_daily
+    GROUP BY attribution_status
+"""
+
+CUSTOMER_SEGMENTS = """
+    SELECT rfm_segment,
+           customer_count,
+           marketing_eligible_count,
+           excluded_count,
+           lifetime_value
+    FROM summary.customer_segments
+    ORDER BY customer_count DESC
+"""
+
+SHARED_DEVICES = """
+    SELECT COUNT(*) AS shared_device_count
+    FROM intermediate.int_identity_shared_devices
+"""
+
+_SIGNAL_SQL = """
+    SELECT signal_name, signal_value, detail, measured_at
+    FROM meta.pipeline_signal
+    WHERE execution_id = (
+        SELECT execution_id FROM meta.pipeline_signal
+        ORDER BY measured_at DESC LIMIT 1
+    )
+    ORDER BY signal_name
+"""
+
+_FRESHNESS_SQL = """
+    SELECT schema_name, table_name, row_count, lag_minutes, sla_status, measured_at
+    FROM meta.table_freshness
+    WHERE execution_id = (
+        SELECT execution_id FROM meta.table_freshness
+        ORDER BY measured_at DESC LIMIT 1
+    )
+    ORDER BY schema_name, table_name
 """
 
 # Speed-layer read (ADR-012): published balance plus Flink hours after it.

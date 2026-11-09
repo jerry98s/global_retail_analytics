@@ -190,3 +190,65 @@ models:
             combination_of_columns:
               - session_date_key
               - platform
+
+  - name: consent_identity_daily
+    description: >
+      Sessions by attribution from fact_customer_session only.
+      Grain: (session_date_key, platform, attribution_status).
+      Anonymous and ambiguous sessions stay in session_count.
+    columns:
+      - name: session_date_key
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
+      - name: platform
+        tests: [not_null]
+      - name: attribution_status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['attributed', 'anonymous', 'ambiguous']
+      - name: session_count
+        tests: [not_null, non_negative]
+      - name: converted_sessions
+        tests: [not_null, non_negative]
+      - name: page_view_sessions
+        tests: [not_null, non_negative]
+      - name: product_view_sessions
+        tests: [not_null, non_negative]
+      - name: cart_sessions
+        tests: [not_null, non_negative]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - session_date_key
+              - platform
+              - attribution_status
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "converted_sessions <= session_count and cart_sessions <= session_count and product_view_sessions <= session_count and page_view_sessions <= session_count"
+
+  - name: customer_segments
+    description: >
+      Verified profiles by RFM segment from dim_customer only.
+      Grain: rfm_segment. Anonymous sessions are not customers.
+    columns:
+      - name: rfm_segment
+        tests: [not_null, unique]
+      - name: customer_count
+        tests: [not_null, non_negative]
+      - name: marketing_eligible_count
+        tests: [not_null, non_negative]
+      - name: excluded_count
+        tests: [not_null, non_negative]
+      - name: lifetime_value
+        tests: [not_null]
+    tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "marketing_eligible_count + excluded_count = customer_count"

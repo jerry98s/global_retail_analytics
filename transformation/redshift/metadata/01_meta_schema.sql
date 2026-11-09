@@ -88,3 +88,17 @@ CREATE TABLE IF NOT EXISTS meta.dq_check_result (
     created_at           TIMESTAMP     NOT NULL DEFAULT GETDATE(),
     PRIMARY KEY (execution_id, check_system, check_name)
 );
+
+-- One row per signal for one pipeline run. Identity-change counts are read
+-- from the analytics database. Quarantine rate and a replay result are
+-- recorded only when those local inputs are present.
+CREATE TABLE IF NOT EXISTS meta.pipeline_signal (
+    execution_id         VARCHAR(64)   NOT NULL,
+    signal_name          VARCHAR(128)  NOT NULL,
+    signal_value         DOUBLE PRECISION,
+    detail               VARCHAR(1024),
+    measured_at          TIMESTAMP     NOT NULL,
+    collector_version    VARCHAR(32),
+    created_at           TIMESTAMP     NOT NULL DEFAULT GETDATE(),
+    PRIMARY KEY (execution_id, signal_name)
+);
