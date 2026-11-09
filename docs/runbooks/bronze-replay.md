@@ -110,10 +110,23 @@ passes `pos_restate_from` / `pos_restate_to` to dbt: `fact_sales` and
 `pos_revenue_reconciles_through_gold` must match source, fact and summary
 money per day before publish. Do not clear the original daily run instead: it
 regenerates simulator data over the corrected file and only reloads the last
-lookback days. A day whose file was deleted entirely leaves its old fact rows,
-and the reconciliation fails the publish; remove such a day deliberately.
+lookback days.
+
+Every day in the range must have source lines, or the audit
+`pos_restatement_days_have_source_rows` blocks the publish: a missing file is
+not an empty day. When a corrected delivery legitimately has no lines for a
+day (all sales reversed, store closed), list it:
+
+```text
+airflow dags trigger warehouse_daily_batch_pipeline \
+  --conf '{"restate_from": "2026-10-01", "restate_to": "2026-10-03", "restate_empty_dates": ["2026-10-02"]}'
+```
+
+`fact_sales` and `sales_daily_store` then delete that day in pending before
+the rebuild, so it publishes with zero rows. A listed day that still has
+source lines also fails the audit.
 Locally, pass the same dbt vars, for example
-`dbt run --select fact_sales sales_daily_store --vars '{"pos_restate_from": "2026-10-01", "pos_restate_to": "2026-10-03"}'`.
+`dbt run --select fact_sales sales_daily_store --vars '{"pos_restate_from": "2026-10-01", "pos_restate_to": "2026-10-03", "pos_restate_empty_dates": ["2026-10-02"]}'`.
 
 Do not overwrite live `silver.inventory_hourly` from replay while Flink owns it.
 Compare canonical inventory against that fast-path output first; an historical
