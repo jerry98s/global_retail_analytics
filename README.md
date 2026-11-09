@@ -141,6 +141,61 @@ late event and a retry; the same `--anchor` resends the same bytes):
 .\.venv\Scripts\python.exe -m ingestion.kafka.producer_sim.clickstream_producer --scenario acceptance
 ```
 
+After the next Spark and dbt run, check those journeys and the Customer 360
+rules (consent, attribution, RFM, orders) against the published Gold tables.
+Between `-Task dbt` and `-Task quality`, `--pending` checks the unpublished
+copies instead:
+
+```powershell
+.\.venv\Scripts\python.exe tests/integration/verify_customer_360.py
+```
+
+To prove a rerun gives the same answer, `-Task replay` runs Spark and dbt
+twice over the same Bronze, POS file and evaluation date, then compares a
+fingerprint of the Spark exports, the Customer 360 models and every pending Gold
+table. Run IDs and timestamps are excluded from the fingerprint. The replay
+never publishes. Keep the producers idle, and start and finish it on the same
+day, because the POS file is generated per date:
+
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task replay
+```
+
+To watch an identity change move through the published graph, run the
+propagation demo with Kafka and Flink already up. It publishes an account and
+two cards as separate customers, then verifies the account to both cards and
+checks that the account, its session and the higher card's purchase all move
+onto the lower card. It runs once; those ids are outside the random ranges:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/local/demo_identity_change.py
+```
+
+`-Task quality -Scope finance|marketing|catalog` tests and publishes one owning
+DAG. A blocked marketing scope does not stop finance. The default, and
+`-Task all`, still publish every scope. This demo breaks a copy of the
+warehouse twice (a failing marketing test, then an unacknowledged shrink) and
+publishes finance both times. The real warehouse is not changed:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/local/demo_wap_isolation.py
+```
+
+The Spark identity benchmark copies the current Bronze into `.local/benchmark`
+at 1×, 5× and 10×, with ids remapped so the copies are different people. It
+does not write the real lake, and it is not a streaming throughput result:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/local/benchmark_identity.py
+```
+
+The dashboard Customer 360 tab reads two summary tables built from one Gold
+fact each (`summary.consent_identity_daily` from sessions,
+`summary.customer_segments` from customers) and shows four sections: session
+analytics, customer segments, consent and identity, and pipeline reliability.
+The reliability numbers (identity changes, quarantine rate, replay result,
+freshness) come from the metadata store, not from Gold.
+
 Flink UI: <http://localhost:8082> · optional dashboard: <http://localhost:8501>
 
 The AWS deploy (Terraform, MSK, EMR, Redshift, MWAA) is on `main` and is not

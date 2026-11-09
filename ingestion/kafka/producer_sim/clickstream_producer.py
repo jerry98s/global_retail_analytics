@@ -12,6 +12,9 @@ Two modes:
   retries and late deliveries.
 - ``--scenario acceptance``: fixed, deterministic journeys for the Customer
   360 checks. The same ``--anchor`` reproduces the same bytes.
+- ``--scenario identity-change --phase 1|2``: the propagation demo. Phase 1
+  signs the account in without verifying its card. Phase 2 verifies it to
+  both cards. The same ``--anchor`` reproduces the same bytes.
 """
 
 from __future__ import annotations
@@ -29,7 +32,15 @@ import structlog
 from confluent_kafka import Producer
 
 from ingestion.kafka.msk_config import build_producer_config
-from ingestion.kafka.sim_entities import ACCOUNT_IDS, PRODUCTS, verified_loyalty_id
+from ingestion.kafka.sim_entities import (
+    ACCOUNT_IDS,
+    IDENTITY_CHANGE_ACCOUNT,
+    IDENTITY_CHANGE_CARD,
+    IDENTITY_CHANGE_CLIENT,
+    IDENTITY_CHANGE_OTHER_CARD,
+    PRODUCTS,
+    verified_loyalty_id,
+)
 from ingestion.kafka.topics import TOPIC_CLICKSTREAM
 from streaming.flink_jobs.event_types import PLATFORMS
 
@@ -292,6 +303,34 @@ def acceptance_scenarios(anchor: datetime) -> List[Message]:
     return messages
 
 
+def identity_change_messages(phase: int, anchor: datetime) -> List[Message]:
+    """The two-phase propagation demo, in emission order.
+
+    Phase 1: the account browses and signs in naming its card, but does not
+    verify the link. Phase 2: the same account verifies that card and a second
+    card, on two session instances. Spark then merges both cards through the
+    account; the lower card stays the anchor.
+    """
+    if phase not in (1, 2):
+        raise ValueError(f"identity-change phase must be 1 or 2, got {phase}")
+    device = Device(client_id=IDENTITY_CHANGE_CLIENT, platform="web", app_version="4.2.0")
+    visit = Visit(device, Ids(seed=f"identity-change:{phase}:{_iso(anchor)}"))
+
+    def at(minutes_before: int) -> datetime:
+        return anchor - timedelta(minutes=minutes_before)
+
+    if phase == 1:
+        visit.browse(at(10), "product_view", page="product", product_id="PROD-0001")
+        visit.login(at(9), IDENTITY_CHANGE_ACCOUNT, loyalty_id=IDENTITY_CHANGE_CARD, loyalty_verified=False)
+        visit.logout(at(8))
+    else:
+        visit.login(at(5), IDENTITY_CHANGE_ACCOUNT, loyalty_id=IDENTITY_CHANGE_CARD, loyalty_verified=True)
+        visit.logout(at(4))
+        visit.login(at(3), IDENTITY_CHANGE_ACCOUNT, loyalty_id=IDENTITY_CHANGE_OTHER_CARD, loyalty_verified=True)
+        visit.logout(at(2))
+    return [Message("identity_change", event) for event in visit.events]
+
+
 # ---------------------------------------------------------------------------
 # Load mode
 # ---------------------------------------------------------------------------
@@ -403,18 +442,33 @@ def _produce(producer: Producer, event: ClickstreamEvent, payload: bytes) -> Non
             producer.poll(0.05)
 
 
-def run_scenario(anchor: Optional[datetime] = None) -> None:
-    """Emit the acceptance scenarios once."""
+def _anchor(anchor: Optional[datetime]) -> datetime:
     anchor = anchor or datetime.now(timezone.utc)
     if anchor.tzinfo is None:
         anchor = anchor.replace(tzinfo=timezone.utc)
-    anchor = anchor.replace(second=0, microsecond=0)
+    return anchor.replace(second=0, microsecond=0)
+
+
+def run_scenario(anchor: Optional[datetime] = None) -> None:
+    """Emit the acceptance scenarios once."""
+    anchor = _anchor(anchor)
     producer = Producer(KAFKA_CONFIG)
     messages = acceptance_scenarios(anchor)
     for message in messages:
         _produce(producer, message.event, message.event.payload())
     producer.flush()
     log.info("clickstream_scenario_finished", anchor=_iso(anchor), emitted=len(messages))
+
+
+def run_identity_change(phase: int, anchor: Optional[datetime] = None) -> None:
+    """Emit one phase of the identity-change demo."""
+    anchor = _anchor(anchor)
+    producer = Producer(KAFKA_CONFIG)
+    messages = identity_change_messages(phase, anchor)
+    for message in messages:
+        _produce(producer, message.event, message.event.payload())
+    producer.flush()
+    log.info("identity_change_finished", phase=phase, anchor=_iso(anchor), emitted=len(messages))
 
 
 def run_producer(
@@ -487,11 +541,17 @@ if __name__ == "__main__":
     parser.add_argument("--eps", type=int, default=10000, help="Events per second (load mode)")
     parser.add_argument("--duration", type=int, default=30, help="Run duration in seconds (load mode)")
     parser.add_argument("--devices", type=int, default=20_000, help="Device pool size (load mode)")
-    parser.add_argument("--scenario", choices=["acceptance"], help="Emit fixed scenarios instead of load")
+    parser.add_argument("--scenario", choices=["acceptance", "identity-change"],
+                        help="Emit fixed scenarios instead of load")
+    parser.add_argument("--phase", type=int, choices=[1, 2], help="identity-change phase")
     parser.add_argument("--anchor", type=datetime.fromisoformat,
                         help="Scenario end time (ISO 8601, UTC); the same anchor repeats the same bytes")
     args = parser.parse_args()
-    if args.scenario:
+    if args.scenario == "identity-change":
+        if args.phase is None:
+            parser.error("--scenario identity-change requires --phase 1 or 2")
+        run_identity_change(args.phase, args.anchor)
+    elif args.scenario:
         run_scenario(args.anchor)
     else:
         run_producer(events_per_second=args.eps, duration_seconds=args.duration, device_pool=args.devices)

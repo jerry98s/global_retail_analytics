@@ -34,6 +34,12 @@ CATALOG_LIVE_MODELS: tuple[str, ...] = (
     "int_product_catalog",
 )
 
+# Marketing-owned marts. summary models here are built from one marketing Gold
+# table each; dim_product stays with the catalog DAG.
+MARKETING_MART_SELECT = (
+    "marts.marketing sessions_daily_platform consent_identity_daily customer_segments"
+)
+
 
 def select(*groups: tuple[str, ...] | str) -> str:
     """Space-joined dbt ``--select`` argument from model tuples and selectors."""
@@ -41,3 +47,32 @@ def select(*groups: tuple[str, ...] | str) -> str:
     for group in groups:
         parts.extend([group] if isinstance(group, str) else group)
     return " ".join(parts)
+
+
+# What `-Task quality -Scope` tests. The select lists are the owning DAGs'
+# pending selections; marketing excludes dim_product, which catalog owns.
+QUALITY_SELECTIONS: dict[str, dict[str, object]] = {
+    "finance": {
+        "select": select(
+            WAREHOUSE_LIVE_MODELS,
+            "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily",
+        ),
+        "exclude": [],
+    },
+    "marketing": {
+        "select": select(MARKETING_LIVE_MODELS, MARKETING_MART_SELECT),
+        "exclude": ["dim_product", "customer_360_view"],
+    },
+    "catalog": {
+        "select": select(CATALOG_LIVE_MODELS, "dim_product"),
+        "exclude": [],
+    },
+}
+
+
+def quality_selection(scope: str) -> dict[str, object]:
+    """dbt test selection for one owning DAG. Raises for an unknown scope."""
+    try:
+        return QUALITY_SELECTIONS[scope]
+    except KeyError:
+        raise ValueError(f"Unsupported quality scope: {scope}") from None

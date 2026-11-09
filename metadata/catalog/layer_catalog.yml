@@ -246,6 +246,26 @@ objects:
     freshness_sla_minutes: 120
     is_active: true
 
+  - object_fqn: summary.consent_identity_daily
+    object_type: table
+    platform_layer: summary
+    domain: marketing
+    owner: analytics-engineering
+    grain: (session_date_key, platform, attribution_status)
+    timestamp_column: session_date_key
+    freshness_sla_minutes: 120
+    is_active: true
+
+  - object_fqn: summary.customer_segments
+    object_type: table
+    platform_layer: summary
+    domain: marketing
+    owner: analytics-engineering
+    grain: (rfm_segment)
+    timestamp_column: null
+    freshness_sla_minutes: null
+    is_active: true
+
   - object_fqn: serving.customer_360_serving
     object_type: view
     platform_layer: serving

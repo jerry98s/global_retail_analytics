@@ -55,6 +55,8 @@ See [ADR-008](../decisions/ADR-008-metadata-database.md).
 | `summary.inventory_daily_product_store` | `(snapshot_date_key, product_key, store_key)` | `finance.fact_inventory_snapshot` |
 | `summary.inventory_position_daily` | `(snapshot_date_key, product_id, store_id)`, dense: every product/store every day, carried forward | `finance.fact_inventory_snapshot` |
 | `summary.sessions_daily_platform` | `(session_date_key, platform)` | `marketing.fact_customer_session` |
+| `summary.consent_identity_daily` | `(session_date_key, platform, attribution_status)` | `marketing.fact_customer_session` |
+| `summary.customer_segments` | `rfm_segment` | `marketing.dim_customer` |
 
 No fact-to-fact joins. Conformed dimensions only when needed for attributes
 already present on the fact (keys).
@@ -68,5 +70,6 @@ already present on the fact (keys).
 | `meta.pipeline_run` | One row per run/attempt |
 | `meta.table_freshness` | Append-only freshness / row counts |
 | `meta.dq_check_result` | Append-only dbt / GE / reconciliation outcomes |
+| `meta.pipeline_signal` | Identity-change counts, quarantine rate and the latest replay result for one run |
 
 Writes are fail-open via `scripts/common/metadata_observer.py`.

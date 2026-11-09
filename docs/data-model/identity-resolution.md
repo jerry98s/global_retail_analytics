@@ -177,6 +177,15 @@ bronze.clickstream_events + bronze.pos_transactions
   → serving.customer_360_serving (one row per customer, sessions rolled up)
 ```
 
+## Propagation demo
+
+`scripts/local/demo_identity_change.py` publishes an account with an unverified
+card and two in-store purchases, then verifies the account to both cards. The
+lower card stays the anchor. The next build rekeys the account and the higher
+card, restates the account's session, rekeys that card's POS lines and drops
+the old keys from `dim_customer`. `int_identity_changes` reads the published
+`identity_graph`, so the first phase is published before the second is built.
+
 ## Out of scope (P2 / ADR)
 
 - Probabilistic device graph and cross-device inference

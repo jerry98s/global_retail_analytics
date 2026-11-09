@@ -35,7 +35,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import structlog
 
-from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCT_CATALOG, PRODUCTS, STORES
+from ingestion.kafka.sim_entities import (
+    IDENTITY_CHANGE_CARD,
+    IDENTITY_CHANGE_OTHER_CARD,
+    LOYALTY_IDS,
+    PRODUCT_CATALOG,
+    PRODUCTS,
+    STORES,
+)
 
 log = structlog.get_logger()
 
@@ -190,6 +197,44 @@ def upload_parquet(output_s3: str, txn_date: str, table: pa.Table) -> str:
     uri = f"s3://{bucket}/{key}"
     log.info("pos_parquet_uploaded", uri=uri, rows=table.num_rows, bytes=len(payload))
     return uri
+
+
+def identity_change_rows(txn_date: date) -> list[PosLine]:
+    """One in-store line for each demo card.
+
+    The ids sit outside ``LOYALTY_IDS``, and the transaction ids are fixed, so
+    the daily generator never emits these lines and rewriting the file repeats
+    them. The lower card stays the anchor; the higher card's line is the one
+    an identity change re-keys.
+    """
+    rows = []
+    for loyalty_id in (IDENTITY_CHANGE_CARD, IDENTITY_CHANGE_OTHER_CARD):
+        rows.append(
+            PosLine(
+                transaction_id=str(uuid.uuid5(_TXN_NAMESPACE, f"identity-change#{loyalty_id}")),
+                line_item_number=1,
+                transaction_date=txn_date,
+                store_id=STORES[0],
+                product_id=PRODUCTS[0],
+                loyalty_id=loyalty_id,
+                quantity_sold=1,
+                gross_revenue=Decimal("10.00"),
+                net_revenue=Decimal("10.00"),
+                gross_margin=Decimal("4.00"),
+                is_voided=False,
+            )
+        )
+    return rows
+
+
+def write_identity_change_parquet(output_dir: str, txn_date: date) -> str:
+    """Write the demo lines beside the daily file, without touching it."""
+    part_dir = Path(output_dir) / "data" / f"dt={txn_date.isoformat()}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    path = part_dir / "part-identity-change.parquet"
+    pq.write_table(rows_to_table(identity_change_rows(txn_date)), path, compression="snappy")
+    log.info("identity_change_pos_written", path=str(path), rows=2)
+    return str(path)
 
 
 def write_local_parquet(output_dir: str, txn_date: str, table: pa.Table) -> str:

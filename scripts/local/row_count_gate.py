@@ -8,10 +8,12 @@ saves a baseline; ``save`` does that after a successful publish.
 
 ``--acknowledge-shrink schema.table`` (repeatable) lets a named table shrink
 past the threshold in this run only; the gate reports it as ``acknowledged``.
+``--scope`` (repeatable) audits one owning DAG instead of all three, so a
+blocked marketing table does not block finance.
 
 Usage::
 
-    python scripts/local/row_count_gate.py audit --duckdb <db> --state <json> [--acknowledge-shrink <schema.table> ...]
+    python scripts/local/row_count_gate.py audit --duckdb <db> --state <json> [--scope <name> ...] [--acknowledge-shrink <schema.table> ...]
     python scripts/local/row_count_gate.py save --state <json>
 """
 
@@ -63,14 +65,24 @@ def _scope_tables() -> dict[str, list[str]]:
     return {scope: [f"{s}.{t}" for s, t in tables] for scope, tables in WAP_SCOPES.items()}
 
 
-def audit(duckdb_path: Path, state_path: Path, acknowledge_shrink: list[str]) -> int:
+def audit(
+    duckdb_path: Path,
+    state_path: Path,
+    acknowledge_shrink: list[str],
+    scopes: list[str] | None = None,
+) -> int:
     import duckdb
 
-    scopes = _scope_tables()
-    owned = {key for tables in scopes.values() for key in tables}
+    available = _scope_tables()
+    unknown_scopes = sorted(set(scopes or []) - set(available))
+    if unknown_scopes:
+        print("--scope is not an owning DAG: " + ", ".join(unknown_scopes), file=sys.stderr)
+        return 2
+    chosen = {scope: available[scope] for scope in scopes} if scopes else available
+    owned = {key for tables in chosen.values() for key in tables}
     unknown = sorted(set(acknowledge_shrink) - owned)
     if unknown:
-        print("--acknowledge-shrink names tables no DAG publishes: " + ", ".join(unknown),
+        print("--acknowledge-shrink is outside this audit's scope: " + ", ".join(unknown),
               file=sys.stderr)
         return 2
 
@@ -79,7 +91,7 @@ def audit(duckdb_path: Path, state_path: Path, acknowledge_shrink: list[str]) ->
     results: dict[str, Any] = {}
     con = duckdb.connect(str(duckdb_path), read_only=True)
     try:
-        for scope, tables in scopes.items():
+        for scope, tables in chosen.items():
             results[scope] = reconcile_gold_row_counts(
                 conn=con,
                 var_get=var_get,
@@ -130,13 +142,15 @@ def main(argv: list[str] | None = None) -> int:
     audit_p = sub.add_parser("audit", help="Gate pending Gold before publish.")
     audit_p.add_argument("--duckdb", type=Path, required=True)
     audit_p.add_argument("--state", type=Path, required=True)
+    audit_p.add_argument("--scope", action="append", default=[], choices=tuple(WAP_SCOPES),
+                         help="Owning DAG to audit. Repeatable. Default: all of them.")
     audit_p.add_argument("--acknowledge-shrink", action="append", default=[],
                          metavar="SCHEMA.TABLE")
     save_p = sub.add_parser("save", help="Save the last unblocked audit after publish.")
     save_p.add_argument("--state", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "audit":
-        return audit(args.duckdb, args.state, args.acknowledge_shrink)
+        return audit(args.duckdb, args.state, args.acknowledge_shrink, args.scope or None)
     return save(args.state)
 
 

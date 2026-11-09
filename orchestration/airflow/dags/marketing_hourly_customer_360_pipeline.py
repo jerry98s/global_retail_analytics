@@ -50,7 +50,7 @@ from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 
 from alerting import notify_task_failure
-from dbt_selectors import MARKETING_LIVE_MODELS, select
+from dbt_selectors import MARKETING_LIVE_MODELS, MARKETING_MART_SELECT, select
 from metadata_airflow import (
     dbt_task_bash,
     on_dag_failure,
@@ -69,7 +69,7 @@ from wap_publish import MARKETING_TABLES, clone_marketing_task, publish_marketin
 #   customer_360_view / customer_360_serving — views are never published, so they
 #   are built after publish (SELECT_SERVING) against live tables.
 SELECT_PENDING = (
-    select(MARKETING_LIVE_MODELS, "marts.marketing sessions_daily_platform")
+    select(MARKETING_LIVE_MODELS, MARKETING_MART_SELECT)
     + " --exclude dim_product customer_360_view"
 )
 VARS_PENDING = '{"wap_phase": "pending"}'

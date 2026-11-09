@@ -158,6 +158,32 @@ CUSTOMER_360 = """
     LIMIT 500
 """
 
+SESSION_ATTRIBUTION = """
+    SELECT attribution_status,
+           SUM(session_count) AS session_count,
+           SUM(converted_sessions) AS converted_sessions,
+           SUM(page_view_sessions) AS page_view_sessions,
+           SUM(product_view_sessions) AS product_view_sessions,
+           SUM(cart_sessions) AS cart_sessions
+    FROM summary.consent_identity_daily
+    GROUP BY attribution_status
+"""
+
+CUSTOMER_SEGMENTS = """
+    SELECT rfm_segment,
+           customer_count,
+           marketing_eligible_count,
+           excluded_count,
+           lifetime_value
+    FROM summary.customer_segments
+    ORDER BY customer_count DESC
+"""
+
+SHARED_DEVICES = """
+    SELECT COUNT(*) AS shared_device_count
+    FROM intermediate.int_identity_shared_devices
+"""
+
 # Speed-layer read (ADR-012): published balance plus Flink hours after it.
 INVENTORY_LIVE = """
     SELECT SUM(published_on_hand_qty) AS published_on_hand_qty,
@@ -169,6 +195,56 @@ INVENTORY_LIVE = """
            SUM(CASE WHEN is_provisional THEN 1 ELSE 0 END) AS provisional_pairs
     FROM serving.inventory_current_position
 """
+
+
+def metadata_path() -> Path:
+    override = os.environ.get("METADATA_DUCKDB_PATH")
+    if override:
+        return Path(override)
+    return duckdb_path().parent / "local_metadata.duckdb"
+
+
+def _metadata_frame(sql: str) -> pd.DataFrame:
+    import duckdb
+
+    path = metadata_path()
+    if not path.is_file():
+        return pd.DataFrame()
+    con = duckdb.connect(str(path), read_only=True)
+    try:
+        return con.execute(sql).df()
+    finally:
+        con.close()
+
+
+def load_pipeline_signals() -> pd.DataFrame:
+    """Latest run's identity, quarantine and replay signals. Empty when unrecorded."""
+    return _metadata_frame(
+        """
+        SELECT signal_name, signal_value, detail, measured_at
+        FROM meta.pipeline_signal
+        WHERE execution_id = (
+            SELECT execution_id FROM meta.pipeline_signal
+            ORDER BY measured_at DESC LIMIT 1
+        )
+        ORDER BY signal_name
+        """
+    )
+
+
+def load_freshness() -> pd.DataFrame:
+    """Latest freshness measurement per table. Empty when unrecorded."""
+    return _metadata_frame(
+        """
+        SELECT schema_name, table_name, row_count, lag_minutes, sla_status, measured_at
+        FROM meta.table_freshness
+        WHERE execution_id = (
+            SELECT execution_id FROM meta.table_freshness
+            ORDER BY measured_at DESC LIMIT 1
+        )
+        ORDER BY schema_name, table_name
+        """
+    )
 
 
 def format_hour_key(hour_key: int | float | str | None) -> str:

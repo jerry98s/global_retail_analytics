@@ -152,23 +152,102 @@ def render_gold() -> None:
             st.bar_chart(by_store.set_index("store__store_name")["ending_on_hand_qty"])
 
     with tab_customer:
-        st.subheader("Customer 360 & funnel")
-        funnel, err = _safe_semantic("session_funnel")
-        if err:
-            _missing("summary.sessions_daily_platform", err)
-        elif not funnel.empty:
-            st.dataframe(
-                funnel.rename(columns={"platform_day__platform": "platform"}),
-                use_container_width=True,
-                hide_index=True,
-            )
+        _render_customer_360()
 
-        c360, err = _safe_query(data.CUSTOMER_360)
-        if err:
-            _missing("serving.customer_360_serving", err)
-        elif not c360.empty:
-            st.subheader("Customers by RFM segment")
-            st.bar_chart(c360.groupby("rfm_segment").size())
+
+def _render_customer_360() -> None:
+    st.subheader("Session analytics")
+    st.caption("Anonymous sessions stay in the conversion denominator.")
+    attribution, err = _safe_query(data.SESSION_ATTRIBUTION)
+    if err:
+        _missing("summary.consent_identity_daily", err)
+    elif attribution.empty:
+        st.warning("No session rows yet.")
+    else:
+        sessions = int(attribution["session_count"].sum())
+        converted = int(attribution["converted_sessions"].sum())
+        rate = converted / sessions if sessions else 0
+        abandonment = 1 - rate
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Sessions", f"{sessions:,}")
+        c2.metric("Conversion rate", f"{rate:.1%}")
+        c3.metric("Funnel abandonment", f"{abandonment:.1%}")
+        stages = pd.DataFrame(
+            {
+                "sessions": [
+                    sessions,
+                    int(attribution["product_view_sessions"].sum()),
+                    int(attribution["cart_sessions"].sum()),
+                    converted,
+                ]
+            },
+            index=["All sessions", "Product view", "Add to cart", "Converted"],
+        )
+        st.bar_chart(stages)
+
+    funnel, err = _safe_semantic("session_funnel")
+    if err:
+        _missing("summary.sessions_daily_platform", err)
+    elif not funnel.empty:
+        st.subheader("Platform performance")
+        st.bar_chart(funnel.set_index("platform_day__platform")["conversion_rate"])
+
+    st.subheader("Customer segments")
+    st.caption("Verified profiles only. Loyal, champion and at-risk segments bought at least three times.")
+    segments, err = _safe_query(data.CUSTOMER_SEGMENTS)
+    if err:
+        _missing("summary.customer_segments", err)
+    elif segments.empty:
+        st.warning("No customer segments yet.")
+    else:
+        repeat = segments[segments["rfm_segment"].isin(["champions", "loyal", "at_risk"])]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Verified profiles", f"{int(segments['customer_count'].sum()):,}")
+        c2.metric("Repeat purchasers", f"{int(repeat['customer_count'].sum()):,}")
+        c3.metric("Lifetime value", f"${segments['lifetime_value'].sum():,.0f}")
+        st.bar_chart(segments.set_index("rfm_segment")["customer_count"])
+
+    st.subheader("Consent and identity")
+    if not err and not segments.empty:
+        eligible = int(segments["marketing_eligible_count"].sum())
+        excluded = int(segments["excluded_count"].sum())
+        c1, c2 = st.columns(2)
+        c1.metric("Marketing-eligible", f"{eligible:,}")
+        c2.metric("Excluded", f"{excluded:,}")
+    if not attribution.empty:
+        ambiguous = attribution.loc[attribution["attribution_status"] == "ambiguous", "session_count"]
+        st.metric("Ambiguous sessions", f"{int(ambiguous.sum()) if not ambiguous.empty else 0:,}")
+    devices, device_err = _safe_query(data.SHARED_DEVICES)
+    if device_err:
+        _missing("intermediate.int_identity_shared_devices", device_err)
+    elif not devices.empty:
+        st.metric("Shared devices", f"{int(devices['shared_device_count'].iloc[0]):,}")
+
+    st.subheader("Pipeline reliability")
+    _render_reliability()
+
+
+def _render_reliability() -> None:
+    try:
+        signals = data.load_pipeline_signals()
+        freshness = data.load_freshness()
+    except Exception as exc:  # noqa: BLE001 - the metadata store is optional for the page
+        st.info(f"Pipeline signals are not recorded yet.\n\n{exc}")
+        return
+    if signals.empty and freshness.empty:
+        st.info("No pipeline signals recorded yet. They are written at the end of a local run.")
+        return
+    if not signals.empty:
+        values = dict(zip(signals["signal_name"], signals["signal_value"], strict=True))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Identity changes", f"{int(sum(v for k, v in values.items() if k.startswith('identity_changes_'))):,}")
+        rate = values.get("quarantine_rate")
+        c2.metric("Quarantine rate", "—" if rate is None else f"{rate:.2%}")
+        replay = values.get("replay_match")
+        c3.metric("Latest replay", "—" if replay is None else ("match" if replay == 1 else "mismatch"))
+        st.dataframe(signals, use_container_width=True, hide_index=True)
+    if not freshness.empty:
+        st.dataframe(freshness, use_container_width=True, hide_index=True)
 
 
 def render_local() -> None:

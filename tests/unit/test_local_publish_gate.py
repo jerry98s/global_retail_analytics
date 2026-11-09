@@ -52,8 +52,10 @@ def _baseline(state: Path, scope: str) -> dict:
     return json.loads(_variables(state)[baseline_var_name(scope)])
 
 
-def _audit(gate, db: Path, state: Path, *ack: str) -> int:
+def _audit(gate, db: Path, state: Path, *ack: str, scope: str | None = None) -> int:
     argv = ["audit", "--duckdb", str(db), "--state", str(state)]
+    if scope:
+        argv += ["--scope", scope]
     for table in ack:
         argv += ["--acknowledge-shrink", table]
     return gate.main(argv)
@@ -105,6 +107,25 @@ class TestRowCountGate:
         _pending_db(db, dim_customer=100)
         assert _audit(gate, db, state) == 1
 
+    def test_a_blocked_scope_does_not_block_another(self, tmp_path):
+        gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
+        _pending_db(db, dim_customer=100, fact_sales=100)
+        _audit(gate, db, state)
+        gate.main(["save", "--state", str(state)])
+
+        _pending_db(db, dim_customer=20, fact_sales=100)
+        assert _audit(gate, db, state) == 1
+        assert _audit(gate, db, state, scope="marketing") == 1
+        assert _audit(gate, db, state, scope="finance") == 0
+        gate.main(["save", "--state", str(state)])
+        assert _baseline(state, "finance")["finance.fact_sales"] == 100
+        assert _baseline(state, "marketing")["marketing.dim_customer"] == 100
+
+    def test_an_acknowledgement_for_another_scope_is_rejected(self, tmp_path):
+        gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
+        _pending_db(db)
+        assert _audit(gate, db, state, "finance.fact_sales", scope="marketing") == 2
+
     def test_unknown_acknowledgement_is_rejected(self, tmp_path):
         gate, db, state = _gate(), tmp_path / "db.duckdb", tmp_path / "state.json"
         _pending_db(db)
@@ -143,5 +164,15 @@ class TestStackWiring:
 
     def test_acknowledge_shrink_reaches_the_gate(self):
         assert "[string[]]$AcknowledgeShrink" in _STACK
-        body = _STACK.split("function Invoke-RowCountGateLocal {", 1)[1].split("\n}", 1)[0]
+        body = _STACK.split("function Invoke-RowCountGateLocal {", 1)[1].split("\nfunction ", 1)[0]
         assert "'--acknowledge-shrink', $table" in body
+        assert "'--scope', $Scope" in body
+
+    def test_quality_scope_publishes_only_that_dag(self):
+        assert 'throw "-Scope is only valid with -Task quality."' in _STACK
+        quality = _STACK.split('Pipeline "local_quality"', 1)[1].split('Pipeline "local_e2e"', 1)[0]
+        assert "Get-ScopeTestArgs -Scope $Scope" in quality
+        assert "Invoke-RowCountGateLocal -Scope $Scope" in quality
+        assert "Invoke-WapPublishLocal -Scope $Scope" in quality
+        publish = _STACK.split("function Invoke-WapPublishLocal {", 1)[1].split("\nfunction ", 1)[0]
+        assert "WAP_TABLES if scope == 'all' else WAP_SCOPES[scope]" in publish

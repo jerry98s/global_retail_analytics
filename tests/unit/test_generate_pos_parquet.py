@@ -111,3 +111,17 @@ def test_line_measures_follow_product_catalog(gen_module) -> None:
         assert row.gross_revenue * Decimal("0.79") <= row.net_revenue <= row.gross_revenue
         assert row.gross_margin == (row.net_revenue - product.unit_cost * qty).quantize(Decimal("0.01"))
         assert row.gross_margin > 0
+
+
+def test_identity_change_lines_sit_outside_the_daily_draw(gen_module) -> None:
+    from ingestion.kafka.sim_entities import (
+        IDENTITY_CHANGE_CARD,
+        IDENTITY_CHANGE_OTHER_CARD,
+        LOYALTY_IDS,
+    )
+
+    first = gen_module.identity_change_rows(date(2026, 11, 8))
+    again = gen_module.identity_change_rows(date(2026, 11, 8))
+    assert [(r.transaction_id, r.loyalty_id) for r in first] == [(r.transaction_id, r.loyalty_id) for r in again]
+    assert {r.loyalty_id for r in first} == {IDENTITY_CHANGE_CARD, IDENTITY_CHANGE_OTHER_CARD}
+    assert all(r.loyalty_id not in LOYALTY_IDS and not r.is_voided for r in first)

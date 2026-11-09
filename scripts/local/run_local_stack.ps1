@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $false)]
-    [ValidateSet("up", "topics", "simulate", "flink", "flink-stop", "pos-parquet", "spark", "load-duckdb", "dbt", "quality", "all")]
+    [ValidateSet("up", "topics", "simulate", "flink", "flink-stop", "pos-parquet", "spark", "load-duckdb", "dbt", "quality", "replay", "all")]
     [string]$Task = "all",
     [Parameter(Mandatory = $false)]
     [ValidateRange(100, 100000)]
@@ -31,7 +31,13 @@ param(
     # Row-count gate (same contract as the DAGs' acknowledge_shrink param):
     # owned schema.table names allowed to shrink past the threshold this run.
     [Parameter(Mandatory = $false)]
-    [string[]]$AcknowledgeShrink = @()
+    [string[]]$AcknowledgeShrink = @(),
+    # -Task quality only. One owning DAG's tests, gate and publish, so a
+    # blocked marketing run still lets finance publish. Default audits and
+    # publishes every scope, which is what -Task all does.
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("finance", "marketing", "catalog", "all")]
+    [string]$Scope = "all"
 )
 
 $ErrorActionPreference = "Stop"
@@ -204,6 +210,15 @@ function Finish-LocalPipelineRun {
         $args += @('--error', $ErrorText)
     }
     Invoke-MetadataObserver $args
+    Invoke-MetadataObserver @(
+        'record-signals',
+        '--backend', 'local',
+        '--execution-id', $ExecutionId,
+        '--metadata-duckdb', (Join-Path $DbtDir 'local_metadata.duckdb'),
+        '--analytics-duckdb', (Join-Path $DbtDir 'local_retail.duckdb'),
+        '--iceberg-dir', $IcebergHostDir,
+        '--replay-dir', (Join-Path $RepoRoot '.local\replay')
+    )
 }
 
 function Invoke-LocalFreshness {
@@ -357,13 +372,31 @@ except ValueError as exc:
 # plugin code), one baseline per scope; baselines are saved only after publish.
 $RowCountGateState = Join-Path $RepoRoot '.local\row_count_gate.json'
 function Invoke-RowCountGateLocal {
+    param([string]$Scope = "all")
     $gateArgs = @(
         'scripts/local/row_count_gate.py', 'audit',
         '--duckdb', (Join-Path $DbtDir 'local_retail.duckdb'),
         '--state', $RowCountGateState
     )
+    if ($Scope -ne "all") { $gateArgs += @('--scope', $Scope) }
     foreach ($table in $AcknowledgeShrink) { $gateArgs += @('--acknowledge-shrink', $table) }
     Invoke-ProjectPython @gateArgs
+}
+
+function Get-ScopeTestArgs {
+    param([Parameter(Mandatory = $true)][string]$Scope)
+    $spec = & (Get-PythonCmd) -c @"
+import json, sys
+sys.path.insert(0, r'$RepoRoot')
+from orchestration.airflow.plugins.dbt_selectors import quality_selection
+print(json.dumps(quality_selection('$Scope')))
+"@
+    if ($LASTEXITCODE -ne 0) { throw "Could not resolve the dbt selection for $Scope" }
+    $parsed = $spec | ConvertFrom-Json
+    $testArgs = @('--select', [string]$parsed.select)
+    $exclude = @($parsed.exclude) | Where-Object { $_ }
+    if ($exclude) { $testArgs += @('--exclude') + $exclude }
+    return $testArgs
 }
 
 function Save-RowCountBaselineLocal {
@@ -457,18 +490,21 @@ function Invoke-WapBootstrapLiveDimProduct {
 # plugin so local and cloud stay aligned. Then build the C360 views against the
 # freshly published live tables.
 function Invoke-WapPublishLocal {
+    param([string]$Scope = "all")
     Invoke-ProjectPython -c @"
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(r'$RepoRoot')))
 import duckdb
-from orchestration.airflow.plugins.wap_publish import WAP_TABLES, publish_gold
+from orchestration.airflow.plugins.wap_publish import WAP_SCOPES, WAP_TABLES, publish_gold
 
+scope = '$Scope'
+tables = WAP_TABLES if scope == 'all' else WAP_SCOPES[scope]
 con = duckdb.connect(r'$(Join-Path $DbtDir 'local_retail.duckdb')')
 try:
-    for schema in {s for s, _ in WAP_TABLES}:
+    for schema in {s for s, _ in tables}:
         con.execute(f'CREATE SCHEMA IF NOT EXISTS {schema}')
-    result = publish_gold(con, WAP_TABLES, dialect='duckdb')
+    result = publish_gold(con, tables, dialect='duckdb')
     print('WAP published:', result['published'])
 finally:
     con.close()
@@ -583,6 +619,9 @@ function Invoke-DbtSeeds {
 
 Push-Location $RepoRoot
 try {
+    if ($Scope -ne "all" -and $Task -ne "quality") {
+        throw "-Scope is only valid with -Task quality."
+    }
     switch ($Task) {
         "up" {
             Ensure-IcebergHostDir
@@ -729,30 +768,62 @@ try {
                 Write-Host "Metadata execution_id: $execId" -ForegroundColor DarkGray
             }
         }
+        # Replay: Spark + dbt twice over the same Bronze, POS file and evaluation
+        # date, fingerprinting pending Gold each time. Publishes nothing; keep the
+        # producers idle and stay within one calendar day (POS is generated per date).
+        "replay" {
+            if ($DbtSource -ne "iceberg" -or (Test-PosRestatement)) {
+                throw "-Task replay needs -DbtSource iceberg and no restatement range."
+            }
+            $replayDir = Join-Path $RepoRoot '.local\replay'
+            # Spark reads POS loyalty ids, so today's file must exist before the first pass.
+            & $PSCommandPath -Task pos-parquet
+            foreach ($pass in @('first', 'second')) {
+                & $PSCommandPath -Task spark
+                & $PSCommandPath -Task dbt
+                Invoke-Step "Fingerprint pending Gold ($pass run)" {
+                    Invoke-ProjectPython scripts/local/replay_check.py snapshot `
+                        --out (Join-Path $replayDir "$pass.json")
+                }
+            }
+            Invoke-Step "Compare replay fingerprints" {
+                Invoke-ProjectPython scripts/local/replay_check.py compare `
+                    (Join-Path $replayDir 'first.json') (Join-Path $replayDir 'second.json')
+            }
+            Invoke-Step "Customer 360 checks (pending Gold)" {
+                Invoke-ProjectPython tests/integration/verify_customer_360.py --pending
+            }
+        }
         "quality" {
             $execId = New-LocalExecutionId
             $pipelineStatus = "SUCCESS"
             $pipelineError = ""
             try {
                 Start-LocalPipelineRun -ExecutionId $execId -Pipeline "local_quality"
-                Invoke-Step "Running dbt tests (pending)" {
+                Invoke-Step "Running dbt tests (pending, scope $Scope)" {
                     Ensure-LocalDbtProfile
                     Push-Location $DbtDir
                     try {
-                        Invoke-ProjectDbt (@(
+                        $testArgs = @(
                             'test', '--profiles-dir', '.', '--target', 'local',
-                            '--vars', (Get-PendingDbtVars), '--exclude'
-                        ) + $WapServingModels) -ExecutionId $execId
+                            '--vars', (Get-PendingDbtVars)
+                        )
+                        if ($Scope -eq "all") {
+                            $testArgs += @('--exclude') + $WapServingModels
+                        } else {
+                            $testArgs += Get-ScopeTestArgs -Scope $Scope
+                        }
+                        Invoke-ProjectDbt $testArgs -ExecutionId $execId
                     }
                     finally {
                         Pop-Location
                     }
                 }
-                Invoke-Step "Row-count gate (pending Gold vs baseline)" {
-                    Invoke-RowCountGateLocal
+                Invoke-Step "Row-count gate (pending Gold vs baseline, scope $Scope)" {
+                    Invoke-RowCountGateLocal -Scope $Scope
                 }
-                Invoke-Step "WAP publish pending Gold -> live" {
-                    Invoke-WapPublishLocal
+                Invoke-Step "WAP publish pending Gold -> live (scope $Scope)" {
+                    Invoke-WapPublishLocal -Scope $Scope
                 }
                 Invoke-Step "Saving row-count baseline (post-publish)" {
                     Save-RowCountBaselineLocal

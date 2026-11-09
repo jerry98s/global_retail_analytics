@@ -79,7 +79,8 @@ uv sync --group dev
  can start in either order; a restart resumes from committed offsets.
 - Kafka host: `127.0.0.1:9092`. Flink UI: `http://localhost:8082`.
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
-- `-Task quality`: `dbt test` + row-count gate (the Gold WAP audit, one baseline per owning DAG, saved after publish; pass `-AcknowledgeShrink <schema.table>` for an expected shrink) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
+- `-Task quality`: `dbt test` + row-count gate (the Gold WAP audit, one baseline per owning DAG, saved after publish; pass `-AcknowledgeShrink <schema.table>` for an expected shrink) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`. `-Scope finance|marketing|catalog` runs that DAG's tests, gate and publish only, so a blocked scope does not stop the others. `-Task all` always publishes every scope.
+- `-Task replay`: Spark and dbt twice over the same Bronze, POS file and date, then `scripts/local/replay_check.py` compares fingerprints of the Spark exports, Customer 360 models and pending Gold. It never publishes. Keep producers idle and finish the same calendar day. Follow with `tests/integration/verify_customer_360.py` on pending Gold.
 - POS restatement: pass `-RestateFrom`/`-RestateTo` to both `-Task dbt` and `-Task quality` (validated by the DAG's `pos_restatement` plugin).
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
@@ -125,13 +126,18 @@ live on `main`.
   `source('silver', 'identity_resolution')`; the old SQL edge/component
   models are retired. WAP unchanged — Gold marts stay dbt-built.
 - Submit: `.\scripts\local\run_local_stack.ps1 -Task spark`, or the marketing DAG on `main`.
+- Local scale check: `.\.venv\Scripts\python.exe scripts/local/benchmark_identity.py`
+  replicates Bronze into `.local/benchmark` at 1×, 5× and 10× and times that
+  same job. It does not write `.local/iceberg`.
 
 ## Metadata + Summary
 
 - Analytics schema `summary.*` (dbt `marts.summary`) holds daily rollups from
   one Gold fact each — see `docs/data-model/platform-layers.md`.
 - Operational DB `metadata.meta.*` (local: `local_metadata.duckdb`) is written
-  by `scripts/common/metadata_observer.py` (fail-open). Not a Glue replacement.
+  by `scripts/common/metadata_observer.py` (fail-open). `meta.pipeline_signal`
+  stores identity-change counts, quarantine rate and the latest replay result.
+  Not a Glue replacement.
 
 ## Model Rules
 

@@ -29,6 +29,7 @@ Environment: Windows, Python 3.11, local project virtual environment.
 | 2026-10-24 | `main`: `python -m pytest tests/unit -q`, Ruff, dbt full compile, `terraform fmt -check` + `validate` | 388 passed; Ruff, compile and Terraform validate passed |
 | 2026-10-24 | `local-testing-version`: `python -m pytest tests/unit -q`, Ruff, dbt full + WAP pending compiles, CI identity chain (`dbt seed`, `run +identity_graph`, `test`) | 381 passed; compiles passed; identity chain 9/9 models, 21/21 tests |
 | 2026-10-24 | `local-testing-version`: two WAP rounds on `.local/iceberg` output loaded into a scratch DuckDB (clone → pending build → `dbt test` → publish → serving views) | Each round: 23/23 models, 158/158 dbt tests, 10 Gold tables published; round 2 left all 10 Gold row counts unchanged |
+| 2026-11-09 | `local-testing-version`: fresh `local_retail.duckdb`, then `dbt seed`, empty `silver.inventory_events` / `silver.inventory_hourly` / `silver.inventory_offset_gaps`, `dbt run --full-refresh` of `+identity_graph int_identity_shared_devices int_session_reconstruction +fact_sales +fact_inventory_snapshot int_inventory_batch_coverage int_inventory_hourly`, then `dbt test --select int_identity_shared_devices int_identity_resolution identity_graph test_type:unit --indirect-selection cautious` | PASS=31 WARN=0 ERROR=0 SKIP=0 TOTAL=31, including all 12 unit tests. An earlier 12/12 in 2.71s on 2026-11-08 used an already-built warehouse |
 
 Re-run these commands after any material change and update the table only from
 captured output.
@@ -85,6 +86,32 @@ Suggested protocol:
 | 3,000 eps | — | — | — | — | Not measured |
 | 5,000 eps | — | — | — | — | Not measured |
 | 10,000 eps | — | — | — | — | Not measured |
+
+## Spark identity scaling
+
+This is not the throughput protocol above. On 2026-11-08 the local identity
+job was run against copies of the current Bronze in `.local/benchmark`. The
+real `.local/iceberg` warehouse was not written. 5× and 10× retag every
+account, loyalty id, device and session, so each copy is a different set of
+people and the job cannot deduplicate the copies away. The timed command is
+the same `spark-submit` as `-Task spark`, with `--driver-memory 2g` and
+`local[*]`. Wall time includes JVM startup and excludes building the copy.
+
+The image default heap is 1g. At that setting 1× finished in 537s and 5× in
+885s, with the same row counts as below, and 10× ran out of Java heap while
+writing canonical clickstream duplicates. The table is the 2g rerun, where
+all three scales finish. Peak memory is the Docker container's high-water
+mark during that job.
+
+| Scale | Clickstream rows | Identity rows | Edges | Components | Wall time | Peak memory |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1× | 549,673 | 26,329 | 6,580 | 19,749 | 561s | 3,537 MiB |
+| 5× | 2,748,365 | 131,645 | 32,900 | 98,745 | 832s | 3,528 MiB |
+| 10× | 5,496,730 | 263,290 | 65,800 | 197,490 | 1,188s | 3,545 MiB |
+
+Identity rows, edges and components at 5× and 10× are exactly five and ten
+times the 1× result. Inventory rows (54,542 × scale) and POS lines (7,588 ×
+scale) were copied the same way. Time grew much less than the row count.
 
 ## Visual-proof slots
 

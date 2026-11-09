@@ -10,6 +10,12 @@ $env:DASHBOARD_MODE = "duckdb"
 .\.venv\Scripts\streamlit.exe run dashboard/app.py
 ```
 
+Customer 360 has four sections. Session analytics and customer segments
+read `summary.consent_identity_daily` and `summary.customer_segments`. Consent
+counts shared devices from `intermediate.int_identity_shared_devices`. Pipeline
+reliability reads `meta.pipeline_signal` and `meta.table_freshness` in the
+metadata DuckDB next to the analytics file.
+
 Sales, inventory and session numbers come from the dbt semantic layer
 (ADR-013). `semantic_queries.py` holds the SQL MetricFlow compiled for DuckDB
 and Redshift; regenerate it after changing

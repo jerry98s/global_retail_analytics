@@ -136,6 +136,17 @@ CREATE TABLE IF NOT EXISTS meta.dq_check_result (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (execution_id, check_system, check_name)
 );
+
+CREATE TABLE IF NOT EXISTS meta.pipeline_signal (
+    execution_id VARCHAR NOT NULL,
+    signal_name VARCHAR NOT NULL,
+    signal_value DOUBLE,
+    detail VARCHAR,
+    measured_at TIMESTAMP NOT NULL,
+    collector_version VARCHAR,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (execution_id, signal_name)
+);
 """
 
 
@@ -803,6 +814,108 @@ def _infer_hour_column(ts_col: str) -> str | None:
     return f"{prefix}_hour" if prefix else "snapshot_hour"
 
 
+def _export_row_count(iceberg_dir: Path, name: str) -> int | None:
+    """Rows in one Spark consumer export, or None when it has not been published."""
+    manifest = iceberg_dir / "consumer_current" / name / "manifest"
+    if not manifest.is_file():
+        return None
+    marker = f"/consumer_current/{name}/"
+    files: list[Path] = []
+    for entry in json.loads(manifest.read_text(encoding="utf-8"))["entries"]:
+        url = str(entry["url"]).replace("\\", "/")
+        if marker not in url:
+            return None
+        files.append(manifest.parent / url.split(marker, 1)[1])
+    if not files or any(not path.is_file() for path in files):
+        return None
+    import duckdb
+
+    listed = ", ".join("'" + str(path).replace("'", "''") + "'" for path in files)
+    con = duckdb.connect()
+    try:
+        return int(con.execute(f"select count(*) from read_parquet([{listed}])").fetchone()[0])
+    finally:
+        con.close()
+
+
+def _replay_result(replay_dir: Path) -> tuple[float, str] | None:
+    first_path, second_path = replay_dir / "first.json", replay_dir / "second.json"
+    if not first_path.is_file() or not second_path.is_file():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "replay_check", Path(__file__).resolve().parents[1] / "local" / "replay_check.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    first = json.loads(first_path.read_text(encoding="utf-8"))
+    second = json.loads(second_path.read_text(encoding="utf-8"))
+    differences = module.compare(first, second)
+    if differences:
+        return 0.0, f"{len(differences)} tables differ"
+    return 1.0, f"{len(first)} tables matched"
+
+
+def record_pipeline_signals(
+    writer: MetadataWriter,
+    *,
+    execution_id: str,
+    analytics_duckdb: Path,
+    iceberg_dir: Path,
+    replay_dir: Path,
+    measured_at: datetime | None = None,
+) -> int:
+    """Record identity-change counts, the quarantine rate and the latest replay.
+
+    Missing inputs are skipped. A metadata failure is the caller's concern;
+    this function itself raises, and the local stack calls it fail-open.
+    """
+    measured = _iso(measured_at or utc_now())
+    signals: list[tuple[str, float, str | None]] = []
+    if analytics_duckdb.is_file():
+        import duckdb
+
+        con = duckdb.connect(str(analytics_duckdb), read_only=True)
+        try:
+            rows = con.execute(
+                "select change_type, count(*) from intermediate.int_identity_changes group by 1"
+            ).fetchall()
+        finally:
+            con.close()
+        counts = {change: int(count) for change, count in rows}
+        for change in ("added", "rekeyed", "removed"):
+            signals.append((f"identity_changes_{change}", float(counts.get(change, 0)), None))
+
+    events = _export_row_count(iceberg_dir, "clickstream_events")
+    quarantined = _export_row_count(iceberg_dir, "clickstream_quarantine")
+    if events is not None and quarantined is not None and events + quarantined > 0:
+        signals.append((
+            "quarantine_rate",
+            quarantined / (events + quarantined),
+            f"{quarantined} quarantined of {events + quarantined}",
+        ))
+
+    replay = _replay_result(replay_dir)
+    if replay is not None:
+        signals.append(("replay_match", replay[0], replay[1]))
+
+    for name, value, detail in signals:
+        writer.execute(
+            "DELETE FROM meta.pipeline_signal WHERE execution_id = ? AND signal_name = ?",
+            (execution_id, name),
+        )
+        writer.execute(
+            """
+            INSERT INTO meta.pipeline_signal (
+                execution_id, signal_name, signal_value, detail, measured_at, collector_version
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (execution_id, name, value, detail, measured, COLLECTOR_VERSION),
+        )
+    return len(signals)
+
+
 def collect_table_freshness(
     writer: MetadataWriter,
     analytics_conn: Any,
@@ -1046,6 +1159,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=_REPO / "transformation" / "dbt_project" / "target" / "run_results.json",
     )
 
+    p_sig = sub.add_parser("record-signals", help="Record identity, quarantine and replay signals")
+    _add_backend_args(p_sig)
+    p_sig.add_argument("--execution-id", required=True)
+    p_sig.add_argument("--iceberg-dir", type=Path, default=_REPO / ".local" / "iceberg")
+    p_sig.add_argument("--replay-dir", type=Path, default=_REPO / ".local" / "replay")
+
     p_fresh = sub.add_parser("collect-freshness", help="Profile analytics tables")
     _add_backend_args(p_fresh)
     p_fresh.add_argument("--execution-id", required=True)
@@ -1112,6 +1231,16 @@ def main(argv: list[str] | None = None) -> int:
                     writer, execution_id=args.execution_id, results=results
                 )
                 print(f"Recorded {n} dbt DQ rows from {args.run_results}")
+                return 0
+            if args.command == "record-signals":
+                n = record_pipeline_signals(
+                    writer,
+                    execution_id=args.execution_id,
+                    analytics_duckdb=args.analytics_duckdb,
+                    iceberg_dir=args.iceberg_dir,
+                    replay_dir=args.replay_dir,
+                )
+                print(f"Recorded {n} pipeline signals")
                 return 0
             if args.command == "collect-freshness":
                 analytics = open_analytics_reader(args.backend, args)

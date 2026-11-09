@@ -461,10 +461,51 @@ def test_summary_models_exist_and_single_fact_source() -> None:
         "inventory_daily_product_store.sql": "fact_inventory_snapshot",
         "inventory_position_daily.sql": "fact_inventory_snapshot",
         "sessions_daily_platform.sql": "fact_customer_session",
+        "consent_identity_daily.sql": "fact_customer_session",
     }
     for fname, fact in expected.items():
         text = (summary_dir / fname).read_text(encoding="utf-8")
         assert f"ref('{fact}')" in text
         # No fact-to-fact joins: only one fact ref.
         assert text.count("ref('fact_") == 1
+    segments = (summary_dir / "customer_segments.sql").read_text(encoding="utf-8")
+    assert "ref('dim_customer')" in segments
+    assert "ref('fact_" not in segments
     assert (_REPO / "transformation" / "dbt_project" / "tests" / "summary.yml").is_file()
+
+
+def test_pipeline_signals_record_identity_changes_and_replay(tmp_path: Path) -> None:
+    import duckdb
+
+    analytics = tmp_path / "analytics.duckdb"
+    con = duckdb.connect(str(analytics))
+    con.execute("create schema intermediate")
+    con.execute(
+        "create table intermediate.int_identity_changes (change_type varchar, identifier_value varchar)"
+    )
+    con.execute("insert into intermediate.int_identity_changes values ('rekeyed', 'a'), ('added', 'b')")
+    con.close()
+    replay = tmp_path / "replay"
+    replay.mkdir()
+    snapshot = json.dumps({"silver.t": {"rows": 1, "hash": "1", "columns": ["k"]}})
+    (replay / "first.json").write_text(snapshot, encoding="utf-8")
+    (replay / "second.json").write_text(snapshot, encoding="utf-8")
+
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    written = mo.record_pipeline_signals(
+        writer,
+        execution_id="exec-1",
+        analytics_duckdb=analytics,
+        iceberg_dir=tmp_path / "missing-iceberg",
+        replay_dir=replay,
+    )
+    rows = dict(writer.fetchall(
+        "select signal_name, signal_value from meta.pipeline_signal where execution_id = 'exec-1'"
+    ))
+    assert written == 4
+    assert rows["identity_changes_rekeyed"] == 1
+    assert rows["identity_changes_added"] == 1
+    assert rows["identity_changes_removed"] == 0
+    assert rows["replay_match"] == 1
+    assert "quarantine_rate" not in rows
