@@ -21,6 +21,11 @@ EXPECTED_DAGS = {
     "lakehouse_daily_iceberg_maintenance",
 }
 
+# Tasks that only re-raise an upstream failure which already alerted.
+NO_FAILURE_ALERT = {
+    ("warehouse_daily_batch_pipeline", "gold_publish_outcome"),
+}
+
 
 def main(dag_folder: str) -> int:
     bag = DagBag(dag_folder=dag_folder, include_examples=False)
@@ -32,8 +37,16 @@ def main(dag_folder: str) -> int:
         for task in dag.tasks:
             if task.execution_timeout is None:
                 problems.append(f"{dag.dag_id}.{task.task_id}: no execution_timeout")
-            if task.on_failure_callback is None:
+            silent = (dag.dag_id, task.task_id) in NO_FAILURE_ALERT
+            if task.on_failure_callback is None and not silent:
                 problems.append(f"{dag.dag_id}.{task.task_id}: no on_failure_callback")
+            if task.on_failure_callback is not None and silent:
+                problems.append(f"{dag.dag_id}.{task.task_id}: listed in NO_FAILURE_ALERT but alerts")
+    problems += [
+        f"NO_FAILURE_ALERT entry {dag_id}.{task_id} is not a loaded task"
+        for dag_id, task_id in sorted(NO_FAILURE_ALERT)
+        if dag_id not in bag.dags or task_id not in bag.dags[dag_id].task_ids
+    ]
     for problem in problems:
         print(f"FAIL: {problem}")
     if problems:
