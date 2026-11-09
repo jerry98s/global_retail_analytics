@@ -24,7 +24,8 @@ models:
     description: >
       Current stock per (product_id, store_id): the latest published balance in
       live finance.fact_inventory_snapshot plus Flink silver.inventory_hourly
-      hours after the fact's newest hour (ADR-012 speed layer). Built after the
+      hours after that pair's newest fact hour and outside Spark coverage
+      (ADR-012 speed layer). Built after the
       warehouse publish; recomputed on every query.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
@@ -42,7 +43,7 @@ models:
         description: "current_on_hand_qty floored at zero."
         tests: [not_null]
       - name: provisional_qty_delta
-        description: "Sum of Flink hourly deltas after the fact's newest hour; 0 when none."
+        description: "Sum of Flink hourly deltas after this pair's newest fact hour, excluding Spark-covered hours; 0 when none."
         tests: [not_null]
       - name: as_of_hour_key
         description: "YYYYMMDDHH of the newest hour in the balance; NULL for a pair with only an opening balance."
