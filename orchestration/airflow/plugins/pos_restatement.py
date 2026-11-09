@@ -5,6 +5,10 @@ keeps the delivered POS files, registers every partition in the range, and
 passes the range to dbt so fact_sales and sales_daily_store replace exactly
 those days. Without them the run is the normal daily load of ``ds``.
 
+``restate_empty_dates`` lists days inside the range whose corrected delivery
+legitimately has no lines; dbt clears only those. Any other day without
+source lines fails the audit, so a missing file cannot publish as an empty day.
+
 The DAG exposes these as Jinja macros; they import nothing from Airflow so the
 validation is unit-testable.
 """
@@ -42,7 +46,26 @@ def restatement_range(params: dict[str, Any]) -> tuple[date, date] | None:
     return first, last
 
 
+def restatement_empty_dates(params: dict[str, Any]) -> list[date]:
+    """Validated authorized empty days, sorted; [] when none are listed."""
+    raw = params.get("restate_empty_dates")
+    if raw in (None, "", []):
+        return []
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        raise ValueError("restate_empty_dates must be a list of YYYY-MM-DD dates")
+    window = restatement_range(params)
+    if window is None:
+        raise ValueError("restate_empty_dates needs restate_from and restate_to")
+    first, last = window
+    days = sorted({_parse("restate_empty_dates", value) for value in raw})
+    for day in days:
+        if not first <= day <= last:
+            raise ValueError(f"restate_empty_dates {day} is outside {first}..{last}")
+    return days
+
+
 def is_restatement(params: dict[str, Any]) -> bool:
+    restatement_empty_dates(params)
     return restatement_range(params) is not None
 
 
@@ -57,11 +80,14 @@ def pos_partition_dates(params: dict[str, Any], ds: str) -> list[str]:
 
 def pos_dbt_vars(params: dict[str, Any]) -> str:
     """dbt --vars JSON for the pending build and audit of this run."""
-    dbt_vars: dict[str, str] = {"wap_phase": "pending"}
+    dbt_vars: dict[str, Any] = {"wap_phase": "pending"}
     window = restatement_range(params)
     if window is not None:
         dbt_vars["pos_restate_from"] = window[0].isoformat()
         dbt_vars["pos_restate_to"] = window[1].isoformat()
+    empty_days = restatement_empty_dates(params)
+    if empty_days:
+        dbt_vars["pos_restate_empty_dates"] = [day.isoformat() for day in empty_days]
     return json.dumps(dbt_vars)
 
 

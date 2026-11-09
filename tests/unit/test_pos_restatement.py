@@ -72,6 +72,31 @@ def test_invalid_ranges_fail_before_any_work(params: dict, message: str) -> None
         pr.restatement_range(params)
 
 
+def test_authorized_empty_days_reach_dbt_sorted_and_deduplicated() -> None:
+    params = {**_RANGE, "restate_empty_dates": ["2026-10-03", "2026-10-02", "2026-10-03"]}
+    assert json.loads(pr.pos_dbt_vars(params))["pos_restate_empty_dates"] == [
+        "2026-10-02", "2026-10-03",
+    ]
+    assert "pos_restate_empty_dates" not in json.loads(pr.pos_dbt_vars(_RANGE))
+    assert "pos_restate_empty_dates" not in json.loads(
+        pr.pos_dbt_vars({**_RANGE, "restate_empty_dates": []})
+    )
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({**_DAILY, "restate_empty_dates": ["2026-10-02"]}, "needs restate_from"),
+        ({**_RANGE, "restate_empty_dates": ["2026-10-04"]}, "outside"),
+        ({**_RANGE, "restate_empty_dates": "2026-10-02"}, "must be a list"),
+        ({**_RANGE, "restate_empty_dates": ["2026-10-02';drop"]}, "YYYY-MM-DD"),
+    ],
+)
+def test_invalid_empty_days_fail_before_any_work(params: dict, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        pr.is_restatement(params)
+
+
 # ---------- DAG templates rendered with the plugin macros ----------
 
 def _task_template(task_id: str, field: str) -> str:

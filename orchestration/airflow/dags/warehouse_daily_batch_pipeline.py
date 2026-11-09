@@ -33,7 +33,9 @@ Corrected POS files older than the `pos_restatement_days` lookback: trigger
 the DAG manually with params `restate_from` / `restate_to` (inclusive,
 YYYY-MM-DD). That run keeps the delivered files (no generator), registers
 every partition in the range, and rebuilds/audits/publishes exactly those
-days through the same WAP path. See docs/runbooks/bronze-replay.md.
+days through the same WAP path. A day whose corrected delivery has no lines
+is cleared only when listed in `restate_empty_dates`; any other empty day
+fails the audit. See docs/runbooks/bronze-replay.md.
 
 The final publish-outcome task (ALL_DONE) decides the run state: the run
 succeeds when the WAP publish succeeded, even if ANALYZE, the usage check, or
@@ -157,6 +159,15 @@ with DAG(
             pattern=r"^\d{4}-\d{2}-\d{2}$",
             description="Last POS date to restate (inclusive). Set together with restate_from.",
         ),
+        "restate_empty_dates": Param(
+            [],
+            type="array",
+            items={"type": "string", "pattern": r"^\d{4}-\d{2}-\d{2}$"},
+            description=(
+                "Days inside the restatement range whose corrected delivery has no lines. "
+                "Only these are cleared; any other empty day fails the audit."
+            ),
+        ),
         "acknowledge_shrink": Param(
             [],
             type="array",
@@ -227,7 +238,8 @@ with DAG(
         python_callable = clone_finance_summary_task,
     )
 
-    # A restatement run adds pos_restate_from / pos_restate_to to the vars.
+    # A restatement run adds pos_restate_from / pos_restate_to (and any
+    # pos_restate_empty_dates) to the vars.
     dbt_marts = _dbt_step(
         "dbt_mart_models",
         "run",

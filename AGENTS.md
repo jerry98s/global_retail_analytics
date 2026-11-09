@@ -81,7 +81,7 @@ uv sync --group dev
 - Prefer `.\.venv\Scripts\python.exe` / `dbt.exe` (stack script uses `.venv`).
 - `-Task quality`: `dbt test` + row-count gate (the Gold WAP audit, one baseline per owning DAG, saved after publish; pass `-AcknowledgeShrink <schema.table>` for an expected shrink) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`. `-Scope finance|marketing|catalog` runs that DAG's tests, gate and publish only, so a blocked scope does not stop the others. `-Task all` always publishes every scope.
 - `-Task replay`: Spark and dbt twice over the same Bronze, POS file and date, then `scripts/local/replay_check.py` compares fingerprints of the Spark exports, Customer 360 models and pending Gold. It never publishes. Keep producers idle and finish the same calendar day. Follow with `tests/integration/verify_customer_360.py` on pending Gold.
-- POS restatement: pass `-RestateFrom`/`-RestateTo` to both `-Task dbt` and `-Task quality` (validated by the DAG's `pos_restatement` plugin).
+- POS restatement: pass `-RestateFrom`/`-RestateTo` to both `-Task dbt` and `-Task quality` (validated by the DAG's `pos_restatement` plugin). A day whose corrected file has no lines must also be listed in `-RestateEmptyDates`, or the audit blocks.
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
   `.local/iceberg/silver/identity_resolution`. `-Task all` (iceberg source)

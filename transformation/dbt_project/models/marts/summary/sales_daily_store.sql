@@ -3,7 +3,8 @@
     materialized='incremental',
     unique_key=['date_key'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    pre_hook="{{ pos_clear_empty_days() }}"
   )
 }}
 
@@ -16,7 +17,8 @@
   and replace each reprocessed day whole (delete+insert on date_key), so a
   store-day whose lines all became voided or were removed is deleted rather
   than left with its old totals. pos_restate_from / pos_restate_to switch
-  the window to that explicit date range, matching fact_sales.
+  the window to that explicit date range, matching fact_sales, and days in
+  pos_restate_empty_dates are deleted first.
 */
 
 {% set restate = pos_restate_range() %}

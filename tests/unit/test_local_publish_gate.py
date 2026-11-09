@@ -142,6 +142,7 @@ class TestStackWiring:
         assert "from orchestration.airflow.plugins.pos_restatement import pos_dbt_vars" in _STACK
         pending_uses = re.findall(r"'--vars', \(Get-PendingDbtVars\)", _STACK)
         assert len(pending_uses) == 3  # iceberg pending run + both pending audits
+        assert "'restate_empty_dates': empty" in _STACK
 
     def test_restatement_skips_the_pos_generator(self):
         body = _STACK.split("function Invoke-PosParquetLocal {", 1)[1]

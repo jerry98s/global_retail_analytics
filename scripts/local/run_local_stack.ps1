@@ -28,6 +28,10 @@ param(
     [string]$RestateFrom = "",
     [Parameter(Mandatory = $false)]
     [string]$RestateTo = "",
+    # Days inside the range whose corrected file has no lines (restate_empty_dates).
+    # Only these are cleared; any other empty day fails the audit.
+    [Parameter(Mandatory = $false)]
+    [string[]]$RestateEmptyDates = @(),
     # Row-count gate (same contract as the DAGs' acknowledge_shrink param):
     # owned schema.table names allowed to shrink past the threshold this run.
     [Parameter(Mandatory = $false)]
@@ -333,7 +337,7 @@ function Wait-ForIcebergParquet {
 }
 
 function Test-PosRestatement {
-    return [bool]($RestateFrom -or $RestateTo)
+    return [bool]($RestateFrom -or $RestateTo -or $RestateEmptyDates.Count)
 }
 
 # dbt --vars for the pending build and audit, from the same plugin the cloud
@@ -344,25 +348,28 @@ function Get-PendingDbtVars {
     if ($null -eq $script:PendingDbtVars) {
         $env:POS_RESTATE_FROM = $RestateFrom
         $env:POS_RESTATE_TO = $RestateTo
+        $env:POS_RESTATE_EMPTY_DATES = ($RestateEmptyDates -join ",")
         try {
             $out = (& (Get-PythonCmd) -c @"
 import os, sys
 sys.path.insert(0, r'$RepoRoot')
 from orchestration.airflow.plugins.pos_restatement import pos_dbt_vars
+empty = [d.strip() for d in os.environ.get('POS_RESTATE_EMPTY_DATES', '').split(',') if d.strip()]
 try:
     print(pos_dbt_vars({'restate_from': os.environ.get('POS_RESTATE_FROM') or None,
-                        'restate_to': os.environ.get('POS_RESTATE_TO') or None}))
+                        'restate_to': os.environ.get('POS_RESTATE_TO') or None,
+                        'restate_empty_dates': empty}))
 except ValueError as exc:
     print(exc)
     sys.exit(2)
 "@)
             if ($LASTEXITCODE -ne 0) {
-                throw "Invalid -RestateFrom/-RestateTo: $out"
+                throw "Invalid -RestateFrom/-RestateTo/-RestateEmptyDates: $out"
             }
             $script:PendingDbtVars = $out
         }
         finally {
-            Remove-Item Env:POS_RESTATE_FROM, Env:POS_RESTATE_TO -ErrorAction SilentlyContinue
+            Remove-Item Env:POS_RESTATE_FROM, Env:POS_RESTATE_TO, Env:POS_RESTATE_EMPTY_DATES -ErrorAction SilentlyContinue
         }
     }
     return $script:PendingDbtVars

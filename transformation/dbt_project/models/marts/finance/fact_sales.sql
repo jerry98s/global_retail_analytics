@@ -5,7 +5,8 @@
     incremental_strategy='delete+insert',
     on_schema_change='append_new_columns',
     dist='product_key',
-    sort='date_key'
+    sort='date_key',
+    pre_hook="{{ pos_clear_empty_days() }}"
   )
 }}
 
@@ -34,7 +35,9 @@
   inside the window, and re-keys unknown products once dim_product publishes
   them. The grain is still enforced by the unique_combination_of_columns test.
   Setting vars pos_restate_from / pos_restate_to replaces exactly that date
-  range instead, for corrected files older than the lookback.
+  range instead, for corrected files older than the lookback. A day in the
+  range with no source lines keeps its old rows unless it is listed in
+  pos_restate_empty_dates; the pre-hook deletes those days first.
   Outside an explicit restatement, any older day whose stored customer_key no
   longer matches the loyalty_id's current key (an identity change merged two
   cards) is also reprocessed whole.

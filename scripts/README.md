@@ -41,4 +41,16 @@ and published.
 .\scripts\local\run_local_stack.ps1 -Task quality -RestateFrom 2026-10-10 -RestateTo 2026-10-11
 ```
 
+Every day in the range must have POS lines, or the audit
+`pos_restatement_days_have_source_rows` blocks the publish: a missing file is
+not an empty day. When the corrected file legitimately has no lines for a day,
+list it in both steps (`restate_empty_dates` on the DAG). That day is cleared
+from `fact_sales` and `sales_daily_store` in pending; a listed day that still
+has lines fails the audit.
+
+```powershell
+.\scripts\local\run_local_stack.ps1 -Task dbt -RestateFrom 2026-10-10 -RestateTo 2026-10-11 -RestateEmptyDates 2026-10-11
+.\scripts\local\run_local_stack.ps1 -Task quality -RestateFrom 2026-10-10 -RestateTo 2026-10-11 -RestateEmptyDates 2026-10-11
+```
+
 See `infra/docker/README.md` for the compose files.
