@@ -13,6 +13,7 @@ Local default path reuses Flink Iceberg Parquet for dbt:
 | `bronze.inventory_events` | Flink `inventory_bronze_job` | `.local/iceberg/...` Parquet |
 | `silver.inventory_hourly` | Flink `inventory_silver_job` (1‑min window locally) | `.local/iceberg/...` Parquet |
 | `bronze.pos_transactions` | `generate_pos_parquet --output-dir` (no local Flink POS job) | `.local/iceberg/bronze/pos_transactions/` |
+| `bronze.pos_returns` | `generate_pos_returns_parquet` from the POS files, same `-Task pos-parquet` run | `.local/iceberg/bronze/pos_returns/` |
 | `finance.dim_date` / `dim_store` | No stream | **dbt seeds only** |
 
 ```powershell

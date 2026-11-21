@@ -83,7 +83,7 @@ def test_snapshot_covers_spark_exports_models_and_every_pending_gold_table() -> 
     assert ("intermediate", "int_identity_changes") in replay.BUSINESS_MODELS
     source = (_REPO / "scripts" / "local" / "replay_check.py").read_text(encoding="utf-8")
     assert 'f"{schema}_pending", table) for schema, table in WAP_TABLES' in source
-    assert len(WAP_TABLES) == 12
+    assert len(WAP_TABLES) == 13
 
 
 def test_replay_task_runs_spark_and_dbt_twice_and_never_publishes() -> None:

@@ -41,7 +41,8 @@ them.
 
 Publish strategy, one transaction for the whole DAG-owned set::
 
-    -- preflight: every pending table exists and its columns match live
+    -- preflight: every pending table exists and holds every live column
+    ALTER TABLE live.table ADD COLUMN c type;            -- pending-only columns
     DELETE FROM live.table;                              -- live exists
     CREATE TABLE live.table (LIKE live_pending.table);   -- first publish only
     INSERT INTO live.table (cols) SELECT cols FROM live_pending.table;
@@ -54,8 +55,11 @@ owner and DIST/SORT keys; readers see the previous publish until COMMIT. The
 cost is one copy of each owned table per publish. Pending copies are dropped
 in a follow-up transaction so a drop failure cannot undo the publish.
 
-A column mismatch between pending and live (a model changed shape) aborts the
-publish before any write: the live DDL must be migrated deliberately.
+Columns follow the models' ``on_schema_change='append_new_columns'``: a column
+only pending has is added to live (``ALTER TABLE ... ADD COLUMN``, nullable)
+inside the same publish transaction, so an additive model change publishes in
+one step. A live column missing from pending (dropped or renamed) aborts the
+publish before any write: that live DDL must be migrated deliberately.
 
 Each owning DAG also sets ``max_active_runs=1`` so a second run cannot drop
 and reclone ``*_pending`` while the first run is still building or publishing.
@@ -89,6 +93,7 @@ log = logging.getLogger(__name__)
 # (live schema, table) — every entry is cloned from and published to "<schema>_pending".
 WAP_TABLES: list[tuple[str, str]] = [
     ("finance", "fact_sales"),
+    ("finance", "fact_returns"),
     ("finance", "fact_inventory_snapshot"),
     ("marketing", "dim_customer"),
     ("marketing", "dim_product"),
@@ -106,6 +111,7 @@ WAP_TABLES: list[tuple[str, str]] = [
 # Each DAG clones, builds, audits, and publishes exactly its own tables.
 FINANCE_SUMMARY_TABLES: list[tuple[str, str]] = [
     ("finance", "fact_sales"),
+    ("finance", "fact_returns"),
     ("finance", "fact_inventory_snapshot"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
@@ -163,16 +169,22 @@ def build_publish_statements(
     *,
     live_exists: bool,
     dialect: str = "redshift",
+    add_columns: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Statements replacing one live table's rows with its pending rows.
 
-    The caller runs every owned table's statements inside one transaction.
+    ``add_columns`` are (name, type) pairs only pending has; they are added to
+    live first. The caller runs every owned table's statements inside one
+    transaction.
     """
     live_fqn = f"{schema}.{table}"
     pending_fqn = f"{_pending_schema(schema)}.{table}"
     cols = ", ".join(columns)
     if live_exists:
-        create = [f"DELETE FROM {live_fqn}"]
+        create = [
+            *(f"ALTER TABLE {live_fqn} ADD COLUMN {name} {sql_type}" for name, sql_type in add_columns or []),
+            f"DELETE FROM {live_fqn}",
+        ]
     elif dialect == "duckdb":
         create = [f"CREATE TABLE {live_fqn} AS SELECT * FROM {pending_fqn} WHERE 1 = 0"]
     else:
@@ -210,6 +222,28 @@ def _columns(conn: Any, schema: str, table: str, dialect: str) -> list[str]:
         dialect,
     )
     return [str(r[0]) for r in rows]
+
+
+def _column_types(conn: Any, schema: str, table: str, dialect: str) -> dict[str, str]:
+    """Column name -> SQL type usable in ``ALTER TABLE ... ADD COLUMN``."""
+    rows = _query(
+        conn,
+        "SELECT column_name, data_type, character_maximum_length, numeric_precision, "
+        "numeric_scale FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
+        (schema, table),
+        dialect,
+    )
+    types: dict[str, str] = {}
+    for name, data_type, char_len, precision, scale in rows:
+        sql_type = str(data_type)
+        if dialect != "duckdb":
+            if sql_type in ("character varying", "character") and char_len:
+                sql_type = f"{'varchar' if sql_type == 'character varying' else 'char'}({char_len})"
+            elif sql_type == "numeric" and precision is not None:
+                sql_type = f"numeric({precision},{scale or 0})"
+        types[str(name)] = sql_type
+    return types
 
 
 def _exec(conn: Any, sql: str, dialect: str) -> None:
@@ -312,10 +346,11 @@ def publish_gold(
     ``conn`` is a ``redshift_connector`` connection (cloud) or a ``duckdb``
     connection (local).
 
-    Raises before any write if a pending table is missing or its columns differ
-    from live. A missing live table is the first-ever publish and is created
-    from the pending definition. The whole owned set commits once, so a failure
-    on a later table leaves every live table on the previous publish.
+    Raises before any write if a pending table is missing or lacks a live
+    column. Columns only pending has are added to live in the same transaction.
+    A missing live table is the first-ever publish and is created from the
+    pending definition. The whole owned set commits once, so a failure on a
+    later table leaves every live table on the previous publish.
     """
     missing = [
         f"{_pending_schema(schema)}.{table}"
@@ -329,20 +364,21 @@ def publish_gold(
             + ". Run the clone task and dbt with wap_phase='pending' before publishing."
         )
 
-    plan: list[tuple[str, str, bool, list[str]]] = []
+    plan: list[tuple[str, str, bool, list[str], list[tuple[str, str]]]] = []
     drift: list[str] = []
     for schema, table in tables:
-        pending_cols = _columns(conn, _pending_schema(schema), table, dialect)
+        pending_types = _column_types(conn, _pending_schema(schema), table, dialect)
+        pending_cols = list(pending_types)
         live_exists = _table_exists(conn, schema, table, dialect)
         if live_exists:
             live_cols = _columns(conn, schema, table, dialect)
-            if sorted(live_cols) != sorted(pending_cols):
-                drift.append(
-                    f"{schema}.{table} live={live_cols} pending={pending_cols}"
-                )
-            plan.append((schema, table, True, live_cols))
+            dropped = [c for c in live_cols if c not in pending_types]
+            if dropped:
+                drift.append(f"{schema}.{table} pending lacks live columns {dropped}")
+            added = [(c, pending_types[c]) for c in pending_cols if c not in live_cols]
+            plan.append((schema, table, True, pending_cols, added))
         else:
-            plan.append((schema, table, False, pending_cols))
+            plan.append((schema, table, False, pending_cols, []))
     if drift:
         raise RuntimeError(
             "WAP publish aborted: pending columns differ from live; migrate the live "
@@ -352,9 +388,12 @@ def publish_gold(
     published: list[str] = []
     _begin(conn, dialect)
     try:
-        for schema, table, live_exists, columns in plan:
+        for schema, table, live_exists, columns, added in plan:
+            if added:
+                log.info("WAP adding columns to %s.%s: %s", schema, table, added)
             for sql in build_publish_statements(
-                schema, table, columns, live_exists=live_exists, dialect=dialect
+                schema, table, columns, live_exists=live_exists, dialect=dialect,
+                add_columns=added,
             ):
                 _exec(conn, sql, dialect)
             published.append(f"{schema}.{table}")
@@ -367,14 +406,14 @@ def publish_gold(
     # the pending copies must not roll it back. The next clone drops them anyway.
     try:
         _begin(conn, dialect)
-        for schema, table, _, _ in plan:
+        for schema, table, *_ in plan:
             _exec(conn, f"DROP TABLE IF EXISTS {_pending_schema(schema)}.{table}", dialect)
         _commit(conn, dialect)
     except Exception as exc:  # noqa: BLE001
         _rollback(conn, dialect)
         log.warning("WAP published %s but could not drop pending copies: %s", published, exc)
 
-    for schema, table, live_exists, _ in plan:
+    for schema, table, live_exists, *_ in plan:
         log.info("WAP published %s.%s (live existed: %s)", schema, table, live_exists)
 
     return {"published": published, "count": len(published)}

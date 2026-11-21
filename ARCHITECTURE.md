@@ -80,7 +80,7 @@ flowchart LR
 
   subgraph BATCH["Batch — Airflow MWAA"]
 
-    POSJOB["generate_pos_parquet<br/>daily 00:15 UTC"]
+    POSJOB["generate_pos_parquet +<br/>generate_pos_returns_parquet<br/>daily 00:15 UTC"]
 
     C360["marketing_hourly_customer_360_pipeline<br/>hourly :00 UTC"]
 

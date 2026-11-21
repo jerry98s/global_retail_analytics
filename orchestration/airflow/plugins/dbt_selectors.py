@@ -11,6 +11,7 @@ from __future__ import annotations
 
 WAREHOUSE_LIVE_MODELS: tuple[str, ...] = (
     "stg_pos_transactions",
+    "stg_pos_returns",
     "stg_inventory_events",
     "int_inventory_batch_coverage",
     "int_inventory_coverage_gaps",

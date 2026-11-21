@@ -115,6 +115,7 @@ simulators. Details in the [evidence ledger](./docs/evidence/README.md).
 | Write-Audit-Publish | Consumers only ever see audited data | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) |
 | Semantic layer for metrics | One metric definition for the dashboard and analysts; on-hand is semi-additive | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) |
 | Daily product catalog refresh | Attributes change rarely; finance waits for the publish and warns instead of failing | [ADR-014](./docs/decisions/ADR-014-catalog-refresh-frequency.md) |
+| Voids versus returns | A void cancels a line or a whole transaction and stays for audit; a return is a separate refund record | [ADR-015](./docs/decisions/ADR-015-pos-voids-and-returns.md) |
 
 All decisions: [docs/decisions](./docs/decisions/). Cost figures in
 [ADR-004](./docs/decisions/ADR-004-cost-model.md) are planning scenarios, not

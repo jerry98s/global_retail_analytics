@@ -62,8 +62,26 @@ models:
         description: "Gross margin = net_revenue * margin_rate."
         tests: [not_null]
       - name: is_voided
-        description: "True if the transaction was voided (~1% of simulator output). A NULL in Bronze is passed through, not read as false, so this test blocks the publish."
+        description: "True when line_status or transaction_status is VOIDED (ADR-015); derived in stg_pos_transactions. Voided lines keep their recorded amounts but are not recognized sales. A NULL in Bronze is passed through, not read as false, so this test blocks the publish."
         tests: [not_null]
+      - name: line_status
+        description: "ACTIVE or VOIDED: whether this item was cancelled before checkout. NULL only on rows loaded before the status columns existed and not reprocessed since."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['ACTIVE', 'VOIDED']
+      - name: transaction_status
+        description: "COMPLETED or VOIDED: whether the whole transaction was cancelled. Repeated on every line; pos_void_status_is_consistent checks the lines agree."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['COMPLETED', 'VOIDED']
+      - name: voided_at
+        description: "When the line or its transaction was voided (naive UTC). NULL for recognized sales."
+      - name: void_reason
+        description: "Audit reason for the void, e.g. CASHIER_ERROR. NULL for recognized sales."
+      - name: source_updated_at
+        description: "When the POS source last changed this line (naive UTC). NULL for Bronze written before ADR-015, which also has no void audit fields."
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:

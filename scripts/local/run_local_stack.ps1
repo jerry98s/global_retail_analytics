@@ -422,12 +422,24 @@ function Invoke-PosParquetLocal {
         --date $txnDate `
         --output-dir $outDir `
         --transaction-count $PosTransactionCount
+    Invoke-ProjectPython -m ingestion.batch.generate_pos_returns_parquet `
+        --date $txnDate `
+        --pos-dir $outDir `
+        --output-dir (Join-Path $IcebergHostDir 'bronze\pos_returns')
 }
 
 function Invoke-LoadDuckdb {
-    Invoke-ProjectPython scripts/local/load_iceberg_to_duckdb.py `
-        --iceberg-dir $IcebergHostDir `
-        --duckdb (Join-Path $DbtDir 'local_retail.duckdb')
+    # A restatement clears its days from pending fact_returns, so every restated
+    # day must have a delivered returns file before anything is loaded.
+    $restateArgs = @()
+    if ($RestateFrom -and $RestateTo) {
+        $restateArgs = @('--restate-from', $RestateFrom, '--restate-to', $RestateTo)
+    }
+    Invoke-ProjectPython (@(
+        'scripts/local/load_iceberg_to_duckdb.py',
+        '--iceberg-dir', $IcebergHostDir,
+        '--duckdb', (Join-Path $DbtDir 'local_retail.duckdb')
+    ) + $restateArgs)
 }
 
 # ADR-010: run the GraphFrames identity job in the local Spark image

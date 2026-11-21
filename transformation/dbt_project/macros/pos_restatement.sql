@@ -3,7 +3,8 @@
   (YYYY-MM-DD, inclusive). Returns none when neither is set, so models fall
   back to the pos_restatement_days lookback. Returns a dict with the two dates,
   their YYYYMMDD date_keys, every date in the range, and the authorized empty
-  days otherwise.
+  days otherwise. returns_to_date / returns_to_key extend the range end by
+  pos_return_window_days: the last day a return can reference a restated sale.
 
   pos_restate_empty_dates lists days inside the range whose corrected
   delivery legitimately has no lines. Only those days are cleared when the
@@ -61,11 +62,16 @@
     {%- for n in range((last_day - first_day).days + 1) -%}
         {%- do dates.append((first_day + modules.datetime.timedelta(days=n)).strftime('%Y-%m-%d')) -%}
     {%- endfor -%}
+    {%- set returns_end = (last_day + modules.datetime.timedelta(
+        days=var('pos_return_window_days', 90) | int
+    )).strftime('%Y-%m-%d') -%}
     {{ return({
         'from_date': start,
         'to_date': end,
         'from_key': start | replace('-', '') | int,
         'to_key': end | replace('-', '') | int,
+        'returns_to_date': returns_end,
+        'returns_to_key': returns_end | replace('-', '') | int,
         'dates': dates,
         'empty_dates': empty_dates | unique | sort | list,
         'empty_keys': empty_dates | unique | sort | map('replace', '-', '') | map('int') | list,
@@ -81,5 +87,20 @@
     {%- set restate = pos_restate_range() -%}
     {%- if restate and restate.empty_keys and is_incremental() -%}
         delete from {{ this }} where date_key in ({{ restate.empty_keys | join(', ') }})
+    {%- endif -%}
+{% endmacro %}
+
+{#
+  Pre-hook for fact_returns. A returns file is a full delivery for its date
+  and a day without returns is a zero-row file, so an explicit restatement
+  clears the whole range and reloads it; a return deleted from a corrected
+  file disappears even when it was the day's last one. The loader (local)
+  and the DAG (cloud) fail before dbt when a requested date has no returns
+  file, so a missing file is never cleared as an empty day.
+#}
+{% macro pos_clear_restated_days() %}
+    {%- set restate = pos_restate_range() -%}
+    {%- if restate and is_incremental() -%}
+        delete from {{ this }} where date_key between {{ restate.from_key }} and {{ restate.to_key }}
     {%- endif -%}
 {% endmacro %}

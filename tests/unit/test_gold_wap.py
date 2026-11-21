@@ -27,6 +27,7 @@ _STACK = _REPO / "scripts" / "local" / "run_local_stack.ps1"
 WAP_GOLD_SCHEMAS = ("finance", "marketing", "summary")
 GOLD_INCREMENTAL_MODELS = [
     "models/marts/finance/fact_sales.sql",
+    "models/marts/finance/fact_returns.sql",
     "models/marts/finance/fact_inventory_snapshot.sql",
     "models/marts/marketing/dim_product.sql",
     "models/marts/marketing/fact_customer_session.sql",
@@ -36,6 +37,7 @@ GOLD_INCREMENTAL_MODELS = [
 ]
 GOLD_DIST_SORT = {
     "models/marts/finance/fact_sales.sql": ("product_key", "date_key"),
+    "models/marts/finance/fact_returns.sql": ("product_key", "date_key"),
     "models/marts/finance/fact_inventory_snapshot.sql": ("product_key", "snapshot_date_key"),
     "models/marts/marketing/dim_product.sql": ("product_key", "product_id"),
     "models/marts/marketing/dim_customer.sql": ("customer_key", "loyalty_id"),
@@ -88,6 +90,7 @@ class TestIncrementalSelfRefsUseThis:
     def test_finance_facts_join_live_dim_product(self) -> None:
         for model in (
             "models/marts/finance/fact_sales.sql",
+            "models/marts/finance/fact_returns.sql",
             "models/marts/finance/fact_inventory_snapshot.sql",
         ):
             src = _read(_DBT / model)
@@ -98,6 +101,7 @@ class TestIncrementalSelfRefsUseThis:
     def test_cross_dag_relationship_tests_use_live_source(self) -> None:
         for rel_path in (
             "tests/fact_sales.yml",
+            "tests/fact_returns.yml",
             "tests/summary.yml",
         ):
             src = _read(_DBT / rel_path)
@@ -355,17 +359,76 @@ class TestWapPublishHelper:
             )
         assert conn.execute("SELECT label FROM finance.fact_sales").fetchall() == [("live",)]
 
-    def test_publish_aborts_on_column_drift_before_any_write(self) -> None:
+    def test_publish_adds_new_pending_columns_to_live(self) -> None:
+        # on_schema_change='append_new_columns' appends to the pending clone;
+        # the publish carries the new column to live in the same transaction.
+        from orchestration.airflow.plugins import wap_publish
+
+        conn = self._duckdb_with({
+            "summary.sales_daily_store": [(1, "live")],
+            "summary_pending.sales_daily_store": [(1, "new")],
+        })
+        conn.execute(
+            "ALTER TABLE summary_pending.sales_daily_store ADD COLUMN return_amount DECIMAL(18,4)"
+        )
+        conn.execute("UPDATE summary_pending.sales_daily_store SET return_amount = 12.5")
+        wap_publish.publish_gold(conn, [("summary", "sales_daily_store")], dialect="duckdb")
+        assert conn.execute(
+            "SELECT id, label, return_amount FROM summary.sales_daily_store"
+        ).fetchall() == [(1, "new", 12.5)]
+        types = wap_publish._column_types(conn, "summary", "sales_daily_store", "duckdb")
+        assert types["return_amount"] == "DECIMAL(18,4)"
+
+    def test_publish_aborts_when_pending_lacks_a_live_column(self) -> None:
         from orchestration.airflow.plugins import wap_publish
 
         conn = self._duckdb_with({
             "finance.fact_sales": [(1, "live")],
             "finance_pending.fact_sales": [(1, "new")],
         })
-        conn.execute("ALTER TABLE finance_pending.fact_sales ADD COLUMN extra INTEGER")
-        with pytest.raises(RuntimeError, match="columns differ"):
+        conn.execute("ALTER TABLE finance.fact_sales ADD COLUMN retired INTEGER")
+        with pytest.raises(RuntimeError, match=r"pending lacks live columns \['retired'\]"):
             wap_publish.publish_gold(conn, [("finance", "fact_sales")], dialect="duckdb")
         assert conn.execute("SELECT label FROM finance.fact_sales").fetchall() == [("live",)]
+
+    def test_redshift_column_types_keep_length_and_precision(self) -> None:
+        from orchestration.airflow.plugins import wap_publish
+
+        rows = [
+            ("return_status", "character varying", 256, None, None),
+            ("return_amount", "numeric", None, 18, 4),
+            ("return_transaction_count", "bigint", None, 64, 0),
+            ("voided_at", "timestamp without time zone", None, None, None),
+        ]
+
+        class _Cur:
+            def execute(self, *a: object) -> None:
+                pass
+
+            def fetchall(self) -> list[tuple[object, ...]]:
+                return rows
+
+            def close(self) -> None:
+                pass
+
+        class _Conn:
+            def cursor(self) -> _Cur:
+                return _Cur()
+
+        assert wap_publish._column_types(_Conn(), "summary", "t", "redshift") == {
+            "return_status": "varchar(256)",
+            "return_amount": "numeric(18,4)",
+            "return_transaction_count": "bigint",
+            "voided_at": "timestamp without time zone",
+        }
+        stmts = wap_publish.build_publish_statements(
+            "summary", "t", ["id", "return_amount"], live_exists=True,
+            add_columns=[("return_amount", "numeric(18,4)")],
+        )
+        assert stmts[:2] == [
+            "ALTER TABLE summary.t ADD COLUMN return_amount numeric(18,4)",
+            "DELETE FROM summary.t",
+        ]
 
     def test_publish_failure_rolls_back_whole_set(
         self, monkeypatch: pytest.MonkeyPatch

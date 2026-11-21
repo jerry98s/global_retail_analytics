@@ -11,6 +11,8 @@ This project uses a three-source Kimball model with shared conformed dimensions.
 ## Grain Definitions
 
 - `fact_sales`: one row per `(transaction_id, line_item_number)`
+- `fact_returns`: one row per `(return_id, return_line_number)`, dated and
+  stored at the return; references the original sale line (ADR-015)
 - `fact_inventory_snapshot`: one row per `(snapshot_date_key, snapshot_hour, product_key, store_key)`
 - `fact_customer_session`: one row per `session_id` (the producer's
   `session_instance_id`; one legacy session per client and producer session
@@ -41,6 +43,9 @@ joining clickstream/POS activity into Customer 360 marts.
 - `fact_sales.product_key -> dim_product.product_key`
 - `fact_sales.store_key -> dim_store.store_key`
 - `fact_sales.customer_key -> dim_customer.customer_key`
+- `fact_returns.date_key -> dim_date.date_key`
+- `fact_returns.product_key -> dim_product.product_key`
+- `fact_returns.store_key -> dim_store.store_key`
 - `fact_inventory_snapshot.product_key -> dim_product.product_key`
 - `fact_inventory_snapshot.store_key -> dim_store.store_key`
 - `fact_customer_session.customer_key -> dim_customer.customer_key`

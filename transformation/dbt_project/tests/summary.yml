@@ -3,8 +3,10 @@ version: 2
 models:
   - name: sales_daily_store
     description: >
-      Daily store sales summary from fact_sales only.
-      Grain: (date_key, store_key). Voided lines excluded from measures.
+      Daily store sales and refunds: fact_sales and fact_returns are each
+      aggregated to (date_key, store_key), then full-outer-joined (ADR-015).
+      Grain: (date_key, store_key). Voided lines excluded from sales measures;
+      only recognized refunds count, on the return's date and store.
     columns:
       - name: date_key
         description: Calendar date key (YYYYMMDD).
@@ -36,12 +38,24 @@ models:
         tests: [not_null]
       - name: gross_margin
         tests: [not_null]
+      - name: return_transaction_count
+        description: Distinct returns with a recognized refund on this store-day.
+        tests: [not_null, non_negative]
+      - name: return_amount
+        description: Recognized refunds processed on this store-day.
+        tests: [not_null, non_negative]
+      - name: net_sales_after_returns
+        description: net_revenue - return_amount; negative when refunds exceed sales.
+        tests: [not_null]
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
             combination_of_columns:
               - date_key
               - store_key
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "net_sales_after_returns = net_revenue - return_amount and (transaction_count > 0 or return_transaction_count > 0)"
 
   - name: inventory_daily_product_store
     description: >

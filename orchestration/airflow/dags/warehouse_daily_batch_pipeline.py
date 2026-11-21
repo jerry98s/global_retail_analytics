@@ -1,6 +1,7 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: POS Parquet bronze → Spectrum partition register → dbt staging
+Orchestrates: POS and POS returns Parquet bronze → Spectrum partition
+register → dbt staging
 (owned models) → WAP clone live→pending → dbt marts (pending) → dbt tests
 (pending) → row-count gate (pending) → WAP publish to live → {row-count
 baseline save, serving.inventory_current_position build, Redshift ANALYZE,
@@ -38,11 +39,13 @@ catalog run instead.
 
 Corrected POS files older than the `pos_restatement_days` lookback: trigger
 the DAG manually with params `restate_from` / `restate_to` (inclusive,
-YYYY-MM-DD). That run keeps the delivered files (no generator), registers
-every partition in the range, and rebuilds/audits/publishes exactly those
-days through the same WAP path. A day whose corrected delivery has no lines
-is cleared only when listed in `restate_empty_dates`; any other empty day
-fails the audit. See docs/runbooks/bronze-replay.md.
+YYYY-MM-DD). That run keeps the delivered POS and returns files (no
+generator), registers every partition in the range for both, and
+rebuilds/audits/publishes exactly those days through the same WAP path. A
+day whose corrected POS delivery has no lines is cleared only when listed in
+`restate_empty_dates`; any other empty day fails the audit. A returns file is
+a full delivery for its date, so the restated range of `fact_returns` is
+replaced whole (ADR-015). See docs/runbooks/bronze-replay.md.
 
 The final publish-outcome task (ALL_DONE) decides the run state: the run
 succeeds when the WAP publish succeeded, even if ANALYZE, the usage check, or
@@ -61,6 +64,7 @@ Required Airflow Variables (seed from `.\scripts\cloud\deploy_platform.ps1 -Env 
                                   Tasks fetch the value at runtime, so the
                                   password itself is never an Airflow Variable.
   - pos_bronze_s3_path          : s3://<bronze-bucket>/iceberg/bronze/pos_transactions/
+  - pos_returns_bronze_s3_path  : s3://<bronze-bucket>/iceberg/bronze/pos_returns/
   - alert_topic_arn             : SNS topic for task-failure alerts
 
 Optional Airflow Variables for row-count reconciliation (P2.5):
@@ -223,6 +227,52 @@ with DAG(
         """,
     )
 
+    # Returns are derived from the POS sales in the generator's lookback, so
+    # those dt= partitions are copied down, the generator runs on local files,
+    # and its one file for ds is uploaded. An empty day uploads a zero-row
+    # file, which fact_returns reads as a day without returns. A restatement
+    # clears its days from pending fact_returns, so it first checks that every
+    # requested day has a delivered file: a missing one fails here.
+    generate_pos_returns_parquet = BashOperator(
+        task_id      = "generate_pos_returns_parquet",
+        bash_command = """
+            set -e
+            {% if pos_is_restatement(params) %}
+            echo "Restatement {{ params.restate_from }}..{{ params.restate_to }}: keeping delivered POS returns files"
+            {% for dt in pos_partition_dates(params, ds) %}
+            aws s3 ls "{{ var.value.pos_returns_bronze_s3_path }}data/dt={{ dt }}/part-00000.parquet" > /dev/null \
+                || { echo "Missing POS returns delivery for {{ dt }}" >&2; exit 1; }
+            {% endfor %}
+            exit 0
+            {% endif %}
+            WORK="$(mktemp -d /tmp/pos_returns_task.XXXXXX)"
+            trap 'rm -rf "$WORK"' EXIT
+            aws s3 sync --only-show-errors s3://{{ var.value.artifacts_bucket }}/ingestion "$WORK/ingestion"
+            cd "$WORK"
+            LOOKBACK="$(python -c 'from ingestion.batch.generate_pos_returns_parquet import LOOKBACK_DAYS; print(LOOKBACK_DAYS)')"
+            case "$LOOKBACK" in
+                ''|*[!0-9]*) echo "Invalid returns lookback: '$LOOKBACK'" >&2; exit 1 ;;
+            esac
+            n=0
+            while [ "$n" -le "$LOOKBACK" ]; do
+                DT="$(date -u -d "{{ ds }} -$n day" +%F)"
+                aws s3 sync --only-show-errors \
+                    "{{ var.value.pos_bronze_s3_path }}data/dt=$DT/" "$WORK/pos/data/dt=$DT/"
+                n=$((n + 1))
+            done
+            # Without the day's sales the generator would upload a zero-row
+            # file that reads as a day with no returns.
+            ls "$WORK/pos/data/dt={{ ds }}/"*.parquet > /dev/null
+            python -m ingestion.batch.generate_pos_returns_parquet \
+                --date {{ ds }} \
+                --pos-dir "$WORK/pos" \
+                --output-dir "$WORK/returns"
+            aws s3 cp --only-show-errors \
+                "$WORK/returns/data/dt={{ ds }}/part-00000.parquet" \
+                "{{ var.value.pos_returns_bronze_s3_path }}data/dt={{ ds }}/part-00000.parquet"
+        """,
+    )
+
     # Spectrum does not auto-discover Hive partitions. Without this, today's
     # dt=<ds> directory is invisible and fact_sales incremental reads yesterday.
     # ADD IF NOT EXISTS keeps the task idempotent on DAG retry (S3 object is
@@ -238,6 +288,20 @@ with DAG(
             {% for dt in pos_partition_dates(params, ds) %}
             PARTITION (dt='{{ dt }}')
             LOCATION '{{ var.value.pos_bronze_s3_path }}data/dt={{ dt }}/'
+            {% endfor %}
+        """,
+    )
+
+    register_pos_returns_partition = RedshiftDataOperator(
+        task_id        = "register_pos_returns_spectrum_partition",
+        workgroup_name = "{{ var.value.redshift_workgroup_name }}",
+        database       = "{{ var.value.redshift_database }}",
+        sql            = """
+            ALTER TABLE bronze.pos_returns
+            ADD IF NOT EXISTS
+            {% for dt in pos_partition_dates(params, ds) %}
+            PARTITION (dt='{{ dt }}')
+            LOCATION '{{ var.value.pos_returns_bronze_s3_path }}data/dt={{ dt }}/'
             {% endfor %}
         """,
     )
@@ -358,7 +422,9 @@ with DAG(
     (
         metadata_start
         >> generate_pos_parquet
+        >> generate_pos_returns_parquet
         >> register_pos_partition
+        >> register_pos_returns_partition
         >> dbt_staging
         >> wap_clone
         >> dbt_marts

@@ -63,11 +63,13 @@ Adopt **Write-Audit-Publish (WAP)** for consumer-facing Gold marts, with a
    Great Expectations does not audit Gold; it checks the Silver event
    contract only.
 4. **Publish atomically.** After every audit passes, preflight that every
-   DAG-owned pending table exists and has the same columns as live, then
-   promote the **entire set** in one transaction: `DELETE FROM live.x` +
+   DAG-owned pending table exists and holds every live column, then
+   promote the **entire set** in one transaction: `ALTER TABLE live.x ADD
+   COLUMN` for each column only pending has (`on_schema_change=
+   'append_new_columns'`), `DELETE FROM live.x` +
    `INSERT INTO live.x (cols) SELECT cols FROM pending.x` (first publish:
-   `CREATE TABLE live.x (LIKE pending.x)`). A missing table or a column
-   mismatch aborts before any write. Redshift has no `ALTER TABLE … SET
+   `CREATE TABLE live.x (LIKE pending.x)`). A missing table or a live column
+   absent from pending aborts before any write. Redshift has no `ALTER TABLE … SET
    SCHEMA`, and `ALTER TABLE APPEND` cannot run inside a transaction block, so
    a pointer swap cannot publish the set atomically. Delete + insert keeps the
    live table's identity, grants, owner, and DIST/SORT keys; readers see the
@@ -141,5 +143,7 @@ removed.
 - The canonical table list lives in
   `orchestration/airflow/plugins/wap_publish.py` (`WAP_TABLES` + per-DAG
   subsets) so cloud Airflow and the local DuckDB stack share one definition.
-- A model that changes columns needs a deliberate live DDL migration before
-  its next publish; WAP refuses to publish a mismatched shape.
+- An added column reaches live with the publish. A model that drops or
+  renames a column needs a deliberate live DDL migration before its next
+  publish; WAP refuses to publish without a live column. Rows that existed
+  before an added column are NULL in it unless the model rebuilds them.

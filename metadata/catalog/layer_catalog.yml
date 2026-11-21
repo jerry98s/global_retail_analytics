@@ -96,6 +96,16 @@ objects:
     freshness_sla_minutes: 1440
     is_active: true
 
+  - object_fqn: bronze.pos_returns
+    object_type: external
+    platform_layer: bronze
+    domain: finance
+    owner: data-platform
+    grain: (return_id, return_line_number)
+    timestamp_column: return_date
+    freshness_sla_minutes: 1440
+    is_active: true
+
   - object_fqn: silver.inventory_hourly
     object_type: external
     platform_layer: silver
@@ -142,6 +152,16 @@ objects:
     domain: finance
     owner: analytics-engineering
     grain: (transaction_id, line_item_number)
+    timestamp_column: date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
+  - object_fqn: finance.fact_returns
+    object_type: table
+    platform_layer: gold
+    domain: finance
+    owner: analytics-engineering
+    grain: (return_id, return_line_number)
     timestamp_column: date_key
     freshness_sla_minutes: 1440
     is_active: true

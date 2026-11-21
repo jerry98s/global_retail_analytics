@@ -67,7 +67,7 @@ uv sync --group dev
 ```
 
 - Default `-DbtSource iceberg`: Flink Parquet under `.local/iceberg` + local POS
-  Parquet → DuckDB; seed only `dim_date` / `dim_store` / `product_master` /
+  and POS returns Parquet (`-Task pos-parquet` writes both) → DuckDB; seed only `dim_date` / `dim_store` / `product_master` /
   `inventory_opening_balance` (catalog attributes for `dim_product` and opening
   shelf counts for `fact_inventory_snapshot`, generated from
   `ingestion/kafka/sim_entities.py`; CI runs
@@ -133,7 +133,8 @@ live on `main`.
 ## Metadata + Summary
 
 - Analytics schema `summary.*` (dbt `marts.summary`) holds daily rollups from
-  one Gold fact each — see `docs/data-model/platform-layers.md`.
+  one Gold fact each (`sales_daily_store` also rolls up `fact_returns`,
+  ADR-015) — see `docs/data-model/platform-layers.md`.
 - Operational DB `metadata.meta.*` (local: `local_metadata.duckdb`) is written
   by `scripts/common/metadata_observer.py` (fail-open). `meta.pipeline_signal`
   stores identity-change counts, quarantine rate and the latest replay result.

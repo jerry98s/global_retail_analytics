@@ -51,7 +51,7 @@ See [ADR-008](../decisions/ADR-008-metadata-database.md).
 
 | Relation | Grain | Source fact |
 |----------|-------|-------------|
-| `summary.sales_daily_store` | `(date_key, store_key)` | `finance.fact_sales` |
+| `summary.sales_daily_store` | `(date_key, store_key)` | `finance.fact_sales` and `finance.fact_returns` (the one exception, ADR-015) |
 | `summary.inventory_daily_product_store` | `(snapshot_date_key, product_key, store_key)` | `finance.fact_inventory_snapshot` |
 | `summary.inventory_position_daily` | `(snapshot_date_key, product_id, store_id)`, dense: every product/store every day, carried forward | `finance.fact_inventory_snapshot` |
 | `summary.sessions_daily_platform` | `(session_date_key, platform)` | `marketing.fact_customer_session` |
@@ -59,7 +59,9 @@ See [ADR-008](../decisions/ADR-008-metadata-database.md).
 | `summary.customer_segments` | `rfm_segment` | `marketing.dim_customer` |
 
 No fact-to-fact joins. Conformed dimensions only when needed for attributes
-already present on the fact (keys).
+already present on the fact (keys). `sales_daily_store` aggregates each fact
+to `(date_key, store_key)` on its own and full-outer-joins the two rollups;
+sales and returns are never joined line to line.
 
 ## Metadata tables
 

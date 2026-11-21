@@ -19,6 +19,10 @@ the Spectrum tables on ``main``, and materializes them into
   silver.device_session_associations (same Spark run; signed-in intervals per
                                device, attribution only)
   bronze.pos_transactions     (from generate_pos_parquet --output-dir)
+  bronze.pos_returns          (from generate_pos_returns_parquet; required with POS.
+                               Every POS day and every restated day needs its
+                               own returns file: a day without returns is a
+                               zero-row file, so a missing file is an error)
 
 Reference dims (``finance.dim_date``, ``finance.dim_store``) stay as dbt seeds.
 
@@ -34,7 +38,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date, timedelta
 from pathlib import Path
+from typing import Iterable
 
 import structlog
 
@@ -61,6 +67,7 @@ _EXPORTS: dict[str, str] = {
 
 # POS Bronze is plain Hive-partitioned Parquet (one file per dt=), not Iceberg.
 _POS_GLOB = "bronze/pos_transactions/data/**/*.parquet"
+_POS_RETURNS_GLOB = "bronze/pos_returns/data/**/*.parquet"
 
 
 def _require_duckdb():
@@ -75,6 +82,28 @@ def _require_duckdb():
 
 def _glob_parquet(iceberg_dir: Path, pattern: str) -> list[Path]:
     return sorted(p for p in iceberg_dir.glob(pattern) if p.is_file())
+
+
+def _partition_dates(iceberg_dir: Path, pattern: str) -> set[date]:
+    """dt= dates holding at least one Parquet file under the glob."""
+    dates: set[date] = set()
+    for path in _glob_parquet(iceberg_dir, pattern):
+        name = path.parent.name
+        if name.startswith("dt="):
+            dates.add(date.fromisoformat(name.removeprefix("dt=")))
+    return dates
+
+
+def missing_returns_dates(iceberg_dir: Path, restated: Iterable[date] = ()) -> list[date]:
+    """POS and restated dates without a delivered returns file, sorted."""
+    required = _partition_dates(iceberg_dir, _POS_GLOB) | set(restated)
+    return sorted(required - _partition_dates(iceberg_dir, _POS_RETURNS_GLOB))
+
+
+def _date_range(start: date, end: date) -> list[date]:
+    if start > end:
+        raise ValueError(f"--restate-from {start} is after --restate-to {end}")
+    return [start + timedelta(days=n) for n in range((end - start).days + 1)]
 
 
 def _manifest_files(iceberg_dir: Path, name: str) -> list[Path]:
@@ -140,7 +169,18 @@ def load_all(
     require_streams: bool = True,
     require_pos: bool = True,
     require_silver: bool = False,
+    restated_dates: Iterable[date] = (),
 ) -> dict[str, int]:
+    if require_pos:
+        missing = missing_returns_dates(iceberg_dir, restated_dates)
+        if missing:
+            raise FileNotFoundError(
+                "No bronze.pos_returns file for "
+                + ", ".join(d.isoformat() for d in missing)
+                + ". A day without returns is a zero-row file; generate it with "
+                "python -m ingestion.batch.generate_pos_returns_parquet --date <day> "
+                "--pos-dir <iceberg>/bronze/pos_transactions --output-dir <iceberg>/bronze/pos_returns"
+            )
     duckdb = _require_duckdb()
     duckdb_path.parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(duckdb_path))
@@ -156,6 +196,13 @@ def load_all(
             "bronze",
             "pos_transactions",
             _glob_parquet(iceberg_dir, _POS_GLOB),
+            required=require_pos,
+        )
+        counts["bronze.pos_returns"] = _load_table(
+            con,
+            "bronze",
+            "pos_returns",
+            _glob_parquet(iceberg_dir, _POS_RETURNS_GLOB),
             required=require_pos,
         )
     finally:
@@ -192,7 +239,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail when Spark has not published a silver.inventory_hourly export yet.",
     )
-    return p.parse_args()
+    p.add_argument(
+        "--restate-from",
+        type=date.fromisoformat,
+        help="First POS restatement day (YYYY-MM-DD); every restated day needs a returns file.",
+    )
+    p.add_argument(
+        "--restate-to",
+        type=date.fromisoformat,
+        help="Last POS restatement day (YYYY-MM-DD), set together with --restate-from.",
+    )
+    args = p.parse_args()
+    if (args.restate_from is None) != (args.restate_to is None):
+        p.error("--restate-from and --restate-to must be set together")
+    return args
 
 
 def main() -> int:
@@ -206,14 +266,18 @@ def main() -> int:
         )
         return 1
     try:
+        restated = (
+            _date_range(args.restate_from, args.restate_to) if args.restate_from else []
+        )
         counts = load_all(
             iceberg_dir,
             args.duckdb.resolve(),
             require_streams=not args.allow_empty_streams,
             require_pos=not args.allow_empty_pos,
             require_silver=args.require_silver,
+            restated_dates=restated,
         )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     print("Loaded into DuckDB:")

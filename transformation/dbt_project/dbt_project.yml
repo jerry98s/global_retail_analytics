@@ -42,6 +42,20 @@ seeds:
           loyalty_id: varchar
           store_id: varchar
           product_id: varchar
+          line_status: varchar
+          transaction_status: varchar
+          voided_at: timestamp
+          void_reason: varchar
+          source_updated_at: timestamp
+      pos_returns:
+        +column_types:
+          return_id: varchar
+          return_date: date
+          original_transaction_id: varchar
+          return_store_id: varchar
+          product_id: varchar
+          refund_amount: decimal(18,2)
+          processed_at: timestamp
     finance:
       +schema: finance
       dim_date:

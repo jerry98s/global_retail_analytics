@@ -58,13 +58,15 @@ class TestLocalIcebergBridge:
             "clickstream_events",
             "inventory_events",
             "pos_transactions",
+            "pos_returns",
             "inventory_hourly",
             "identity_resolution",
         ):
             assert name in src
-        assert "/data/**" not in src.replace(
-            '"bronze/pos_transactions/data/**/*.parquet"', ""
-        ), "only POS Bronze may be globbed; exports are read through manifests"
+        bronze_globs = ('"bronze/pos_transactions/data/**/*.parquet"', '"bronze/pos_returns/data/**/*.parquet"')
+        for glob in bronze_globs:
+            src = src.replace(glob, "")
+        assert "/data/**" not in src, "only POS Bronze may be globbed; exports are read through manifests"
 
     def test_run_local_stack_has_spark_identity_task(self) -> None:
         # ADR-010: local GraphFrames runs in the Spark Docker image against
@@ -183,6 +185,7 @@ class TestManifestExports:
         for name, schema in bridge._EXPORTS.items():
             assert counts[f"{schema}.{name}"] == 1, name
         assert counts["bronze.pos_transactions"] == 0
+        assert counts["bronze.pos_returns"] == 0
 
     def test_missing_manifest_fails_in_fidelity_mode(self, tmp_path: Path) -> None:
         bridge = _bridge()
@@ -200,3 +203,46 @@ class TestManifestExports:
         shutil.rmtree(iceberg / "consumer_current" / "identity_edges" / "run=20261104T010000Z")
         with pytest.raises(FileNotFoundError, match="lists missing files"):
             bridge._manifest_files(iceberg, "identity_edges")
+
+
+def _bronze_day(iceberg: Path, table: str, day: str, rows: int = 1) -> None:
+    import pyarrow as pa
+
+    part = iceberg / "bronze" / table / "data" / f"dt={day}"
+    part.mkdir(parents=True)
+    pq.write_table(pa.table({"v": list(range(rows))}), part / "part-00000.parquet")
+
+
+class TestReturnsDelivery:
+    def test_a_pos_day_without_a_returns_file_fails(self, tmp_path: Path) -> None:
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        for day in ("2026-11-20", "2026-11-21"):
+            _bronze_day(iceberg, "pos_transactions", day)
+        _bronze_day(iceberg, "pos_returns", "2026-11-20")
+        assert bridge.missing_returns_dates(iceberg) == [date(2026, 11, 21)]
+        with pytest.raises(FileNotFoundError, match="2026-11-21"):
+            bridge.load_all(iceberg, tmp_path / "t.duckdb", require_streams=False)
+        assert not (tmp_path / "t.duckdb").exists()
+
+    def test_a_zero_row_returns_file_is_a_delivered_empty_day(self, tmp_path: Path) -> None:
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        _bronze_day(iceberg, "pos_transactions", "2026-11-21")
+        _bronze_day(iceberg, "pos_returns", "2026-11-21", rows=0)
+        assert bridge.missing_returns_dates(iceberg) == []
+
+    def test_every_restated_day_needs_a_returns_file(self, tmp_path: Path) -> None:
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        _bronze_day(iceberg, "pos_transactions", "2026-11-20")
+        _bronze_day(iceberg, "pos_returns", "2026-11-20")
+        restated = bridge._date_range(date(2026, 11, 20), date(2026, 11, 22))
+        assert bridge.missing_returns_dates(iceberg, restated) == [
+            date(2026, 11, 21), date(2026, 11, 22),
+        ]
+
+    def test_stack_passes_the_restatement_range_to_the_loader(self) -> None:
+        ps1 = (_REPO / "scripts/local/run_local_stack.ps1").read_text(encoding="utf-8")
+        loader = ps1.split("function Invoke-LoadDuckdb", 1)[1].split("\n}", 1)[0]
+        assert "'--restate-from', $RestateFrom, '--restate-to', $RestateTo" in loader

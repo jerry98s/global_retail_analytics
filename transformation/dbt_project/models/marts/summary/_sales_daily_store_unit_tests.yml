@@ -2,8 +2,8 @@ unit_tests:
   - name: sales_daily_store_emits_fully_voided_day_for_replacement
     description: >
       Store 2's only line on 20261105 is voided. The model still emits that
-      store-day with transaction_count 0, so delete+insert replaces the date
-      and the post_hook removes the row instead of keeping its old totals.
+      store-day with both counts 0, so delete+insert replaces the date and
+      the post_hook removes the row instead of keeping its old totals.
     model: sales_daily_store
     overrides:
       macros:
@@ -14,7 +14,59 @@ unit_tests:
           - {date_key: 20261104, store_key: 1, transaction_id: T1, quantity_sold: 2, gross_revenue: 20, net_revenue: 18, gross_margin: 8, is_voided: false}
           - {date_key: 20261104, store_key: 1, transaction_id: T2, quantity_sold: 1, gross_revenue: 5, net_revenue: 5, gross_margin: 2, is_voided: true}
           - {date_key: 20261105, store_key: 2, transaction_id: T3, quantity_sold: 1, gross_revenue: 10, net_revenue: 10, gross_margin: 4, is_voided: true}
+      - input: ref('fact_returns')
+        rows: []
+
     expect:
       rows:
-        - {date_key: 20261104, store_key: 1, transaction_count: 1, units_sold: 2, gross_revenue: 20, net_revenue: 18, gross_margin: 8}
-        - {date_key: 20261105, store_key: 2, transaction_count: 0, units_sold: null, gross_revenue: null, net_revenue: null, gross_margin: null}
+        - {date_key: 20261104, store_key: 1, transaction_count: 1, units_sold: 2, gross_revenue: 20, net_revenue: 18, gross_margin: 8, return_transaction_count: 0, return_amount: 0, net_sales_after_returns: 18}
+        - {date_key: 20261105, store_key: 2, transaction_count: 0, units_sold: 0, gross_revenue: 0, net_revenue: 0, gross_margin: 0, return_transaction_count: 0, return_amount: 0, net_sales_after_returns: 0}
+
+  - name: sales_daily_store_excludes_line_and_transaction_voids
+    description: >
+      ADR-015 scenarios on one store-day. T100 sells RM50 and voids its RM30
+      line before checkout. T200's whole RM80 purchase is voided. Recognized
+      sales are RM50 from one transaction; all four lines stay in fact_sales.
+    model: sales_daily_store
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fact_sales')
+        rows:
+          - {date_key: 20261121, store_key: 1, transaction_id: T100, quantity_sold: 1, gross_revenue: 50, net_revenue: 50, gross_margin: 20, is_voided: false}
+          - {date_key: 20261121, store_key: 1, transaction_id: T100, quantity_sold: 1, gross_revenue: 30, net_revenue: 30, gross_margin: 12, is_voided: true}
+          - {date_key: 20261121, store_key: 1, transaction_id: T200, quantity_sold: 1, gross_revenue: 50, net_revenue: 50, gross_margin: 20, is_voided: true}
+          - {date_key: 20261121, store_key: 1, transaction_id: T200, quantity_sold: 1, gross_revenue: 30, net_revenue: 30, gross_margin: 12, is_voided: true}
+      - input: ref('fact_returns')
+        rows: []
+
+    expect:
+      rows:
+        - {date_key: 20261121, store_key: 1, transaction_count: 1, units_sold: 1, gross_revenue: 50, net_revenue: 50, gross_margin: 20, return_transaction_count: 0, return_amount: 0, net_sales_after_returns: 50}
+
+  - name: sales_daily_store_subtracts_recognized_refunds_on_return_store_day
+    description: >
+      ADR-015 decision 5. Store 1 sells RM100 on 20261121. Return R1 refunds
+      RM30 there in two lines, so it counts as one return. Rejected R2 and the
+      voided-sale R3 move no money. Return R4 refunds RM20 at store 2, which
+      sold nothing that day, and keeps a row with zero sales.
+    model: sales_daily_store
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fact_sales')
+        rows:
+          - {date_key: 20261121, store_key: 1, transaction_id: T1, quantity_sold: 4, gross_revenue: 110, net_revenue: 100, gross_margin: 40, is_voided: false}
+      - input: ref('fact_returns')
+        rows:
+          - {date_key: 20261121, store_key: 1, return_id: R1, refund_amount: 10, is_refund_recognized: true}
+          - {date_key: 20261121, store_key: 1, return_id: R1, refund_amount: 20, is_refund_recognized: true}
+          - {date_key: 20261121, store_key: 1, return_id: R2, refund_amount: 15, is_refund_recognized: false}
+          - {date_key: 20261121, store_key: 1, return_id: R3, refund_amount: 5, is_refund_recognized: false}
+          - {date_key: 20261121, store_key: 2, return_id: R4, refund_amount: 20, is_refund_recognized: true}
+    expect:
+      rows:
+        - {date_key: 20261121, store_key: 1, transaction_count: 1, units_sold: 4, gross_revenue: 110, net_revenue: 100, gross_margin: 40, return_transaction_count: 1, return_amount: 30, net_sales_after_returns: 70}
+        - {date_key: 20261121, store_key: 2, transaction_count: 0, units_sold: 0, gross_revenue: 0, net_revenue: 0, gross_margin: 0, return_transaction_count: 1, return_amount: 20, net_sales_after_returns: -20}

@@ -186,7 +186,7 @@ jobs:
         run: >
           dbt run --profiles-dir . --target local --full-refresh
           --select +identity_graph int_identity_shared_devices int_session_reconstruction
-          +fact_sales +fact_inventory_snapshot int_inventory_batch_coverage int_inventory_hourly
+          +fact_sales +fact_returns +fact_inventory_snapshot int_inventory_batch_coverage int_inventory_hourly
 
       - name: dbt test identity graph chain and every unit test
         # cautious: skip data tests that also depend on models this job doesn't

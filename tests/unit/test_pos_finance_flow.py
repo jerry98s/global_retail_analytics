@@ -43,7 +43,14 @@ class TestPosFinanceFlow:
         assert "ADD IF NOT EXISTS" in src and "PARTITION (dt='{{ dt }}')" in src
         assert "pos_bronze_s3_path" in src
         assert "generate_pos_parquet" in src
-        assert src.index("generate_pos_parquet") < src.index("register_pos_partition")
-        assert src.index("register_pos_partition") < src.index("dbt_staging")
+        assert "pos_returns_bronze_s3_path" in src
+        assert "register_pos_returns_spectrum_partition" in src
+        assert (
+            ">> generate_pos_parquet\n"
+            "        >> generate_pos_returns_parquet\n"
+            "        >> register_pos_partition\n"
+            "        >> register_pos_returns_partition\n"
+            "        >> dbt_staging"
+        ) in src
         assert "run_date" not in src
         assert "MSCK" not in src

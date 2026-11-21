@@ -1,0 +1,19 @@
+unit_tests:
+  - name: stg_pos_returns_collapses_exact_duplicate_deliveries
+    description: >
+      R1 line 1 arrives twice with identical values (a duplicate delivery), so
+      its refund counts once. R2 line 1 arrives twice with different refunds;
+      both rows stay so fact_returns' uniqueness test blocks the publish.
+    model: stg_pos_returns
+    given:
+      - input: source('bronze', 'pos_returns')
+        rows:
+          - {return_id: R1, return_line_number: 1, return_date: "2026-11-21", refund_amount: 30.00, return_status: COMPLETED}
+          - {return_id: R1, return_line_number: 1, return_date: "2026-11-21", refund_amount: 30.00, return_status: COMPLETED}
+          - {return_id: R2, return_line_number: 1, return_date: "2026-11-21", refund_amount: 10.00, return_status: COMPLETED}
+          - {return_id: R2, return_line_number: 1, return_date: "2026-11-21", refund_amount: 12.00, return_status: COMPLETED}
+    expect:
+      rows:
+        - {return_id: R1, return_line_number: 1, refund_amount: 30.00}
+        - {return_id: R2, return_line_number: 1, refund_amount: 10.00}
+        - {return_id: R2, return_line_number: 1, refund_amount: 12.00}

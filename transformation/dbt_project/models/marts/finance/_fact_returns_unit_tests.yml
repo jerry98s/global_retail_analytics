@@ -1,0 +1,78 @@
+unit_tests:
+  - name: fact_returns_marks_eligibility_against_the_original_sale
+    description: >
+      Bought on 2026-11-18, returned 2026-11-21 at another store. R1 is a
+      completed return of an active line: the refund is recognized on the
+      return date and store. R2 is rejected: kept, no refund. R3 returns a
+      voided line: kept as VOIDED_SALE, no refund. R4 names a sale that does
+      not exist and R5 the wrong product; both are kept and block the publish
+      through pos_returns_stay_within_original_sale.
+    model: fact_returns
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_pos_returns')
+        rows:
+          - {return_id: R1, return_line_number: 1, return_date: "2026-11-21", original_transaction_id: T1, original_line_item_number: 1, return_store_id: S2, product_id: P1, quantity_returned: 1, refund_amount: 30.00, return_status: COMPLETED}
+          - {return_id: R2, return_line_number: 1, return_date: "2026-11-21", original_transaction_id: T1, original_line_item_number: 2, return_store_id: S2, product_id: P1, quantity_returned: 1, refund_amount: 20.00, return_status: REJECTED}
+          - {return_id: R3, return_line_number: 1, return_date: "2026-11-21", original_transaction_id: T2, original_line_item_number: 1, return_store_id: S1, product_id: P1, quantity_returned: 1, refund_amount: 40.00, return_status: COMPLETED}
+          - {return_id: R4, return_line_number: 1, return_date: "2026-11-21", original_transaction_id: T9, original_line_item_number: 1, return_store_id: S1, product_id: P1, quantity_returned: 1, refund_amount: 5.00, return_status: COMPLETED}
+          - {return_id: R5, return_line_number: 1, return_date: "2026-11-21", original_transaction_id: T3, original_line_item_number: 1, return_store_id: S1, product_id: P1, quantity_returned: 1, refund_amount: 5.00, return_status: COMPLETED}
+      - input: ref('stg_pos_transactions')
+        rows:
+          - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-11-18", dt: "2026-11-18", product_id: P1, is_voided: false}
+          - {transaction_id: T1, line_item_number: 2, transaction_date: "2026-11-18", dt: "2026-11-18", product_id: P1, is_voided: false}
+          - {transaction_id: T2, line_item_number: 1, transaction_date: "2026-11-18", dt: "2026-11-18", product_id: P1, is_voided: true}
+          - {transaction_id: T3, line_item_number: 1, transaction_date: "2026-11-18", dt: "2026-11-18", product_id: P2, is_voided: false}
+      - input: ref('dim_product')
+        rows:
+          - {product_id: P1, product_key: 11, is_current: true}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_id: S1, store_key: 21}
+          - {store_id: S2, store_key: 22}
+    expect:
+      rows:
+        - {return_id: R1, date_key: 20261121, store_key: 22, product_key: 11, original_date_key: 20261118, eligibility_status: ELIGIBLE, is_refund_recognized: true}
+        - {return_id: R2, date_key: 20261121, store_key: 22, product_key: 11, original_date_key: 20261118, eligibility_status: ELIGIBLE, is_refund_recognized: false}
+        - {return_id: R3, date_key: 20261121, store_key: 21, product_key: 11, original_date_key: 20261118, eligibility_status: VOIDED_SALE, is_refund_recognized: false}
+        - {return_id: R4, date_key: 20261121, store_key: 21, product_key: 11, original_date_key: null, eligibility_status: UNKNOWN_SALE, is_refund_recognized: false}
+        - {return_id: R5, date_key: 20261121, store_key: 21, product_key: 11, original_date_key: 20261118, eligibility_status: PRODUCT_MISMATCH, is_refund_recognized: false}
+
+  - name: fact_returns_bounds_each_return_by_its_own_sale_window
+    description: >
+      pos_return_window_days is 90 and applies per return, not to the batch.
+      R1 (2026-01-01) names T1, sold later on 2026-02-01, so it is not a
+      refund of a known sale even though T1 is inside the batch's scan range.
+      R2 (2026-06-01) names T2, sold 137 days earlier, so it is outside its
+      window even though the batch also starts at 2026-01-01. R3 (2026-02-10)
+      names T1 within its window. A one-day build of each date gives the same
+      answers.
+    model: fact_returns
+    overrides:
+      macros:
+        is_incremental: false
+      vars:
+        pos_return_window_days: 90
+    given:
+      - input: ref('stg_pos_returns')
+        rows:
+          - {return_id: R1, return_line_number: 1, return_date: "2026-01-01", original_transaction_id: T1, original_line_item_number: 1, return_store_id: S1, product_id: P1, quantity_returned: 1, refund_amount: 10.00, return_status: COMPLETED}
+          - {return_id: R2, return_line_number: 1, return_date: "2026-06-01", original_transaction_id: T2, original_line_item_number: 1, return_store_id: S1, product_id: P1, quantity_returned: 1, refund_amount: 10.00, return_status: COMPLETED}
+          - {return_id: R3, return_line_number: 1, return_date: "2026-02-10", original_transaction_id: T1, original_line_item_number: 1, return_store_id: S1, product_id: P1, quantity_returned: 1, refund_amount: 10.00, return_status: COMPLETED}
+      - input: ref('stg_pos_transactions')
+        rows:
+          - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-02-01", dt: "2026-02-01", product_id: P1, is_voided: false}
+          - {transaction_id: T2, line_item_number: 1, transaction_date: "2026-01-15", dt: "2026-01-15", product_id: P1, is_voided: false}
+      - input: ref('dim_product')
+        rows:
+          - {product_id: P1, product_key: 11, is_current: true}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_id: S1, store_key: 21}
+    expect:
+      rows:
+        - {return_id: R1, original_date_key: null, eligibility_status: UNKNOWN_SALE, is_refund_recognized: false}
+        - {return_id: R2, original_date_key: null, eligibility_status: UNKNOWN_SALE, is_refund_recognized: false}
+        - {return_id: R3, original_date_key: 20260201, eligibility_status: ELIGIBLE, is_refund_recognized: true}

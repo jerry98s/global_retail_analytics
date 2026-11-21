@@ -45,6 +45,10 @@
   older than the day itself; such lines would be filtered out and deleted.
   `dt` is the Spectrum partition column (aliased from transaction_date on
   DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
+  Voided lines (line or transaction void, ADR-015) stay with their recorded
+  amounts; recognized sales are the rows where is_voided is false. Rows
+  loaded before the status columns existed keep NULL statuses until their
+  day is reprocessed.
 */
 
 {% set restate = pos_restate_range() %}
@@ -96,7 +100,12 @@ select
     b.gross_revenue,
     b.net_revenue,
     b.gross_margin,
-    b.is_voided
+    b.is_voided,
+    b.line_status,
+    b.transaction_status,
+    b.voided_at,
+    b.void_reason,
+    b.source_updated_at
 from base b
 left join {{ wap_live_ref('dim_product') }} p
   on b.product_id = p.product_id

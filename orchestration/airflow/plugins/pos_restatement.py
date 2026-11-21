@@ -1,9 +1,10 @@
 """POS restatement range for manual runs of warehouse_daily_batch_pipeline.
 
 A run triggered with ``restate_from`` / ``restate_to`` (inclusive, YYYY-MM-DD)
-keeps the delivered POS files, registers every partition in the range, and
-passes the range to dbt so fact_sales and sales_daily_store replace exactly
-those days. Without them the run is the normal daily load of ``ds``.
+keeps the delivered POS and returns files, registers every partition in the
+range for both, and passes the range to dbt so fact_sales, fact_returns and
+sales_daily_store replace exactly those days. Without them the run is the
+normal daily load of ``ds``.
 
 ``restate_empty_dates`` lists days inside the range whose corrected delivery
 legitimately has no lines; dbt clears only those. Any other day without

@@ -115,6 +115,7 @@ def _render(template: str, params: dict) -> str:
         var={"value": {
             "artifacts_bucket": "artifacts-example",
             "pos_bronze_s3_path": "s3://bronze-example/iceberg/bronze/pos_transactions/",
+            "pos_returns_bronze_s3_path": "s3://bronze-example/iceberg/bronze/pos_returns/",
         }},
         **pr.AIRFLOW_MACROS,
     )
@@ -136,6 +137,44 @@ def test_restatement_keeps_files_and_registers_the_range() -> None:
         "2026-10-01", "2026-10-02", "2026-10-03",
     ]
     assert "data/dt=2026-10-02/'" in sql
+
+
+def test_daily_run_generates_returns_from_pos_and_uploads_ds() -> None:
+    bash = _render(_task_template("generate_pos_returns_parquet", "bash_command"), _DAILY)
+    assert "exit 0" not in bash
+    assert "s3://bronze-example/iceberg/bronze/pos_transactions/data/dt=$DT/" in bash
+    assert "--date 2026-11-04" in bash and '--pos-dir "$WORK/pos"' in bash
+    assert bash.index('ls "$WORK/pos/data/dt=2026-11-04/"*.parquet') < bash.index(
+        "python -m ingestion.batch.generate_pos_returns_parquet"
+    )
+    assert (
+        '"s3://bronze-example/iceberg/bronze/pos_returns/data/dt=2026-11-04/part-00000.parquet"'
+        in bash
+    )
+    sql = _render(_task_template("register_pos_returns_spectrum_partition", "sql"), _DAILY)
+    assert "ALTER TABLE bronze.pos_returns" in sql
+    assert re.findall(r"PARTITION \(dt='([^']+)'\)", sql) == ["2026-11-04"]
+    assert "pos_returns/data/dt=2026-11-04/'" in sql
+
+
+def test_restatement_keeps_returns_files_and_registers_the_range() -> None:
+    bash = _render(_task_template("generate_pos_returns_parquet", "bash_command"), _RANGE)
+    assert bash.index("exit 0") < bash.index("python -m ingestion.batch.generate_pos_returns_parquet")
+    checked = re.findall(r'aws s3 ls "s3://bronze-example/iceberg/bronze/pos_returns/data/dt=([^/]+)/part-00000\.parquet"', bash)
+    assert checked == ["2026-10-01", "2026-10-02", "2026-10-03"]
+    assert bash.index("Missing POS returns delivery") < bash.index("exit 0")
+    sql = _render(_task_template("register_pos_returns_spectrum_partition", "sql"), _RANGE)
+    assert re.findall(r"PARTITION \(dt='([^']+)'\)", sql) == [
+        "2026-10-01", "2026-10-02", "2026-10-03",
+    ]
+    assert "pos_returns/data/dt=2026-10-02/'" in sql
+
+
+def test_returns_lookback_comes_from_the_generator() -> None:
+    from ingestion.batch.generate_pos_returns_parquet import LOOKBACK_DAYS
+
+    bash = _task_template("generate_pos_returns_parquet", "bash_command")
+    assert "import LOOKBACK_DAYS" in bash and LOOKBACK_DAYS > 0
 
 
 def test_invalid_range_fails_the_first_task_render() -> None:

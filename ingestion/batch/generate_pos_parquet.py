@@ -15,6 +15,12 @@ Idempotency (P3.6, docs/runbooks/dw-checklist-audit.md):
   This makes Bronze reproducible: a corrupted partition can be regenerated
   exactly. To opt into a different draw (e.g. for additive demo data),
   pass `--seed <int>` to override the date-derived seed.
+
+Void semantics (ADR-015):
+  `line_status` VOIDED cancels one item; `transaction_status` VOIDED cancels
+  the whole ticket and is repeated on every line. Voided lines stay in the
+  file for audit. `is_voided` is written as line OR transaction voided.
+  Timestamps are naive UTC.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ import os
 import random
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Optional
@@ -59,8 +65,22 @@ POS_SCHEMA = pa.schema(
         ("net_revenue", pa.decimal128(18, 2)),
         ("gross_margin", pa.decimal128(18, 2)),
         ("is_voided", pa.bool_()),
+        ("line_status", pa.string()),
+        ("transaction_status", pa.string()),
+        ("voided_at", pa.timestamp("us")),
+        ("void_reason", pa.string()),
+        ("source_updated_at", pa.timestamp("us")),
     ]
 )
+
+ACTIVE = "ACTIVE"
+COMPLETED = "COMPLETED"
+VOIDED = "VOIDED"
+LINE_VOID_RATE = 0.01
+TRANSACTION_VOID_RATE = 0.005
+LINE_VOID_REASONS = ("CUSTOMER_CHANGED_MIND", "CASHIER_ERROR", "PRICE_DISPUTE")
+TRANSACTION_VOID_REASONS = ("CUSTOMER_CANCELLED", "CASHIER_ERROR", "PAYMENT_DECLINED")
+STORE_OPEN_SECONDS = (8 * 3600, 22 * 3600)
 
 
 @dataclass
@@ -75,7 +95,15 @@ class PosLine:
     gross_revenue: Decimal
     net_revenue: Decimal
     gross_margin: Decimal
-    is_voided: bool
+    source_updated_at: Optional[datetime] = None
+    line_status: str = ACTIVE
+    transaction_status: str = COMPLETED
+    voided_at: Optional[datetime] = None
+    void_reason: Optional[str] = None
+
+    @property
+    def is_voided(self) -> bool:
+        return self.line_status == VOIDED or self.transaction_status == VOIDED
 
     @classmethod
     def generate(
@@ -103,8 +131,28 @@ class PosLine:
             gross_revenue=gross,
             net_revenue=net,
             gross_margin=margin,
-            is_voided=random.random() < 0.01,
+            line_status=VOIDED if random.random() < LINE_VOID_RATE else ACTIVE,
         )
+
+
+def apply_lifecycle(lines: list[PosLine], txn_date: date, rng: random.Random) -> None:
+    """Stamp one ticket's ring-up time, line voids and optional transaction void."""
+    rung_up = datetime.combine(txn_date, time()) + timedelta(seconds=rng.randrange(*STORE_OPEN_SECONDS))
+    for line in lines:
+        line.source_updated_at = rung_up
+        if line.line_status == VOIDED:
+            line.voided_at = rung_up + timedelta(seconds=rng.randint(10, 300))
+            line.void_reason = rng.choice(LINE_VOID_REASONS)
+            line.source_updated_at = line.voided_at
+    if rng.random() < TRANSACTION_VOID_RATE:
+        voided_at = rung_up + timedelta(seconds=rng.randint(301, 900))
+        reason = rng.choice(TRANSACTION_VOID_REASONS)
+        for line in lines:
+            line.transaction_status = VOIDED
+            if line.line_status != VOIDED:
+                line.voided_at = voided_at
+                line.void_reason = reason
+            line.source_updated_at = voided_at
 
 
 def _money(value: Decimal) -> Decimal:
@@ -115,6 +163,7 @@ def _money(value: Decimal) -> Decimal:
 # across runs so the same (--date, transaction index) maps to the same
 # transaction_id. Generated once with uuid.uuid4(); pinned here.
 _TXN_NAMESPACE = uuid.UUID("a4f3b2c1-0000-0000-0000-000000504f53")
+_LIFECYCLE_SALT = 0x564F4944
 
 
 def _derive_seed(txn_date: date, override: Optional[int]) -> int:
@@ -136,7 +185,11 @@ def generate_rows(
     # (transaction counts, line counts, quantities, revenues, store/product
     # selection, loyalty_id nullness, is_voided) is reproducible for a given
     # --date. Re-running with the same args produces byte-identical Parquet.
-    random.seed(_derive_seed(txn_date, seed_override))
+    seed = _derive_seed(txn_date, seed_override)
+    random.seed(seed)
+    # Void timestamps and transaction voids draw from their own stream, so
+    # adding them did not change any line a date produced before ADR-015.
+    lifecycle = random.Random(seed ^ _LIFECYCLE_SALT)
     rows: list[PosLine] = []
     for n in range(transaction_count):
         # uuid5 is deterministic from (namespace, name) — replays for the
@@ -146,8 +199,12 @@ def generate_rows(
         txn_id = str(uuid.uuid5(_TXN_NAMESPACE, f"{txn_date.isoformat()}#{n}"))
         store_id = random.choice(STORES)
         loyalty_id = random.choice(LOYALTY_IDS) if random.random() < 0.7 else None
-        for line_no in range(1, random.randint(1, max_lines) + 1):
-            rows.append(PosLine.generate(txn_id, line_no, txn_date, store_id, loyalty_id))
+        lines = [
+            PosLine.generate(txn_id, line_no, txn_date, store_id, loyalty_id)
+            for line_no in range(1, random.randint(1, max_lines) + 1)
+        ]
+        apply_lifecycle(lines, txn_date, lifecycle)
+        rows.extend(lines)
     return rows
 
 
@@ -168,6 +225,11 @@ def rows_to_table(rows: list[PosLine]) -> pa.Table:
                 "net_revenue": row.net_revenue,
                 "gross_margin": row.gross_margin,
                 "is_voided": row.is_voided,
+                "line_status": row.line_status,
+                "transaction_status": row.transaction_status,
+                "voided_at": row.voided_at,
+                "void_reason": row.void_reason,
+                "source_updated_at": row.source_updated_at,
             }
             for row in rows
         ],
@@ -221,7 +283,7 @@ def identity_change_rows(txn_date: date) -> list[PosLine]:
                 gross_revenue=Decimal("10.00"),
                 net_revenue=Decimal("10.00"),
                 gross_margin=Decimal("4.00"),
-                is_voided=False,
+                source_updated_at=datetime.combine(txn_date, time(12)),
             )
         )
     return rows

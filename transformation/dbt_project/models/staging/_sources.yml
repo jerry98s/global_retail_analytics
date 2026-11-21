@@ -16,7 +16,7 @@ version: 2
 #
 # Local DuckDB seeds (transformation/dbt_project/seeds/):
 #   Fixture mode (-DbtSource seeds): bronze/clickstream_events.csv +
-#   bronze/pos_transactions.csv + finance dims. (bronze/inventory_events
+#   bronze/pos_transactions.csv + bronze/pos_returns.csv + finance dims. (bronze/inventory_events
 #   and silver/inventory_hourly were removed — Flink generates those and no
 #   CI test reads them.)
 #   Iceberg mode (default): load Flink/POS Parquet via
@@ -36,6 +36,7 @@ sources:
     schema: "{{ env_var('BRONZE_SCHEMA', 'bronze') }}"
     tables:
       - name: pos_transactions
+      - name: pos_returns
   - name: silver
     database: "{% if target.type != 'duckdb' %}{{ env_var('SILVER_DB', 'dev') }}{% endif %}"
     schema: "{{ env_var('SILVER_SCHEMA', 'silver') }}"
