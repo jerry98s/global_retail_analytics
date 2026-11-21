@@ -127,7 +127,8 @@ live on `main`.
 - Submit: `.\scripts\local\run_local_stack.ps1 -Task spark`, or the marketing DAG on `main`.
 - Local scale check: `.\.venv\Scripts\python.exe scripts/local/benchmark_identity.py`
   replicates Bronze into `.local/benchmark` at 1×, 5× and 10× and times that
-  same job. It does not write `.local/iceberg`.
+  same job per stage (inventory promotion, clickstream promotion, identity),
+  with the snapshot bytes each promotion scans. It does not write `.local/iceberg`.
 
 ## Metadata + Summary
 

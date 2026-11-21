@@ -4,8 +4,10 @@ Each scale is built in ``.local/benchmark`` by replicating the current Bronze
 with remapped ids. The real ``.local/iceberg`` warehouse is not written. The
 measured command is the same ``spark-submit`` the local stack uses, pointed at
 the copy, with a 2g driver heap. The image default of 1g completes 1x and 5x
-and runs out of heap at 10x. This is a Spark scaling check, not a streaming
-throughput result.
+and runs out of heap at 10x. The job prints one ``BENCHMARK_STAGE`` line for
+inventory promotion, clickstream promotion, the hourly export and the identity
+graph, with the snapshot bytes each promotion scans. This is a Spark scaling
+check, not a streaming throughput result.
 """
 
 from __future__ import annotations
@@ -39,25 +41,38 @@ def parse_mem_usage(text: str) -> float | None:
     return float(match.group(1)) * unit
 
 
-def _docker_stats(name: str) -> float | None:
+def parse_cpu_percent(text: str) -> float | None:
+    """``docker stats`` CPUPerc, which can exceed 100 on more than one core."""
+    token = text.strip().split()[0].rstrip("%") if text.strip() else ""
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _docker_stats(name: str) -> tuple[float | None, float | None]:
     listed = subprocess.run(
         ["docker", "ps", "-q", "--filter", "label=gra-benchmark=identity"],
         capture_output=True, text=True, check=False,
     )
     target = listed.stdout.strip().split()[0] if listed.returncode == 0 and listed.stdout.strip() else name
     proc = subprocess.run(
-        ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}", target],
+        ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}\t{{.CPUPerc}}", target],
         capture_output=True, text=True, check=False,
     )
-    if proc.returncode != 0:
-        return None
-    return parse_mem_usage(proc.stdout)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None, None
+    memory, _, cpu = proc.stdout.strip().partition("\t")
+    return parse_mem_usage(memory), parse_cpu_percent(cpu or memory)
 
 
 class _PeakMemory:
     def __init__(self, name: str) -> None:
         self.name = name
         self.peak_mib = 0.0
+        self.peak_cpu_percent = 0.0
+        self._cpu_total = 0.0
+        self._cpu_samples = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -69,11 +84,21 @@ class _PeakMemory:
         self._stop.set()
         self._thread.join(timeout=5)
 
+    @property
+    def mean_cpu_percent(self) -> float:
+        if self._cpu_samples == 0:
+            return 0.0
+        return self._cpu_total / self._cpu_samples
+
     def _run(self) -> None:
         while not self._stop.is_set():
-            used = _docker_stats(self.name)
+            used, cpu = _docker_stats(self.name)
             if used is not None:
                 self.peak_mib = max(self.peak_mib, used)
+            if cpu is not None:
+                self.peak_cpu_percent = max(self.peak_cpu_percent, cpu)
+                self._cpu_total += cpu
+                self._cpu_samples += 1
             self._stop.wait(1)
 
 
@@ -106,6 +131,18 @@ def _manifest_files(warehouse: Path, name: str) -> list[Path]:
     if missing:
         raise FileNotFoundError(f"{manifest} lists missing files: {missing}")
     return files
+
+
+def parse_stages(log_text: str) -> dict[str, dict]:
+    """Stage lines the Spark job prints. A log prefix before the marker is ignored."""
+    marker = "BENCHMARK_STAGE "
+    stages = {}
+    for line in log_text.splitlines():
+        if marker not in line:
+            continue
+        stage = json.loads(line.split(marker, 1)[1])
+        stages[stage["stage"]] = stage
+    return stages
 
 
 def _output_counts(warehouse: Path) -> dict[str, int]:
@@ -179,12 +216,30 @@ def run_scale(copies: int, source: Path, benchmark: Path, driver_memory: str, pr
         )
     if proc.returncode != 0:
         raise SystemExit(f"identity {copies}x failed; see {identity_log}")
+    stages = parse_stages(identity_log.read_text(encoding="utf-8"))
+    missing = [name for name in ("inventory_promote", "clickstream_promote", "identity") if name not in stages]
+    if missing:
+        raise SystemExit(f"identity {copies}x log has no stage line for {missing}; see {identity_log}")
+    wall = time.perf_counter() - measured_at
+    inventory_seconds = stages["inventory_promote"]["seconds"]
     result = {
         "scale": copies,
         "driver_memory": driver_memory,
-        "wall_seconds": round(time.perf_counter() - measured_at, 1),
+        "wall_seconds": round(wall, 1),
         "prepare_seconds": round(measured_at - started, 1),
         "peak_memory_mib": round(peak.peak_mib, 1),
+        "peak_cpu_percent": round(peak.peak_cpu_percent, 1),
+        "mean_cpu_percent": round(peak.mean_cpu_percent, 1),
+        "inventory_seconds": inventory_seconds,
+        "clickstream_seconds": stages["clickstream_promote"]["seconds"],
+        "identity_seconds": stages["identity"]["seconds"],
+        "inventory_hourly_seconds": stages.get("inventory_hourly", {}).get("seconds", 0),
+        "inventory_share": round(inventory_seconds / wall, 4) if wall else 0,
+        "inventory_input_rows": stages["inventory_promote"].get("input_rows"),
+        "inventory_input_bytes": stages["inventory_promote"].get("input_bytes"),
+        "clickstream_input_rows": stages["clickstream_promote"].get("input_rows"),
+        "clickstream_input_bytes": stages["clickstream_promote"].get("input_bytes"),
+        "identity_input_bytes": stages["identity"].get("input_bytes"),
         **prepared,
         **_output_counts(dest),
     }

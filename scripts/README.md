@@ -13,7 +13,7 @@ that step on its own.
 | `bootstrap_live_dim_product.py` | Seeds the live `dim_product` clone the catalog model reads. |
 | `row_count_gate.py` | The warehouse DAG's row-count publish gate against DuckDB. `quality` / `all` run `audit` before publish and `save` (baseline) after. State: `.local/row_count_gate.json`. |
 | `replay_check.py` | Compares fingerprints after `-Task replay`. |
-| `benchmark_identity.py` | 1×/5×/10× Spark identity timing on disjoint Bronze copies under `.local/benchmark`. |
+| `benchmark_identity.py` | 1×/5×/10× Spark timing on disjoint Bronze copies under `.local/benchmark`, with per-stage time, snapshot bytes and CPU. |
 | `demo_identity_change.py` | Carries one live identity change through Kafka, Flink, Spark and dbt. |
 | `demo_wap_isolation.py` | Publishes finance twice while marketing is blocked, on a copy. |
 | `demo_inventory_late_event.py` | Late inventory event recovery through Flink and Spark. |

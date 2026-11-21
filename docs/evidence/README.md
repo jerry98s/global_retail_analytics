@@ -89,29 +89,48 @@ Suggested protocol:
 
 ## Spark identity scaling
 
-This is not the throughput protocol above. On 2026-11-08 the local identity
-job was run against copies of the current Bronze in `.local/benchmark`. The
-real `.local/iceberg` warehouse was not written. 5× and 10× retag every
-account, loyalty id, device and session, so each copy is a different set of
-people and the job cannot deduplicate the copies away. The timed command is
-the same `spark-submit` as `-Task spark`, with `--driver-memory 2g` and
-`local[*]`. Wall time includes JVM startup and excludes building the copy.
+This is not the throughput protocol above. The local identity job is run
+against copies of the current Bronze in `.local/benchmark`. The real
+`.local/iceberg` warehouse is not written. 5× and 10× retag every account,
+loyalty id, device and session, so each copy is a different set of people and
+the job cannot deduplicate the copies away. The timed command is the same
+`spark-submit` as `-Task spark`, with `--driver-memory 2g` and `local[*]`.
+Wall time includes JVM startup and excludes building the copy. The image
+default heap is 1g; at that setting 10× runs out of Java heap, so every
+recorded run uses 2g.
 
-The image default heap is 1g. At that setting 1× finished in 537s and 5× in
-885s, with the same row counts as below, and 10× ran out of Java heap while
-writing canonical clickstream duplicates. The table is the 2g rerun, where
-all three scales finish. Peak memory is the Docker container's high-water
-mark during that job.
+Input bytes are the current Iceberg snapshot's file sizes, which a full
+rebuild scans. CPU is the container's average over the run and can exceed
+100% because the machine has more than one core.
+
+### 2026-11-21, per stage
+
+`scripts/local/benchmark_identity.py` exited 0. Row counts at 5× and 10× are
+exactly five and ten times the 1× counts (clickstream 549,673, inventory
+54,542, POS 7,588, identity rows 26,329, edges 6,580, components 19,749).
+
+| Scale | Inventory | Clickstream | Identity | Wall | Inventory share | Inventory bytes | Clickstream bytes | Mean CPU | Peak memory |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1× | 151s | 274s | 102s | 545s | 28% | 2.1 MiB | 32.7 MiB | 354% | 4,216 MiB |
+| 5× | 171s | 517s | 161s | 864s | 20% | 3.2 MiB | 54.1 MiB | 622% | 4,777 MiB |
+| 10× | 184s | 1,041s | 142s | 1,380s | 13% | 3.5 MiB | 71.2 MiB | 822% | 4,997 MiB |
+
+The hourly export took under 4s at every scale. Inventory rows grew 10× while
+inventory time grew from 151s to 184s, so that stage is not growing with
+history. At 10× it is 13% of the run. Clickstream promotion is 1,041s, 75% of
+the run. That is below the gate for building incremental inventory
+canonicalization, so the full rebuild stays.
+
+### 2026-11-08, whole job
+
+The earlier run timed the job as one number. Its row counts match the run
+above. Peak memory is the container's high-water mark.
 
 | Scale | Clickstream rows | Identity rows | Edges | Components | Wall time | Peak memory |
 |---:|---:|---:|---:|---:|---:|---:|
 | 1× | 549,673 | 26,329 | 6,580 | 19,749 | 561s | 3,537 MiB |
 | 5× | 2,748,365 | 131,645 | 32,900 | 98,745 | 832s | 3,528 MiB |
 | 10× | 5,496,730 | 263,290 | 65,800 | 197,490 | 1,188s | 3,545 MiB |
-
-Identity rows, edges and components at 5× and 10× are exactly five and ten
-times the 1× result. Inventory rows (54,542 × scale) and POS lines (7,588 ×
-scale) were copied the same way. Time grew much less than the row count.
 
 ## Visual-proof slots
 

@@ -6,6 +6,7 @@ deduplication. No watermark/TTL excludes historical or late records here.
 from __future__ import annotations
 
 import json
+import time
 
 from pyspark.sql import DataFrame, Window, functions as F, types as T
 
@@ -103,6 +104,20 @@ def write_exports(canonical, invalid, duplicates, root: str, stream: str, run_id
         publish(frame, root, f'{stream}_{suffix}', run_id)
 
 
+def log_stage(stage: str, started: float, **fields) -> None:
+    """One line the local benchmark parses. Harmless in a normal run."""
+    payload = {"stage": stage, "seconds": round(time.perf_counter() - started, 1), **fields}
+    print("BENCHMARK_STAGE " + json.dumps(payload, sort_keys=True), flush=True)
+
+
+def snapshot_bytes(spark, table: str) -> int:
+    """Bytes in the table's current snapshot, which is the one a full rebuild scans."""
+    row = spark.sql(
+        f"SELECT coalesce(cast(sum(file_size_in_bytes) AS bigint), 0) AS bytes FROM {table}.files"
+    ).first()
+    return int(row.bytes)
+
+
 def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
                    run_id: str | None = None) -> dict[str, DataFrame]:
     """Pin each source snapshot, persist outputs, then return canonical sources.
@@ -115,6 +130,7 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
     run_id = run_id or new_run_id()
     spark.sql(f'CREATE NAMESPACE IF NOT EXISTS {silver_catalog}.silver')
     for stream in ('clickstream', 'inventory'):
+        started = time.perf_counter()
         source = f'{bronze_catalog}.bronze.{stream}_records'
         # Resolve a committed snapshot before starting the several output actions.
         # Fail closed for missing raw tables rather than using legacy filtered data.
@@ -137,12 +153,14 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
                 gaps.writeTo(f'{silver_catalog}.silver.inventory_offset_gaps').using('iceberg').createOrReplace()
                 publish(gaps, root, 'inventory_offset_gaps', run_id)
             write_exports(*frames, root, stream, run_id)
+            scanned = snapshot_bytes(spark, source) if head is not None else 0
             print(json.dumps(dict(stream=stream, bronze_snapshot_id=head.snapshot_id if head else None,
-                                  input_rows=input_rows, canonical_rows=counts[0],
+                                  input_rows=input_rows, input_bytes=scanned, canonical_rows=counts[0],
                                   invalid_rows=counts[1], duplicate_rows=counts[2],
                                   payload_conflict_rows=frames[2].filter(
                                       F.col('duplicate_kind') == 'payload_conflict').count()),
                              sort_keys=True))
+            log_stage(stream + '_promote', started, input_rows=input_rows, input_bytes=scanned)
         finally:
             for frame in frames:
                 frame.unpersist()

@@ -38,16 +38,18 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
+import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 try:
-    from .canonical_events import promote_events
+    from .canonical_events import log_stage, promote_events
     from .consumer_exports import new_run_id, publish
 except ImportError:
-    from canonical_events import promote_events
+    from canonical_events import log_stage, promote_events
     from consumer_exports import new_run_id, publish
 
 try:  # package import in tests; script import under spark-submit
@@ -387,12 +389,18 @@ def main() -> None:
     # One run id for every export, so dbt can check it combined one run.
     run_id = new_run_id()
     events = promote_events(spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args), run_id)
+    hourly_started = time.perf_counter()
     export_inventory_hourly(spark, _consumer_root(args), run_id)
+    log_stage("inventory_hourly", hourly_started)
     if args.canonical_only:
         spark.stop()
         return
+    identity_started = time.perf_counter()
     clickstream = events['clickstream']
     pos = spark.read.parquet(args.pos_parquet_path)
+    pos_bytes = sum(
+        path.stat().st_size for path in Path(args.pos_parquet_path).rglob("*.parquet") if path.is_file()
+    )
 
     claims = loyalty_claims(clickstream)
     edges = build_edges(claims)
@@ -406,6 +414,7 @@ def main() -> None:
     claims.writeTo(CLAIMS_TABLE).using("iceberg").createOrReplace()
     associations.writeTo(ASSOCIATIONS_TABLE).using("iceberg").createOrReplace()
     write_consumer_exports(resolution, edges, claims, associations, _consumer_root(args), run_id)
+    log_stage("identity", identity_started, input_bytes=pos_bytes)
 
     spark.stop()
 

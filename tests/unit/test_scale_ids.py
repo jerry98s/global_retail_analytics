@@ -1,6 +1,6 @@
 import json
 
-from scripts.local.benchmark_identity import parse_mem_usage
+from scripts.local.benchmark_identity import parse_cpu_percent, parse_mem_usage, parse_stages
 from spark.identity_resolution.scale_ids import (
     remap_clickstream,
     remap_event,
@@ -60,3 +60,16 @@ def test_memory_usage_parses_docker_stats() -> None:
     assert parse_mem_usage("512MiB / 8GiB") == 512
     assert parse_mem_usage("") is None
     assert parse_mem_usage("n/a") is None
+
+
+def test_cpu_percent_allows_more_than_one_core() -> None:
+    assert parse_cpu_percent("250.50%") == 250.5
+    assert parse_cpu_percent("") is None
+    assert parse_cpu_percent("n/a") is None
+
+
+def test_stage_lines_parse_with_a_log_prefix() -> None:
+    log = 'INFO 26/11/21 BENCHMARK_STAGE {"input_bytes": 10, "seconds": 1.5, "stage": "inventory_promote"}\n'
+    stages = parse_stages(log)
+    assert stages["inventory_promote"]["seconds"] == 1.5
+    assert stages["inventory_promote"]["input_bytes"] == 10
