@@ -1,0 +1,20 @@
+unit_tests:
+  - name: sales_daily_store_emits_fully_voided_day_for_replacement
+    description: >
+      Store 2's only line on 20261105 is voided. The model still emits that
+      store-day with transaction_count 0, so delete+insert replaces the date
+      and the post_hook removes the row instead of keeping its old totals.
+    model: sales_daily_store
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fact_sales')
+        rows:
+          - {date_key: 20261104, store_key: 1, transaction_id: T1, quantity_sold: 2, gross_revenue: 20, net_revenue: 18, gross_margin: 8, is_voided: false}
+          - {date_key: 20261104, store_key: 1, transaction_id: T2, quantity_sold: 1, gross_revenue: 5, net_revenue: 5, gross_margin: 2, is_voided: true}
+          - {date_key: 20261105, store_key: 2, transaction_id: T3, quantity_sold: 1, gross_revenue: 10, net_revenue: 10, gross_margin: 4, is_voided: true}
+    expect:
+      rows:
+        - {date_key: 20261104, store_key: 1, transaction_count: 1, units_sold: 2, gross_revenue: 20, net_revenue: 18, gross_margin: 8}
+        - {date_key: 20261105, store_key: 2, transaction_count: 0, units_sold: null, gross_revenue: null, net_revenue: null, gross_margin: null}

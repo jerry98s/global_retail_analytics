@@ -4,7 +4,8 @@
     unique_key=['date_key'],
     incremental_strategy='delete+insert',
     on_schema_change='append_new_columns',
-    pre_hook="{{ pos_clear_empty_days() }}"
+    pre_hook="{{ pos_clear_empty_days() }}",
+    post_hook="delete from {{ this }} where transaction_count = 0"
   )
 }}
 
@@ -14,10 +15,12 @@
   Grain: (date_key, store_key)
   Measures exclude voided lines.
   Incremental: reprocess the same pos_restatement_days window as fact_sales
-  and replace each reprocessed day whole (delete+insert on date_key), so a
-  store-day whose lines all became voided or were removed is deleted rather
-  than left with its old totals. pos_restate_from / pos_restate_to switch
-  the window to that explicit date range, matching fact_sales, and days in
+  and replace each reprocessed day whole (delete+insert on date_key). Every
+  reprocessed store-day is emitted, voided lines included, so a day whose
+  lines all became voided still reaches delete+insert; it arrives with
+  transaction_count = 0 and the post_hook removes it, leaving no row for a
+  store-day without sales. pos_restate_from / pos_restate_to switch the
+  window to that explicit date range, matching fact_sales, and days in
   pos_restate_empty_dates are deleted first.
 */
 
@@ -46,21 +49,15 @@ with source_sales as (
           from {{ this }}
       )
     {% endif %}
-),
-
-non_voided as (
-    select *
-    from source_sales
-    where not is_voided
 )
 
 select
     date_key,
     store_key,
-    count(distinct transaction_id) as transaction_count,
-    cast(sum(quantity_sold) as numeric(18, 4)) as units_sold,
-    cast(sum(gross_revenue) as numeric(18, 4)) as gross_revenue,
-    cast(sum(net_revenue) as numeric(18, 4)) as net_revenue,
-    cast(sum(gross_margin) as numeric(18, 4)) as gross_margin
-from non_voided
+    count(distinct case when not is_voided then transaction_id end) as transaction_count,
+    cast(sum(case when not is_voided then quantity_sold end) as numeric(18, 4)) as units_sold,
+    cast(sum(case when not is_voided then gross_revenue end) as numeric(18, 4)) as gross_revenue,
+    cast(sum(case when not is_voided then net_revenue end) as numeric(18, 4)) as net_revenue,
+    cast(sum(case when not is_voided then gross_margin end) as numeric(18, 4)) as gross_margin
+from source_sales
 group by date_key, store_key
