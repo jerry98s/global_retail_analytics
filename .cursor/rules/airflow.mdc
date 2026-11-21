@@ -15,7 +15,7 @@ DAGs: `orchestration/airflow/dags/`. Plugins: `orchestration/airflow/plugins/`.
 | `warehouse_daily_batch_pipeline` | POS Parquet, its staging/intermediate, **`marts.finance`**, finance summaries, ANALYZE |
 | `marketing_hourly_customer_360_pipeline` | EMR Spark identity step (GraphFrames, ADR-010) → WAP clone → its staging/intermediate + **`marts.marketing`**, plus `sessions_daily_platform`, `consent_identity_daily`, `customer_segments` |
 | `streaming_manual_flink_jobs` | EMR Flink submit + duplicate-run guard |
-| `catalog_bihourly_product_scd2_refresh` | `dim_product` SCD2 |
+| `catalog_daily_product_scd2_refresh` | `dim_product` SCD2, 00:00 UTC; the warehouse DAG waits for its publish (soft-fail, ADR-014) |
 | `quality_hourly_ge_checkpoint` | Hourly GE `silver_events_daily` (Silver events only) |
 | `lakehouse_daily_iceberg_maintenance` | Iceberg compaction / snapshot expiry |
 

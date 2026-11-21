@@ -198,7 +198,7 @@ sources:
                     enabled: "{{ target.type != 'duckdb' }}"
   - name: gold_marketing
     database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
-    # Live marketing.dim_product owned by catalog_bihourly_product_scd2_refresh.
+    # Live marketing.dim_product owned by catalog_daily_product_scd2_refresh.
     # Finance/summary relationship tests must use this source — a nested
     # wap_live_ref()/ref() inside generic test YAML is invisible to dbt's
     # graph, so `dbt compile` (and the warehouse audit task) fail.

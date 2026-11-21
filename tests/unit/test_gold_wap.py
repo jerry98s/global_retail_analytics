@@ -459,7 +459,7 @@ class TestDagWapContract:
 
     @pytest.mark.parametrize("dag, scope, publish", [
         ("marketing_hourly_customer_360_pipeline.py", "marketing", "wap_publish"),
-        ("catalog_bihourly_product_scd2_refresh.py", "catalog", "publish_dim_product"),
+        ("catalog_daily_product_scd2_refresh.py", "catalog", "publish_dim_product"),
     ])
     def test_owning_dag_gates_its_own_tables_before_publish(self, dag, scope, publish) -> None:
         src = _read(_DAGS / dag)
@@ -477,7 +477,7 @@ class TestDagWapContract:
         assert "--exclude int_product_catalog dim_product customer_360_view" in src
 
     def test_catalog_clones_and_publishes_dim_product(self) -> None:
-        src = _read(_DAGS / "catalog_bihourly_product_scd2_refresh.py")
+        src = _read(_DAGS / "catalog_daily_product_scd2_refresh.py")
         assert "clone_dim_product_task" in src
         assert "publish_dim_product_task" in src
         assert "wap_phase" in src and "pending" in src

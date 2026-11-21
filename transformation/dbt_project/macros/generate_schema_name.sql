@@ -42,7 +42,7 @@
    Use this for Gold tables owned by a *different* DAG. Every Gold table has one
    owning DAG (ADR-009); a DAG must never write another DAG's pending table, or
    two concurrent runs clobber each other. fact_sales / fact_inventory_snapshot
-   join marketing.dim_product, which catalog_bihourly_product_scd2_refresh owns,
+   join marketing.dim_product, which catalog_daily_product_scd2_refresh owns,
    so they read the last published live version instead of a pending copy.
 
    ref() is still called, so dbt's lineage and build ordering are unchanged —

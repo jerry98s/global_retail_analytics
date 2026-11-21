@@ -29,7 +29,7 @@ staging and identity/session/RFM/consent intermediates
 (`plugins/dbt_selectors.py`). It reads `stg_pos_transactions`, which the
 warehouse DAG builds. Finance facts remain on warehouse_daily_batch_pipeline;
 dim_product SCD2 + int_product_catalog stay on
-catalog_bihourly_product_scd2_refresh. Also builds
+catalog_daily_product_scd2_refresh. Also builds
 `summary.sessions_daily_platform`.
 
 Each dbt task syncs its own copy of the project (`dbt_task_bash`). Failed
@@ -65,7 +65,7 @@ from wap_publish import MARKETING_TABLES, clone_marketing_task, publish_marketin
 
 # WAP: owned staging + intermediate write in place; marketing/summary mart
 # *tables* route to *_pending via wap_phase. Exclusions:
-#   dim_product — owned by catalog_bihourly_product_scd2_refresh.
+#   dim_product — owned by catalog_daily_product_scd2_refresh.
 #   customer_360_view / customer_360_serving — views are never published, so they
 #   are built after publish (SELECT_SERVING) against live tables.
 SELECT_PENDING = (

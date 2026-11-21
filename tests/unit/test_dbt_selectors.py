@@ -43,7 +43,7 @@ def test_quality_scopes_use_the_owning_dag_selections():
     dags = Path(__file__).resolve().parents[2] / "orchestration" / "airflow" / "dags"
     marketing = (dags / "marketing_hourly_customer_360_pipeline.py").read_text(encoding="utf-8")
     warehouse = (dags / "warehouse_daily_batch_pipeline.py").read_text(encoding="utf-8")
-    catalog = (dags / "catalog_bihourly_product_scd2_refresh.py").read_text(encoding="utf-8")
+    catalog = (dags / "catalog_daily_product_scd2_refresh.py").read_text(encoding="utf-8")
 
     assert quality_selection("marketing") == {
         "select": select(MARKETING_LIVE_MODELS, MARKETING_MART_SELECT),

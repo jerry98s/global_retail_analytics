@@ -114,6 +114,7 @@ simulators. Details in the [evidence ledger](./docs/evidence/README.md).
 | Redshift Serverless for Gold | Pay-per-use warehouse with Spectrum over the lake | [ADR-005](./docs/decisions/ADR-005-warehouse-redshift.md) |
 | Write-Audit-Publish | Consumers only ever see audited data | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) |
 | Semantic layer for metrics | One metric definition for the dashboard and analysts; on-hand is semi-additive | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) |
+| Daily product catalog refresh | Attributes change rarely; finance waits for the publish and warns instead of failing | [ADR-014](./docs/decisions/ADR-014-catalog-refresh-frequency.md) |
 
 All decisions: [docs/decisions](./docs/decisions/). Cost figures in
 [ADR-004](./docs/decisions/ADR-004-cost-model.md) are planning scenarios, not

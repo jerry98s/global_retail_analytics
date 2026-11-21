@@ -92,7 +92,7 @@ and recreate a table without dropping its views. Gold models declare `dist` / `s
   carried forward.
 - **One owner per Gold table.** Per-DAG subsets of `WAP_TABLES` are disjoint
   and cover the full list. `marketing.dim_product` belongs only to
-  `catalog_bihourly_product_scd2_refresh`. Each of those DAGs sets
+  `catalog_daily_product_scd2_refresh`. Each of those DAGs sets
   `max_active_runs=1` so overlapping runs cannot drop/reclone the same
   `*_pending` tables.
 - **Reference dims are not published.** `finance.dim_date` and
@@ -114,7 +114,7 @@ and recreate a table without dropping its views. Gold models declare `dist` / `s
 |-----|--------------------------------------|
 | `warehouse_daily_batch_pipeline` | finance facts + finance summaries |
 | `marketing_hourly_customer_360_pipeline` | marketing marts + `sessions_daily_platform` |
-| `catalog_bihourly_product_scd2_refresh` | `dim_product` only |
+| `catalog_daily_product_scd2_refresh` | `dim_product` only |
 
 The hourly `quality_hourly_ge_checkpoint` DAG checks the canonical Silver
 events (`silver_events_daily`). Earlier versions also ran Gold GE suites as a

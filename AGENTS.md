@@ -100,10 +100,10 @@ live on `main`.
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` — POS + **`marts.finance`**
+- `warehouse_daily_batch_pipeline` — POS + **`marts.finance`**; waits up to 2h for the catalog publish, then warns and continues (ADR-014)
 - `marketing_hourly_customer_360_pipeline` — Spark identity step (EMR) + **`marts.marketing`** / C360
 - `streaming_manual_flink_jobs`
-- `catalog_bihourly_product_scd2_refresh`
+- `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC
 - `quality_hourly_ge_checkpoint`
 - `lakehouse_daily_iceberg_maintenance`
 
