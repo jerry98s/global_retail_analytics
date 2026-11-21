@@ -22,12 +22,19 @@ full-refresh branch.
 This DAG owns the finance marts and their summary rollups only.
 `max_active_runs=1` serializes overlapping schedules/backfills so two runs
 cannot drop/reclone the same `*_pending` tables. `marketing.dim_product`
-belongs to `catalog_bihourly_product_scd2_refresh` and is
+belongs to `catalog_daily_product_scd2_refresh` and is
 read live via the `wap_live_ref` macro; marketing marts belong to
 `marketing_hourly_customer_360_pipeline`. `finance.dim_date` /
 `finance.dim_store` are stable seed reference dims and are never published.
 
 Schedule: 00:15 UTC daily (15-min buffer for late clickstream events).
+
+Catalog dependency (ADR-014): `wait_for_catalog_publish` waits up to two hours
+for the same day's `catalog_daily_product_scd2_refresh.wap_publish_dim_product`
+while the POS steps run. If that publish fails or is late, the sensor is
+skipped, `catalog_publish_check` sends an SNS warning, and the run builds on
+the last published `dim_product`. A manual run waits for the latest daily
+catalog run instead.
 
 Corrected POS files older than the `pos_restatement_days` lookback: trigger
 the DAG manually with params `restate_from` / `restate_to` (inclusive,
@@ -72,12 +79,22 @@ from airflow.models.param import Param
 from airflow.providers.amazon.aws.operators.redshift_data import RedshiftDataOperator
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
+from airflow.sensors.external_task import ExternalTaskSensor
 from airflow.utils.trigger_rule import TriggerRule
 
 # MWAA loads modules under plugins/ onto sys.path, so this imports cleanly
 # in the cloud runtime. Local `python -m compileall` skips Airflow imports
 # (compileall does not execute imports).
 from alerting import notify_task_failure
+from catalog_dependency import (
+    CATALOG_DAG_ID,
+    CATALOG_PUBLISH_TASK_ID,
+    POKE_INTERVAL,
+    WAIT_TASK_ID,
+    WAIT_TIMEOUT,
+    catalog_logical_date,
+    catalog_publish_check_task,
+)
 from dbt_selectors import WAREHOUSE_LIVE_MODELS, select
 from pos_restatement import AIRFLOW_MACROS as POS_RESTATEMENT_MACROS
 from row_count_reconciliation import (
@@ -99,7 +116,7 @@ from metadata_airflow import (
 
 # Models this DAG owns end-to-end (clone -> build -> audit -> publish).
 # marts.marketing and sessions_daily_platform belong to the hourly marketing DAG;
-# dim_product belongs to catalog_bihourly_product_scd2_refresh.
+# dim_product belongs to catalog_daily_product_scd2_refresh.
 OWNED_SELECT = (
     "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily"
 )
@@ -231,6 +248,29 @@ with DAG(
         select(WAREHOUSE_LIVE_MODELS),
     )
 
+    # soft_fail: a failed or late catalog publish skips this sensor instead of
+    # failing the run; catalog_publish_check turns the skip into an alert.
+    wait_for_catalog = ExternalTaskSensor(
+        task_id           = WAIT_TASK_ID,
+        external_dag_id   = CATALOG_DAG_ID,
+        external_task_id  = CATALOG_PUBLISH_TASK_ID,
+        execution_date_fn = catalog_logical_date,
+        allowed_states    = ["success"],
+        failed_states     = ["failed", "upstream_failed", "skipped"],
+        mode              = "reschedule",
+        poke_interval     = POKE_INTERVAL.total_seconds(),
+        timeout           = WAIT_TIMEOUT.total_seconds(),
+        soft_fail         = True,
+        retries           = 0,
+        on_failure_callback = None,
+    )
+
+    catalog_publish_check = PythonOperator(
+        task_id         = "catalog_publish_check",
+        python_callable = catalog_publish_check_task,
+        trigger_rule    = TriggerRule.ALL_DONE,
+    )
+
     # WAP step 1: copy live Gold into the pending schemas so the incremental
     # models have their prior state and dbt takes the incremental branch.
     wap_clone = PythonOperator(
@@ -314,6 +354,7 @@ with DAG(
         on_failure_callback = None,
     )
 
+    metadata_start >> wait_for_catalog >> catalog_publish_check >> wap_clone
     (
         metadata_start
         >> generate_pos_parquet

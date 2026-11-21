@@ -16,7 +16,7 @@ EXPECTED_DAGS = {
     "warehouse_daily_batch_pipeline",
     "marketing_hourly_customer_360_pipeline",
     "streaming_manual_flink_jobs",
-    "catalog_bihourly_product_scd2_refresh",
+    "catalog_daily_product_scd2_refresh",
     "quality_hourly_ge_checkpoint",
     "lakehouse_daily_iceberg_maintenance",
 }

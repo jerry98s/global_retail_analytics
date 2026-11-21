@@ -270,6 +270,7 @@ DuckDB — no Redshift credentials required.
 | [ADR-011](./docs/decisions/ADR-011-replayable-bronze.md) | Replayable raw Bronze, Spark canonical Silver |
 | [ADR-012](./docs/decisions/ADR-012-inventory-lambda.md) | Inventory lambda: Spark owns covered hours |
 | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) | dbt Semantic Layer (MetricFlow) for metrics |
+| [ADR-014](./docs/decisions/ADR-014-catalog-refresh-frequency.md) | Daily product catalog refresh; finance waits for its publish |
 
 Cost figures are planning scenarios, not observed cloud bills.
 

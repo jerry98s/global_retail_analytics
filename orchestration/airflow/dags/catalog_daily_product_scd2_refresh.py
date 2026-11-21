@@ -31,30 +31,40 @@ SELECT = select(CATALOG_LIVE_MODELS, "dim_product")
 OWNED_TABLES = [f"{schema}.{table}" for schema, table in DIM_PRODUCT_TABLES]
 
 DAG_DOC_MD = """
-## catalog_bihourly_product_scd2_refresh
+## catalog_daily_product_scd2_refresh
 
 Refreshes `marketing.dim_product` (the only SCD Type 2 dimension in the
 platform, per `docs/data-model/dimensional-model.md`).
 
 ### Purpose
-Re-processes the dim_product dbt model every two hours so that upstream
+Re-processes the dim_product dbt model once a day at 00:00 UTC so that
 product catalog changes (price, category, brand, status) are captured as
 new SCD2 rows with `valid_from = now()` and the prior row is closed out
 with `valid_to = now()` and `is_current = false`.
+
+### Refresh frequency (ADR-014)
+Product attributes are assumed to change rarely and POS reporting is daily,
+so one refresh a day is enough. SCD2 keeps the version observed at each
+refresh: if a product changes twice between refreshes, only the later state
+is recorded. The source is the generated `reference.product_master` seed,
+not a delivered daily feed, so a run only adds versions when that seed
+changes. Intraday history and change data capture are deferred.
 
 ### Sole owner of marketing.dim_product
 This DAG is the only writer of `marketing.dim_product` and of its
 `marketing_pending` twin (ADR-009). `warehouse_daily_batch_pipeline` reads the
 last published version through the `wap_live_ref` dbt macro rather than
-rebuilding it, so the two schedules can overlap without clobbering each other's
-pending table.
+rebuilding it, so the two DAGs never write each other's pending table.
+
+### Ordering with finance
+`warehouse_daily_batch_pipeline` runs at 00:15 UTC and waits up to two hours
+for this DAG's `wap_publish_dim_product` of the same day. If this run fails
+or is late, finance alerts and continues on the last published version.
 
 ### Why separate from warehouse_daily_batch_pipeline
-- The product catalog changes intra-day (merchandising team), and dashboards
-  on `fact_sales` rely on the SCD2 join (`is_current = true`) for *current*
-  pricing. A 24h delay would make today's margin reports stale.
-- The cost is one dbt run of a single model (~30s) every 2h — negligible
-  vs. the cost of stale product attributes on Gold marts.
+- Clear ownership of the one SCD2 dimension, and independent recovery: a
+  failed catalog run is re-run alone without rebuilding finance.
+- Its WAP audit blocks a bad catalog change before any consumer reads it.
 
 ### Idempotency
 `dbt run --select dim_product` uses `incremental_strategy='delete+insert'`
@@ -82,12 +92,13 @@ If `dbt_test_dim_product` fails:
    affected date partition.
 
 ### Related
-- `docs/decisions/ADR-005-scd2-on-dim_product-only.md`
+- `docs/decisions/ADR-014-catalog-refresh-frequency.md`
+- `docs/decisions/ADR-009-write-audit-publish.md`
 - `transformation/dbt_project/models/marts/marketing/dim_product.sql`
 """
 
 with DAG(
-    dag_id="catalog_bihourly_product_scd2_refresh",
+    dag_id="catalog_daily_product_scd2_refresh",
     max_active_runs=1,
     default_args={
         "owner": "data-platform",
@@ -97,9 +108,9 @@ with DAG(
         "execution_timeout": timedelta(minutes=30),
         "on_failure_callback": notify_task_failure,
     },
-    schedule_interval="0 */2 * * *",
+    schedule_interval="0 0 * * *",
     catchup=False,
-    tags=["dbt", "scd2"],
+    tags=["dbt", "scd2", "daily"],
     doc_md=DAG_DOC_MD,
     params={
         "acknowledge_shrink": Param(

@@ -135,7 +135,7 @@ select
     greatest(f.quantity_on_hand, 0) as quantity_available,
     f.is_estimated
 from with_running_balance f
--- dim_product is owned by catalog_bihourly_product_scd2_refresh (ADR-009), so
+-- dim_product is owned by catalog_daily_product_scd2_refresh (ADR-009), so
 -- read the last published live version rather than this DAG's pending schema.
 left join {{ wap_live_ref('dim_product') }} p
   on f.product_id = p.product_id

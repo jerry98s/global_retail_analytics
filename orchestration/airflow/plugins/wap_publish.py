@@ -67,7 +67,7 @@ migration can drop and recreate a table without dropping its views.
 Table ownership
 ---------------
 Each Gold table has exactly one owning DAG. ``marketing.dim_product`` belongs to
-``catalog_bihourly_product_scd2_refresh`` alone — the warehouse DAG reads it from
+``catalog_daily_product_scd2_refresh`` alone — the warehouse DAG reads it from
 the live schema via the ``wap_live_ref`` dbt macro instead of rebuilding it, so
 the two DAGs can never write the same pending table concurrently.
 
