@@ -90,6 +90,7 @@ log = logging.getLogger(__name__)
 WAP_TABLES: list[tuple[str, str]] = [
     ("finance", "fact_sales"),
     ("finance", "fact_inventory_snapshot"),
+    ("control", "inventory_publication"),
     ("marketing", "dim_customer"),
     ("marketing", "dim_product"),
     ("marketing", "fact_customer_session"),
@@ -107,6 +108,7 @@ WAP_TABLES: list[tuple[str, str]] = [
 FINANCE_SUMMARY_TABLES: list[tuple[str, str]] = [
     ("finance", "fact_sales"),
     ("finance", "fact_inventory_snapshot"),
+    ("control", "inventory_publication"),
     ("summary", "sales_daily_store"),
     ("summary", "inventory_daily_product_store"),
     ("summary", "inventory_position_daily"),

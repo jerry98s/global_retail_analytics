@@ -106,24 +106,24 @@ objects:
     freshness_sla_minutes: 120
     is_active: true
 
-  - object_fqn: intermediate.int_inventory_batch_coverage
+  - object_fqn: intermediate.int_inventory_cutoff
     object_type: view
     platform_layer: intermediate
     domain: supply
     owner: analytics-engineering
-    grain: one row describing the Spark-covered hour range
+    grain: one row, the daily inventory cutoff
     timestamp_column: null
     freshness_sla_minutes: null
     is_active: true
 
-  - object_fqn: intermediate.int_inventory_coverage_gaps
-    object_type: view
-    platform_layer: intermediate
+  - object_fqn: control.inventory_publication
+    object_type: table
+    platform_layer: gold
     domain: supply
     owner: analytics-engineering
-    grain: one row per missing-offset range in inventory Bronze
-    timestamp_column: null
-    freshness_sla_minutes: null
+    grain: one row, the cutoff published with fact_inventory_snapshot
+    timestamp_column: published_at
+    freshness_sla_minutes: 1440
     is_active: true
 
   - object_fqn: intermediate.int_inventory_hourly

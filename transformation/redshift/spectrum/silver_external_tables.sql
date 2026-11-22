@@ -178,3 +178,35 @@ CREATE EXTERNAL TABLE silver.inventory_offset_gaps (
 )
 STORED AS PARQUET
 LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_offset_gaps/manifest';
+
+-- Kafka frontier versus the pinned Bronze snapshot, one row per expected
+-- inventory partition (ADR-012). export_run_id is appended by the exporter.
+DROP TABLE IF EXISTS silver.inventory_partition_coverage;
+CREATE EXTERNAL TABLE silver.inventory_partition_coverage (
+    inventory_run_id varchar(64),
+    bronze_snapshot_id bigint,
+    kafka_topic varchar(256),
+    kafka_partition integer,
+    required_start_offset bigint,
+    required_end_offset bigint,
+    captured_end_offset bigint,
+    missing_offset_count bigint,
+    coverage_status varchar(16),
+    export_run_id varchar(64)
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_partition_coverage/manifest';
+
+-- One summary row for that same Spark run.
+DROP TABLE IF EXISTS silver.inventory_cutoff;
+CREATE EXTERNAL TABLE silver.inventory_cutoff (
+    inventory_run_id varchar(64),
+    bronze_snapshot_id bigint,
+    target_hour_exclusive integer,
+    closed_hour_exclusive integer,
+    coverage_status varchar(16),
+    incomplete_partitions integer,
+    export_run_id varchar(64)
+)
+STORED AS PARQUET
+LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_cutoff/manifest';

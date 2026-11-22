@@ -12,10 +12,11 @@
 /*
   Hourly inventory fact with running on-hand balance per product/store.
 
-  Lambda (ADR-012): reads int_inventory_hourly, which takes hours Spark has
-  covered from canonical silver.inventory_events and later hours from Flink
-  silver.inventory_hourly (is_estimated = true). This mart adds the running
-  balance and the surrogate-key joins to dim_product and dim_store.
+  Lambda (ADR-012): reads int_inventory_hourly, which is Spark canonical
+  events for hours before the published cutoff. is_estimated stays on the
+  table (dropping a live column aborts WAP) and is always false. This mart
+  adds the running balance and the surrogate-key joins to dim_product and
+  dim_store.
 
   quantity_on_hand: reference.inventory_opening_balance.opening_qty (0 when the
                     product/store has no opening count) plus the cumulative

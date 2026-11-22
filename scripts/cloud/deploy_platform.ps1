@@ -135,7 +135,8 @@ function Submit-SparkIdentityResolution {
     $cmd = "aws s3 sync s3://$artifactsBucket/spark /opt/spark-identity " +
         "&& cd /opt/spark-identity/identity_resolution " +
         "&& spark-submit --master yarn --deploy-mode cluster --packages $packages " +
-        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py identity_resolution_job.py " +
+        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,kafka_frontier.py identity_resolution_job.py " +
+        "--mode hourly " +
         "--bronze-warehouse $bronzeWarehouse " +
         "--silver-warehouse $silverWarehouse " +
         "--pos-parquet-path $posPath " +

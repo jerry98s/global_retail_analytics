@@ -76,7 +76,9 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.models.param import Param
+from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.operators.redshift_data import RedshiftDataOperator
+from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.sensors.external_task import ExternalTaskSensor
@@ -96,6 +98,7 @@ from catalog_dependency import (
     catalog_publish_check_task,
 )
 from dbt_selectors import WAREHOUSE_LIVE_MODELS, select
+from spark_steps import POOL as SPARK_POOL, spark_step
 from pos_restatement import AIRFLOW_MACROS as POS_RESTATEMENT_MACROS
 from row_count_reconciliation import (
     reconcile_gold_row_counts_task,
@@ -118,7 +121,8 @@ from metadata_airflow import (
 # marts.marketing and sessions_daily_platform belong to the hourly marketing DAG;
 # dim_product belongs to catalog_daily_product_scd2_refresh.
 OWNED_SELECT = (
-    "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily"
+    "marts.finance sales_daily_store inventory_daily_product_store "
+    "inventory_position_daily inventory_publication"
 )
 
 # Audits must cover exactly what this DAG built. A bare `dbt test` would also run
@@ -242,6 +246,25 @@ with DAG(
         """,
     )
 
+    # Daily inventory canonicalization. Hourly Customer 360 stays on the
+    # marketing DAG. The shared pool keeps the two Spark steps apart.
+    spark_inventory = EmrAddStepsOperator(
+        task_id     = "spark_inventory_canonical",
+        job_flow_id = "{{ var.value.emr_cluster_id }}",
+        steps       = [spark_step("inventory")],
+        pool        = SPARK_POOL,
+    )
+
+    wait_spark_inventory = EmrStepSensor(
+        task_id       = "wait_spark_inventory_canonical",
+        job_flow_id   = "{{ var.value.emr_cluster_id }}",
+        step_id       = "{{ task_instance.xcom_pull('spark_inventory_canonical')[0] }}",
+        target_states = {"COMPLETED"},
+        poke_interval = 30,
+        timeout       = 3600,
+        pool          = SPARK_POOL,
+    )
+
     dbt_staging = _dbt_step(
         "dbt_staging_and_intermediate",
         "run",
@@ -315,6 +338,7 @@ with DAG(
             ANALYZE marketing;
             ANALYZE summary;
             ANALYZE serving;
+            ANALYZE control;
         """,
     )
 
@@ -359,6 +383,8 @@ with DAG(
         metadata_start
         >> generate_pos_parquet
         >> register_pos_partition
+        >> spark_inventory
+        >> wait_spark_inventory
         >> dbt_staging
         >> wap_clone
         >> dbt_marts

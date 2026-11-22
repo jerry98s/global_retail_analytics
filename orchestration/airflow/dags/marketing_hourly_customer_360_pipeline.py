@@ -62,6 +62,7 @@ from row_count_reconciliation import (
     reconcile_gold_row_counts_task,
     save_row_count_baseline_task,
 )
+from spark_steps import POOL as SPARK_POOL, spark_step
 from wap_publish import MARKETING_TABLES, clone_marketing_task, publish_marketing_task
 
 # WAP: owned staging + intermediate write in place; marketing/summary mart
@@ -78,36 +79,6 @@ VARS_PENDING = '{"wap_phase": "pending"}'
 SELECT_SERVING = "customer_360_view customer_360_serving"
 
 OWNED_TABLES = [f"{schema}.{table}" for schema, table in MARKETING_TABLES]
-
-# ADR-010: Spark + GraphFrames identity resolution on the existing EMR
-# cluster (Spark 3.4 on emr-6.15.0; Iceberg runtime matches Flink's 1.4.3).
-SPARK_PACKAGES = (
-    "org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,"
-    "graphframes:graphframes:0.8.3-spark3.4-s_2.12"
-)
-
-
-def _spark_identity_step() -> dict:
-    """EMR step: rebuild silver.identity_resolution from bronze via GraphFrames."""
-    cmd = (
-        "aws s3 sync s3://{{ var.value.artifacts_bucket }}/spark /opt/spark-identity "
-        "&& cd /opt/spark-identity/identity_resolution "
-        f"&& spark-submit --master yarn --deploy-mode cluster --packages {SPARK_PACKAGES} "
-        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py identity_resolution_job.py "
-        "--bronze-warehouse {{ var.value.bronze_iceberg_warehouse }} "
-        "--silver-warehouse {{ var.value.silver_iceberg_warehouse }} "
-        "--pos-parquet-path {{ var.value.pos_bronze_s3_path }} "
-        "--checkpoint-dir s3://{{ var.value.checkpoints_bucket }}/graphframes/"
-    )
-    return {
-        "Name":            "spark-identity-resolution",
-        "ActionOnFailure": "CONTINUE",
-        "HadoopJarStep": {
-            "Jar":  "command-runner.jar",
-            "Args": ["bash", "-lc", cmd],
-        },
-    }
-
 
 DEFAULT_ARGS = {
     "owner":               "data-platform",
@@ -144,13 +115,14 @@ with DAG(
         python_callable=on_dag_start,
     )
 
-    # ADR-010: refresh silver.identity_resolution (Iceberg) before dbt reads
-    # it. Batch step — the DAG waits for COMPLETED, unlike the long-running
-    # streaming Flink steps.
+    # Hourly mode: clickstream, the Flink inventory_hourly export, and identity.
+    # Inventory canonicalization runs daily on the warehouse DAG. Both Spark
+    # steps share the emr_spark pool so they are not on the cluster together.
     spark_identity = EmrAddStepsOperator(
         task_id     = "spark_identity_resolution",
         job_flow_id = "{{ var.value.emr_cluster_id }}",
-        steps       = [_spark_identity_step()],
+        steps       = [spark_step("hourly")],
+        pool        = SPARK_POOL,
     )
 
     wait_spark_identity = EmrStepSensor(
@@ -160,6 +132,7 @@ with DAG(
         target_states = {"COMPLETED"},
         poke_interval = 30,
         timeout       = 1800,
+        pool          = SPARK_POOL,
     )
 
     # WAP step 1: clone live marketing/summary Gold into the pending schemas so

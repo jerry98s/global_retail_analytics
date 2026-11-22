@@ -9,26 +9,19 @@
   Current stock per (product_id, store_id): the speed-layer read (ADR-012).
 
   published_on_hand_qty is the latest balance in live
-  finance.fact_inventory_snapshot (rebuilt by the warehouse DAG). Flink
-  silver.inventory_hourly hours after that pair's own newest fact hour are
-  added on top as provisional_qty_delta, so this view moves as soon as a new
-  Flink hour is exported, without waiting for the daily rebuild. The cutoff is
-  per (product_id, store_id): another product's newer hour must not hide this
-  one's movement.
+  finance.fact_inventory_snapshot, which holds only hours before the cutoff
+  in live control.inventory_publication. Flink silver.inventory_hourly hours
+  at or after that cutoff are added as provisional_qty_delta. The view never
+  reads Spark's pending coverage, so a movement cannot disappear between a
+  Spark run and the publish that records the cutoff.
 
-  Hours Spark covers (int_inventory_batch_coverage, outside every
-  int_inventory_coverage_gaps range) are never added from Flink. Spark is
-  canonical there, so a covered hour with no fact row had no movement, and a
-  Flink delta for it (a retry duplicate, say) must not be counted. This is the
-  same split int_inventory_hourly uses. The next rebuild replaces the
-  remaining Flink hours with Spark-canonical ones where Spark covers them.
+  Before the first publication (no control row) every Flink hour is
+  provisional on top of inventory_opening_balance.
 
   A view, so every query recomputes from the current tables. Freshness is
-  bounded by the Flink window (1 hour) plus the inventory_hourly export.
+  bounded by the Flink window plus the hourly inventory_hourly export.
 
-  is_provisional: the balance includes a Flink hour that Spark has not yet
-  confirmed, either after the fact or as the fact's latest row.
-  Pairs with no fact row start from inventory_opening_balance.
+  is_provisional: the balance includes a Flink hour at or after the cutoff.
 */
 
 with fact_hours as (
@@ -59,14 +52,9 @@ published as (
     where rn = 1
 ),
 
-coverage as (
-    select batch_start_hour_key, batch_end_hour_key
-    from {{ ref('int_inventory_batch_coverage') }}
-),
-
-gaps as (
-    select gap_start_hour_key, gap_end_hour_key
-    from {{ ref('int_inventory_coverage_gaps') }}
+cutoff as (
+    select max(closed_hour_exclusive) as closed_hour_exclusive
+    from {{ source('gold_control', 'inventory_publication') }}
 ),
 
 speed_hours as (
@@ -76,15 +64,9 @@ speed_hours as (
         h.snapshot_date_key * 100 + h.snapshot_hour as hour_key,
         h.qty_delta_hour
     from {{ source('silver', 'inventory_hourly') }} h
-    cross join coverage c
-    where c.batch_start_hour_key is null
-       or h.snapshot_date_key * 100 + h.snapshot_hour < c.batch_start_hour_key
-       or h.snapshot_date_key * 100 + h.snapshot_hour >= c.batch_end_hour_key
-       or exists (
-          select 1 from gaps g
-          where h.snapshot_date_key * 100 + h.snapshot_hour
-                between g.gap_start_hour_key and g.gap_end_hour_key
-       )
+    cross join cutoff c
+    where c.closed_hour_exclusive is null
+       or h.snapshot_date_key * 100 + h.snapshot_hour >= c.closed_hour_exclusive
 ),
 
 provisional as (
@@ -97,7 +79,9 @@ provisional as (
     left join published pub
       on s.product_id = pub.product_id
      and s.store_id = pub.store_id
-    where pub.hour_key is null
+    cross join cutoff c
+    where c.closed_hour_exclusive is null
+       or pub.hour_key is null
        or s.hour_key > pub.hour_key
     group by s.product_id, s.store_id
 ),
@@ -122,13 +106,20 @@ positioned as (
     select
         k.product_id,
         k.store_id,
-        coalesce(pub.quantity_on_hand, o.opening_qty, cast(0 as numeric(38, 0)))
-            as published_on_hand_qty,
-        pub.hour_key as published_hour_key,
+        case
+            when c.closed_hour_exclusive is null
+                then coalesce(o.opening_qty, cast(0 as numeric(38, 0)))
+            else coalesce(pub.quantity_on_hand, o.opening_qty, cast(0 as numeric(38, 0)))
+        end as published_on_hand_qty,
+        case when c.closed_hour_exclusive is null then null else pub.hour_key end
+            as published_hour_key,
         coalesce(pr.qty_delta, cast(0 as numeric(38, 0))) as provisional_qty_delta,
         pr.hour_key as provisional_hour_key,
-        coalesce(pub.is_estimated, false) or pr.qty_delta is not null as is_provisional
+        c.closed_hour_exclusive is null
+            or coalesce(pub.is_estimated, false)
+            or pr.qty_delta is not null as is_provisional
     from pairs k
+    cross join cutoff c
     left join published pub
       on k.product_id = pub.product_id
      and k.store_id = pub.store_id

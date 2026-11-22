@@ -125,8 +125,8 @@ dbt/GE, evidence capture, destroy checklist), follow
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` — POS + **`marts.finance`**; waits up to 2h for the catalog publish, then warns and continues (ADR-014)
-- `marketing_hourly_customer_360_pipeline` — Spark identity step (EMR) + **`marts.marketing`** / C360
+- `warehouse_daily_batch_pipeline` — POS + inventory Spark (`--mode inventory`) before dbt + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete coverage holds the cutoff and warns; it does not block this publish.
+- `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Airflow rejects `--mode all`.
 - `streaming_manual_flink_jobs`
 - `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC
 - `quality_hourly_ge_checkpoint`
@@ -162,7 +162,7 @@ across normal restarts and change it after Kafka topic/cluster recreation.
 - dbt `int_identity_resolution` is a thin view over
   `source('silver', 'identity_resolution')`; the old SQL edge/component
   models are retired. WAP unchanged — Gold marts stay dbt-built.
-- Submit: marketing DAG (hourly) or `deploy_platform.ps1 -Action spark`.
+- Submit: marketing DAG or `deploy_platform.ps1 -Action spark` (`--mode hourly`), and the warehouse DAG (`--mode inventory`). `--mode all` is not submitted on EMR.
 
 ## Metadata + Summary
 

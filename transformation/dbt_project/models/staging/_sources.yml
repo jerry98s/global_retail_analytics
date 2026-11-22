@@ -43,13 +43,16 @@ sources:
       # Replayable Bronze is interpreted by Spark; analytics uses canonical events.
       - name: clickstream_events
       - name: inventory_events
-      # Flink inventory_silver_job writes silver.inventory_hourly, the speed
-      # layer. int_inventory_hourly uses it only for hours Spark has not
-      # covered yet (ADR-012).
+      # Flink inventory_silver_job writes silver.inventory_hourly. Serving adds
+      # hours at or after the published cutoff. Gold does not read it (ADR-012).
       - name: inventory_hourly
       # Spark lists missing Kafka offsets in the pinned inventory Bronze
-      # snapshot; int_inventory_coverage_gaps keeps those hours on Flink.
+      # snapshot. Gold does not read it; missing offsets are on coverage.
       - name: inventory_offset_gaps
+      # One row per expected inventory partition: Kafka frontier versus Bronze.
+      - name: inventory_partition_coverage
+      # One row: the daily run's target and closed hour.
+      - name: inventory_cutoff
       # Spark GraphFrames identity_resolution_job writes
       # silver.identity_resolution (ADR-010). int_identity_resolution is a
       # thin view over this source; fixture mode seeds it from
@@ -60,6 +63,14 @@ sources:
       # (attribution only, never identity merges). Fixture mode seeds it from
       # seeds/silver/device_session_associations.csv (same generator).
       - name: device_session_associations
+  - name: gold_control
+    database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
+    # Live control.inventory_publication, including during a pending build.
+    # Serving reads the cutoff that was published with the fact, not the
+    # control_pending row this run is still auditing.
+    schema: control
+    tables:
+      - name: inventory_publication
   - name: gold_finance
     database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
     # WAP (ADR-009): reference dims dim_date/dim_store are NOT published through

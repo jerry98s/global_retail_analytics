@@ -209,6 +209,35 @@ jobs:
               )
               """
           )
+          con.execute(
+              """
+              create table if not exists silver.inventory_partition_coverage (
+                inventory_run_id varchar, bronze_snapshot_id bigint, kafka_topic varchar,
+                kafka_partition integer, required_start_offset bigint, required_end_offset bigint,
+                captured_end_offset bigint, missing_offset_count bigint, coverage_status varchar,
+                export_run_id varchar
+              )
+              """
+          )
+          con.execute(
+              """
+              create table if not exists silver.inventory_cutoff (
+                inventory_run_id varchar, bronze_snapshot_id bigint,
+                target_hour_exclusive integer, closed_hour_exclusive integer,
+                coverage_status varchar, incomplete_partitions integer, export_run_id varchar
+              )
+              """
+          )
+          con.execute("create schema if not exists control")
+          con.execute(
+              """
+              create table if not exists control.inventory_publication (
+                inventory_run_id varchar, bronze_snapshot_id bigint,
+                closed_hour_exclusive integer, coverage_status varchar,
+                incomplete_partitions integer, published_at timestamp
+              )
+              """
+          )
           PY
 
       - name: dbt run identity graph chain
@@ -219,7 +248,7 @@ jobs:
         run: >
           dbt run --profiles-dir . --target local --full-refresh
           --select +identity_graph int_identity_shared_devices int_session_reconstruction
-          +fact_sales +fact_inventory_snapshot int_inventory_batch_coverage int_inventory_hourly
+          +fact_sales +fact_inventory_snapshot int_inventory_cutoff int_inventory_hourly inventory_publication
 
       - name: dbt test identity graph chain and every unit test
         # cautious: skip data tests that also depend on models this job doesn't

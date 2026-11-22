@@ -19,10 +19,10 @@
   dedup differences). The prediction uses Kafka append time as a proxy for
   the job watermark, so expect occasional boundary noise.
 
-  is_batch_covered marks hours inside int_inventory_batch_coverage. Only those
-  are comparable: Spark's side of the open hour is still incomplete. For a
-  covered hour Gold already uses Spark's number, so a mismatch measures how
-  far the provisional Flink number was off, not an error in Gold.
+  is_batch_covered marks hours before int_inventory_cutoff.closed_hour_exclusive.
+  Only those are comparable: later hours are not in Gold yet. For a covered
+  hour Gold already uses Spark's number, so a mismatch measures how far the
+  provisional Flink number was off, not an error in Gold.
 */
 
 with canonical as (
@@ -94,9 +94,7 @@ select
         - (coalesce(c.canonical_qty, 0) - coalesce(c.late_dropped_qty, 0)) as unexplained_qty,
     coalesce(
         coalesce(c.snapshot_date_key, s.snapshot_date_key) * 100
-            + coalesce(c.snapshot_hour, s.snapshot_hour) >= cov.batch_start_hour_key
-        and coalesce(c.snapshot_date_key, s.snapshot_date_key) * 100
-            + coalesce(c.snapshot_hour, s.snapshot_hour) < cov.batch_end_hour_key,
+            + coalesce(c.snapshot_hour, s.snapshot_hour) < cut.closed_hour_exclusive,
         false
     ) as is_batch_covered
 from canonical_hourly c
@@ -105,4 +103,7 @@ full outer join silver_hourly s
  and c.snapshot_hour = s.snapshot_hour
  and c.product_id = s.product_id
  and c.store_id = s.store_id
-cross join {{ ref('int_inventory_batch_coverage') }} cov
+cross join (
+    select max(closed_hour_exclusive) as closed_hour_exclusive
+    from {{ ref('int_inventory_cutoff') }}
+) cut
