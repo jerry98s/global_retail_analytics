@@ -17,11 +17,17 @@ The business rules live in ``graph_logic.py`` and are shared with the dbt
 seed fixture generator — this job mirrors them in DataFrame/GraphFrames
 operations.
 
-Cloud (EMR, on `main`) — submitted by the marketing hourly DAG:
+Modes: `hourly` (clickstream, the Flink inventory export, identity),
+`inventory` (canonical inventory and Kafka coverage, no identity), `all`
+(both; local stack only). Airflow submits hourly and inventory through
+`orchestration/airflow/plugins/spark_steps.py` and never submits `all`.
+
+Cloud (EMR, on `main`) — hourly from the marketing DAG, inventory from the
+warehouse DAG:
 
     spark-submit \
-      --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12 \
-      identity_resolution_job.py \
+      --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.4.3,graphframes:graphframes:0.8.3-spark3.4-s_2.12,org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1 \
+      identity_resolution_job.py --mode hourly \
       --bronze-warehouse s3://<bucket>-bronze/iceberg \
       --silver-warehouse s3://<bucket>-silver/iceberg \
       --pos-parquet-path s3://<bucket>-bronze/iceberg/bronze/pos_transactions/ \
@@ -29,7 +35,7 @@ Cloud (EMR, on `main`) — submitted by the marketing hourly DAG:
 
 Local (laptop, local-testing-version stack):
 
-    .\\scripts\\local\\run_local_stack.ps1 -Task spark
+    .\\scripts\\local\\run_local_stack.ps1 -Task spark -SparkMode all
 
     (Docker image retail-analytics/spark-identity:3.4.1; warehouse
      file:///tmp/iceberg via the compose bind-mount.)
@@ -39,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -48,9 +55,11 @@ from pyspark.sql import functions as F
 try:
     from .canonical_events import log_stage, promote_events
     from .consumer_exports import new_run_id, publish
+    from .kafka_frontier import write_inventory_coverage
 except ImportError:
     from canonical_events import log_stage, promote_events
     from consumer_exports import new_run_id, publish
+    from kafka_frontier import write_inventory_coverage
 
 try:  # package import in tests; script import under spark-submit
     from .graph_logic import (
@@ -102,8 +111,21 @@ INVENTORY_HOURLY_SCHEMA = (
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GraphFrames identity resolution")
+    parser.add_argument('--mode', choices=('all', 'hourly', 'inventory'), default='all',
+                        help='all: local full run. hourly: clickstream, Flink export, identity. '
+                             'inventory: daily canonical inventory and Kafka coverage')
     parser.add_argument('--canonical-only', action='store_true',
                         help='Replay Bronze into canonical Silver and audit tables; skip identity/POS')
+    parser.add_argument('--kafka-bootstrap-servers',
+                        help='Kafka brokers for the inventory coverage frontier (required for all and inventory)')
+    parser.add_argument('--inventory-topic', default='inventory.events.v1',
+                        help='Inventory topic (ingestion/kafka/topics.py TOPIC_INVENTORY)')
+    parser.add_argument('--inventory-partitions', type=int, default=12,
+                        help='Expected inventory partitions (PARTITIONS_BY_TOPIC)')
+    parser.add_argument('--inventory-watermark-seconds', type=int, default=60,
+                        help='Flink watermark delay used to age the cutoff')
+    parser.add_argument('--inventory-lateness-seconds', type=int, default=3600,
+                        help='How long an event_time may precede its Kafka arrival')
     parser.add_argument("--bronze-warehouse", required=True,
                         help="Iceberg Hadoop catalog warehouse holding bronze.*_records")
     parser.add_argument("--silver-warehouse", required=True,
@@ -380,19 +402,82 @@ def assign_resolution(spark: SparkSession, vertices: DataFrame, edges: DataFrame
     )
 
 
+def _streams_for(mode: str) -> tuple[str, ...]:
+    if mode == 'hourly':
+        return ('clickstream',)
+    if mode == 'inventory':
+        return ('inventory',)
+    return ('clickstream', 'inventory')
+
+
+def _previous_cutoff(spark: SparkSession) -> tuple[int | None, dict[int, int]]:
+    """Last published cutoff and each partition's required end, if this schema wrote them."""
+    cutoff_table = f'{SILVER_CATALOG}.silver.inventory_cutoff'
+    coverage_table = f'{SILVER_CATALOG}.silver.inventory_partition_coverage'
+    if not spark.catalog.tableExists(cutoff_table):
+        return None, {}
+    cutoff_columns = {field.name for field in spark.table(cutoff_table).schema.fields}
+    if 'closed_hour_exclusive' not in cutoff_columns:
+        return None, {}
+    row = spark.table(cutoff_table).orderBy(F.desc('closed_hour_exclusive')).first()
+    closed = None if row is None or row.closed_hour_exclusive is None else int(row.closed_hour_exclusive)
+    ends: dict[int, int] = {}
+    if spark.catalog.tableExists(coverage_table):
+        coverage_columns = {field.name for field in spark.table(coverage_table).schema.fields}
+        if 'required_end_offset' in coverage_columns:
+            for item in spark.table(coverage_table).select('kafka_partition', 'required_end_offset').collect():
+                if item.required_end_offset is not None:
+                    ends[int(item.kafka_partition)] = int(item.required_end_offset)
+    return closed, ends
+
+
+def _pinned_inventory(spark: SparkSession, snapshot_id: int | None):
+    source = f'{BRONZE_CATALOG}.bronze.inventory_records'
+    if snapshot_id is None:
+        return spark.table(source).limit(0)
+    return spark.read.option('snapshot-id', str(snapshot_id)).table(source)
+
+
 def main() -> None:
     args = _parse_args()
     spark = _build_session(args)
+    streams = _streams_for(args.mode)
+    run_identity = 'clickstream' in streams and not args.canonical_only
 
-    if not args.canonical_only and not args.pos_parquet_path:
-        raise ValueError('--pos-parquet-path is required unless --canonical-only is set')
-    # One run id for every export, so dbt can check it combined one run.
+    if run_identity and not args.pos_parquet_path:
+        raise ValueError('--pos-parquet-path is required unless --canonical-only or --mode inventory is set')
+    if 'inventory' in streams and not args.kafka_bootstrap_servers:
+        raise ValueError('--kafka-bootstrap-servers is required when inventory coverage is written')
+    # One run id for every export this mode writes, so dbt can check it combined one run.
     run_id = new_run_id()
-    events = promote_events(spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args), run_id)
-    hourly_started = time.perf_counter()
-    export_inventory_hourly(spark, _consumer_root(args), run_id)
-    log_stage("inventory_hourly", hourly_started)
-    if args.canonical_only:
+    snapshots: dict[str, int | None] = {}
+    events = promote_events(
+        spark, BRONZE_CATALOG, SILVER_CATALOG, _consumer_root(args), run_id,
+        streams=streams, snapshots=snapshots,
+    )
+    if 'inventory' in streams:
+        previous_closed, previous_ends = _previous_cutoff(spark)
+        write_inventory_coverage(
+            spark,
+            raw=_pinned_inventory(spark, snapshots.get('inventory')),
+            snapshot_id=snapshots.get('inventory'),
+            brokers=args.kafka_bootstrap_servers,
+            topic=args.inventory_topic,
+            expected_partitions=args.inventory_partitions,
+            watermark_seconds=args.inventory_watermark_seconds,
+            lateness_seconds=args.inventory_lateness_seconds,
+            run_started=datetime.now(timezone.utc),
+            run_id=run_id,
+            silver_catalog=SILVER_CATALOG,
+            root=_consumer_root(args),
+            previous_closed_hour=previous_closed,
+            previous_end_offsets=previous_ends,
+        )
+    if 'clickstream' in streams:
+        hourly_started = time.perf_counter()
+        export_inventory_hourly(spark, _consumer_root(args), run_id)
+        log_stage("inventory_hourly", hourly_started)
+    if not run_identity:
         spark.stop()
         return
     identity_started = time.perf_counter()

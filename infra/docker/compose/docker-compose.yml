@@ -145,6 +145,8 @@ services:
     environment:
       PYSPARK_PYTHON: python3
       PYTHONPATH: /opt/graphframes-python
+      SPARK_MODE: ${SPARK_MODE:-all}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}
     volumes:
       - ../../../spark:/opt/spark-identity
       - ../../../.local/iceberg:/tmp/iceberg
@@ -155,8 +157,11 @@ services:
         mkdir -p /tmp/graphframes-checkpoints /tmp/iceberg
         exec /opt/spark/bin/spark-submit \
           --master local[*] \
-          --py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py \
+          --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1 \
+          --py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,kafka_frontier.py \
           identity_resolution_job.py --local \
+          --mode "$${SPARK_MODE:-all}" \
+          --kafka-bootstrap-servers "$${KAFKA_BOOTSTRAP_SERVERS:-kafka:29092}" \
           --bronze-warehouse file:///tmp/iceberg \
           --silver-warehouse file:///tmp/iceberg \
           --pos-parquet-path /tmp/iceberg/bronze/pos_transactions/data \

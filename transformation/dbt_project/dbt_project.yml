@@ -149,6 +149,9 @@ models:
       serving:
         +schema: serving
         +materialized: view
+      control:
+        +schema: control
+        +materialized: table
     # MetricFlow time spine (ADR-013). Semantic models and metrics live in
     # models/semantic/*.yml and read the live summary.* tables.
     semantic:

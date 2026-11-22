@@ -177,7 +177,7 @@ def show() -> None:
                "where product_id = ? and store_id = ? order by kafka_offset", pair)
         _print(con, "Bronze offset gaps (all partitions)",
                "select count(*) as gap_count from silver.inventory_offset_gaps", [])
-        _print(con, "Spark coverage", "select * from intermediate.int_inventory_batch_coverage", [])
+        _print(con, "Spark coverage", "select * from intermediate.int_inventory_cutoff", [])
         _print(con, "dbt hour selection: intermediate.int_inventory_hourly",
                "select snapshot_date_key, snapshot_hour, qty_delta_hour, is_estimated, export_run_id "
                "from intermediate.int_inventory_hourly where product_id = ? and store_id = ? order by 1, 2",

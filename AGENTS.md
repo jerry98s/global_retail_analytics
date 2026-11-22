@@ -83,10 +83,17 @@ uv sync --group dev
 - POS restatement: pass `-RestateFrom`/`-RestateTo` to both `-Task dbt` and `-Task quality` (validated by the DAG's `pos_restatement` plugin). A day whose corrected file has no lines must also be listed in `-RestateEmptyDates`, or the audit blocks.
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
-  `.local/iceberg/silver/identity_resolution`. `-Task all` (iceberg source)
+  `.local/iceberg/silver/identity_resolution`. `-SparkMode all|hourly|inventory`
+  (default `all`) matches the job: `hourly` is clickstream, the Flink
+  `inventory_hourly` export and identity; `inventory` is canonical inventory
+  plus Kafka coverage and does not export `inventory_hourly`; `all` writes
+  both and must not overlap a scheduled mode. The container uses compose
+  `kafka:29092`, not the host `127.0.0.1:9092`. `-Task all` (iceberg source)
   includes this after POS Parquet. Spark first promotes raw Bronze to canonical
-  Silver (ADR-011). Fidelity mode requires these exports; use `-DbtSource seeds`
-  explicitly for fixtures. Spark promotion of raw Bronze lives in
+  Silver (ADR-011). Fidelity mode requires these exports, including
+  `silver.inventory_cutoff`; a lake from before that export needs another
+  `-Task spark` before `-Task dbt`. Use `-DbtSource seeds` explicitly for
+  fixtures. Spark promotion of raw Bronze lives in
   `spark/identity_resolution/canonical_events.py`.
 
 ```powershell
@@ -100,8 +107,8 @@ live on `main`.
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` — POS + **`marts.finance`**; waits up to 2h for the catalog publish, then warns and continues (ADR-014)
-- `marketing_hourly_customer_360_pipeline` — Spark identity step (EMR) + **`marts.marketing`** / C360
+- `warehouse_daily_batch_pipeline` — POS + inventory Spark (`--mode inventory`) before dbt staging + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete inventory coverage holds the cutoff and warns; it does not block this publish.
+- `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` (clickstream, Flink inventory export, identity) + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Airflow rejects `--mode all`.
 - `streaming_manual_flink_jobs`
 - `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC
 - `quality_hourly_ge_checkpoint`
@@ -124,7 +131,7 @@ live on `main`.
 - dbt `int_identity_resolution` is a thin view over
   `source('silver', 'identity_resolution')`; the old SQL edge/component
   models are retired. WAP unchanged — Gold marts stay dbt-built.
-- Submit: `.\scripts\local\run_local_stack.ps1 -Task spark`, or the marketing DAG on `main`.
+- Submit: `.\scripts\local\run_local_stack.ps1 -Task spark` (`-SparkMode all|hourly|inventory`, default `all`), or the marketing (`hourly`) and warehouse (`inventory`) DAGs on `main`. `all` is local only.
 - Local scale check: `.\.venv\Scripts\python.exe scripts/local/benchmark_identity.py`
   replicates Bronze into `.local/benchmark` at 1×, 5× and 10× and times that
   same job per stage (inventory promotion, clickstream promotion, identity),
@@ -158,11 +165,13 @@ live on `main`.
 - Reintroduce lean/redshift-dev stacks or CSV POS batch paths.
 - Treat `local-testing-version` local Docker settings as cloud defaults on `main`.
 - Mix operational metadata tables into Kimball Gold schemas.
-- Build Gold marts directly into live `finance`/`marketing`/`summary` — Gold uses
+- Build Gold marts directly into live `finance`/`marketing`/`summary`/`control` — Gold uses
   Write-Audit-Publish (ADR-009): clone live → `*_pending`, audit, then publish
   via `orchestration/airflow/plugins/wap_publish.py`. Incrementals anchor on
   `{{ this }}` (pending is a live clone). Cross-DAG Gold reads use
   `{{ wap_live_ref('model') }}`. Each Gold table has exactly one owning DAG.
+  `control.inventory_publication` is the one-row inventory cutoff (ADR-012).
+  It is not a Kimball mart; the finance DAG publishes it with the fact.
 - Add `finance.dim_date` / `finance.dim_store` to the WAP publish list (stable
   seed reference dims, not dbt-built marts).
 

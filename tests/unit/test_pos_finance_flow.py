@@ -50,6 +50,8 @@ class TestPosFinanceFlow:
             "        >> generate_pos_returns_parquet\n"
             "        >> register_pos_partition\n"
             "        >> register_pos_returns_partition\n"
+            "        >> spark_inventory\n"
+            "        >> wait_spark_inventory\n"
             "        >> dbt_staging"
         ) in src
         assert "run_date" not in src

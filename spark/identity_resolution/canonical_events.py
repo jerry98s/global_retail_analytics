@@ -134,18 +134,23 @@ def snapshot_bytes(spark, table: str) -> int:
 
 
 def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
-                   run_id: str | None = None) -> dict[str, DataFrame]:
+                   run_id: str | None = None,
+                   streams: tuple[str, ...] = ('clickstream', 'inventory'),
+                   snapshots: dict | None = None) -> dict[str, DataFrame]:
     """Pin each source snapshot, persist outputs, then return canonical sources.
 
-    Iceberg reads are snapshot-aware, and each plain-Parquet export switches
-    atomically through its manifest (consumer_exports). Run one writer at a time.
-    Inventory also publishes ``inventory_offset_gaps`` and
-    ``inventory_partition_coverage`` for dbt's batch coverage.
+    ``streams`` limits the rebuild: hourly identity skips inventory, and the
+    daily inventory run skips clickstream. Iceberg reads are snapshot-aware,
+    and each plain-Parquet export switches atomically through its manifest
+    (consumer_exports). Run one writer at a time. Inventory publishes
+    ``inventory_offset_gaps``; partition coverage is written by the job from
+    the Kafka frontier (kafka_frontier), not here. ``snapshots`` receives each
+    stream's pinned Bronze snapshot id.
     """
     outputs = {}
     run_id = run_id or new_run_id()
     spark.sql(f'CREATE NAMESPACE IF NOT EXISTS {silver_catalog}.silver')
-    for stream in ('clickstream', 'inventory'):
+    for stream in streams:
         started = time.perf_counter()
         source = f'{bronze_catalog}.bronze.{stream}_records'
         # Resolve a committed snapshot before starting the several output actions.
@@ -155,6 +160,8 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
             raw = spark.table(source).limit(0)
         else:
             raw = spark.read.option('snapshot-id', str(head.snapshot_id)).table(source)
+        if snapshots is not None:
+            snapshots[stream] = None if head is None else int(head.snapshot_id)
         canonical, invalid, duplicates = canonicalize(raw, stream)
         frames = [frame.cache() for frame in (canonical, invalid, duplicates)]
         try:
@@ -168,10 +175,6 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
                 gaps = offset_gaps(raw)
                 gaps.writeTo(f'{silver_catalog}.silver.inventory_offset_gaps').using('iceberg').createOrReplace()
                 publish(gaps, root, 'inventory_offset_gaps', run_id)
-                coverage = partition_coverage(raw)
-                coverage.writeTo(
-                    f'{silver_catalog}.silver.inventory_partition_coverage').using('iceberg').createOrReplace()
-                publish(coverage, root, 'inventory_partition_coverage', run_id)
             write_exports(*frames, root, stream, run_id)
             scanned = snapshot_bytes(spark, source) if head is not None else 0
             print(json.dumps(dict(stream=stream, bronze_snapshot_id=head.snapshot_id if head else None,

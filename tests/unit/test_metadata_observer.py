@@ -101,7 +101,8 @@ def test_layer_catalog_lists_inventory_lambda_views() -> None:
     )
     fqns = {o["object_fqn"] for o in raw["objects"]}
     assert "intermediate.int_inventory_hourly" in fqns
-    assert "intermediate.int_inventory_batch_coverage" in fqns
+    assert "intermediate.int_inventory_cutoff" in fqns
+    assert "control.inventory_publication" in fqns
 
 
 def test_layer_catalog_includes_critical_spark_outputs() -> None:

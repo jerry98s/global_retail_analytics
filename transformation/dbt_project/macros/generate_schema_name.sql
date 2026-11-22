@@ -1,11 +1,11 @@
 {# Use the configured custom schema verbatim instead of dbt's default
    "<target_schema>_<custom_schema>" concatenation. This makes models land in
    the bare schemas (staging, intermediate, finance, marketing, summary,
-   serving) that the hand-written Redshift DDL, foreign keys, and serving
+   serving, control) that the hand-written Redshift DDL, foreign keys, and serving
    views reference.
 
    WAP (ADR-009): when var('wap_phase') == 'pending', Gold marts
-   (finance / marketing / summary) are routed to the *_pending schemas so a
+   (finance / marketing / summary / control) are routed to the *_pending schemas so a
    failing audit never touches live tables. staging / intermediate / serving
    / bronze are never redirected.
 
@@ -23,7 +23,7 @@
    macros file is ignored (UnexpectedJinjaBlockDeprecation) and would silently
    skip pending routing. #}
 {% macro generate_schema_name(custom_schema_name, node) -%}
-    {%- set wap_gold_schemas = ['finance', 'marketing', 'summary'] -%}
+    {%- set wap_gold_schemas = ['finance', 'marketing', 'summary', 'control'] -%}
     {%- if custom_schema_name is none -%}
         {{ target.schema }}
     {%- else -%}

@@ -44,17 +44,19 @@ sources:
       # Replayable Bronze is interpreted by Spark; analytics uses canonical events.
       - name: clickstream_events
       - name: inventory_events
-      # Flink inventory_silver_job writes silver.inventory_hourly, the speed
-      # layer. int_inventory_hourly uses it only for hours Spark has not
-      # covered yet (ADR-012).
+      # Flink inventory_silver_job writes silver.inventory_hourly. The hourly
+      # Spark mode exports it. Serving adds hours at or after the published
+      # cutoff; Gold does not read it (ADR-012).
       - name: inventory_hourly
-      # Spark lists missing Kafka offsets in the pinned inventory Bronze
-      # snapshot; int_inventory_coverage_gaps keeps those hours on Flink.
+      # Spark evidence of missing offsets in the pinned Bronze snapshot.
+      # Gold no longer reads it; missing offsets are on inventory_partition_coverage.
       - name: inventory_offset_gaps
-      # Same Spark run: first and last captured offset and Kafka time per
-      # inventory partition. int_inventory_batch_coverage closes an hour only
-      # once every partition has records past it.
+      # One row per expected inventory partition for the daily Spark run:
+      # required Kafka offsets versus what the pinned Bronze snapshot holds.
       - name: inventory_partition_coverage
+      # One row: the daily run's target and closed hour. int_inventory_cutoff
+      # is a view over it; control.inventory_publication publishes the closed hour.
+      - name: inventory_cutoff
       # Spark GraphFrames identity_resolution_job writes
       # silver.identity_resolution (ADR-010). int_identity_resolution is a
       # thin view over this source; fixture mode seeds it from
@@ -65,6 +67,14 @@ sources:
       # (attribution only, never identity merges). Fixture mode seeds it from
       # seeds/silver/device_session_associations.csv (same generator).
       - name: device_session_associations
+  - name: gold_control
+    database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
+    # Live control.inventory_publication, including during a pending build.
+    # Serving reads the cutoff that was published with the fact, not the
+    # control_pending row this run is still auditing.
+    schema: control
+    tables:
+      - name: inventory_publication
   - name: gold_finance
     database: "{% if target.type != 'duckdb' %}{{ env_var('GOLD_DB', 'dev') }}{% endif %}"
     # WAP (ADR-009): reference dims dim_date/dim_store are NOT published through

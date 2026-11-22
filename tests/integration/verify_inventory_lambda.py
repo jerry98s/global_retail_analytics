@@ -1,19 +1,22 @@
-"""Inventory lambda (ADR-012) through the real dbt incremental build and WAP publish.
+"""Canonical inventory (ADR-012) through the real dbt incremental build and WAP publish.
 
 Runs in a pytest temporary directory with its own profile and its own
 ``local_retail.duckdb`` (the filename the views bind), never the stack
-database. Each step writes one Spark export of fixture Silver tables, clones
-live ``finance.fact_inventory_snapshot`` to pending, builds it with
-``wap_phase=pending``, publishes it with the shared WAP helper, then rebuilds
-``serving.inventory_current_position``:
+database. Each step writes one Spark export, clones live finance and control
+to pending, builds them, publishes both in one call, then rebuilds serving:
 
-1. Bronze partition 7 lags at 11:40 while the others reach 14:30, so hours from
-   11 stay on Flink (is_estimated) instead of being published as canonical.
-2. Partition 7 catches up: those hours become canonical, balances unchanged.
-3. A late +10 receipt for 10:30 reaches Bronze. Hour 10 and every later
-   balance of that product/store move by +10 in the fact, and the current
-   position moves by +10. The other pair and earlier hours do not change.
-4. The same inputs again change nothing.
+1. One partition is incomplete, so the cutoff stays at 11:00. Gold has only
+   hours before that. Serving adds the later Flink hours.
+2. Coverage catches up through 15:00. Those hours become canonical and
+   is_estimated stays false. Balances match the events.
+3. An hourly Flink export lands during the published window. Serving adds
+   that hour once. The fact and the control row do not change.
+4. A late +10 receipt for 10:30 is in the next canonical export only. Hour 10
+   and every later balance of that product/store move by +10 once.
+5. The same export again changes nothing.
+6. A run with no new stock movement still advances the published cutoff.
+7. A dbt failure after Spark wrote Silver does not publish. Mixed run ids
+   fail the source test and leave the live fact and control row as they were.
 
     pytest tests/integration/verify_inventory_lambda.py -m integration_duckdb
 """
@@ -42,19 +45,28 @@ pytestmark = [
 ]
 
 _DBT_DIR = Path(__file__).resolve().parents[2] / "transformation" / "dbt_project"
-# Pinned to ingestion/kafka/topics.py by tests/unit/test_gold_wap.py; read here
-# so the dbt CI job needs no Kafka client.
 _PARTITIONS = yaml.safe_load((_DBT_DIR / "dbt_project.yml").read_text(encoding="utf-8"))[
     "vars"]["inventory_kafka_partitions"]
-_FACT = [("finance", "fact_inventory_snapshot")]
+_PUBLISH = [("finance", "fact_inventory_snapshot"), ("control", "inventory_publication")]
 _PENDING = json.dumps({"wap_phase": "pending"})
 _INVENTORY_MODELS = (
-    "int_inventory_batch_coverage", "int_inventory_coverage_gaps",
-    "int_inventory_hourly", "fact_inventory_snapshot",
+    "int_inventory_cutoff",
+    "int_inventory_hourly",
+    "fact_inventory_snapshot",
+    "inventory_publication",
+)
+_TESTS = (
+    "inventory_canonical_run_is_one",
+    "inventory_hourly_export_is_one",
+    "inventory_publication_matches_canonical_run",
+    "inventory_coverage_incomplete",
 )
 _DAY = "2026-11-04"
+_DATE_KEY = 20261104
 
 _SILVER_DDL = (
+    """create schema if not exists silver""",
+    """create schema if not exists control""",
     """create or replace table silver.inventory_events (
         event_id varchar, event_time timestamp, store_id varchar, product_id varchar,
         qty_delta integer, event_type varchar, scanner_id varchar, is_late boolean,
@@ -64,78 +76,108 @@ _SILVER_DDL = (
     """create or replace table silver.inventory_hourly (
         snapshot_date_key integer, snapshot_hour integer, product_id varchar, store_id varchar,
         qty_delta_hour bigint, qty_received_hour bigint, is_estimated boolean, export_run_id varchar)""",
-    """create or replace table silver.inventory_offset_gaps (
-        source_system varchar, kafka_topic varchar, kafka_partition integer,
-        last_offset_before bigint, first_offset_after bigint, missing_offsets bigint,
-        gap_start_ts timestamp, gap_end_ts timestamp, export_run_id varchar)""",
     """create or replace table silver.inventory_partition_coverage (
-        source_system varchar, kafka_topic varchar, kafka_partition integer,
-        first_offset bigint, last_offset bigint,
-        first_kafka_ts timestamp, last_kafka_ts timestamp, export_run_id varchar)""",
+        inventory_run_id varchar, bronze_snapshot_id bigint, kafka_topic varchar,
+        kafka_partition integer, required_start_offset bigint, required_end_offset bigint,
+        captured_end_offset bigint, missing_offset_count bigint, coverage_status varchar,
+        export_run_id varchar)""",
+    """create or replace table silver.inventory_cutoff (
+        inventory_run_id varchar, bronze_snapshot_id bigint,
+        target_hour_exclusive integer, closed_hour_exclusive integer,
+        coverage_status varchar, incomplete_partitions integer, export_run_id varchar)""",
 )
 
 
-def _dbt(tmp: Path, *args: str) -> None:
+def _dbt(tmp: Path, *args: str, ok: bool = True) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "DBT_TARGET_PATH": str(tmp / "target"), "DBT_LOG_PATH": str(tmp / "logs")}
     result = subprocess.run(
         [_DBT, *args, "--profiles-dir", str(tmp), "--target", "local"],
         cwd=_DBT_DIR, env=env, text=True, capture_output=True, check=False,
     )
-    assert result.returncode == 0, f"dbt {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
+    if ok:
+        assert result.returncode == 0, f"dbt {' '.join(args)} failed:\n{result.stdout}\n{result.stderr}"
+    return result
 
 
-def _write_silver(db: Path, run_id: str, pair_a: tuple[str, str], pair_b: tuple[str, str], *,
-                  lagging_partition: int | None, late_receipt: bool) -> None:
-    """One Spark export: canonical events, Flink hours, and Bronze partition coverage."""
+def _write_silver(
+    db: Path,
+    run_id: str,
+    pair_a: tuple[str, str],
+    pair_b: tuple[str, str],
+    *,
+    closed_hour: int,
+    status: str,
+    incomplete_partition: int | None,
+    late_receipt: bool,
+    extra_run_id: str | None = None,
+) -> None:
+    """One Spark export: canonical events, one Flink export, coverage and the cutoff."""
     events = [
-        ("E1", "09:10", pair_a, -5, "09:10"),
-        ("E2", "11:20", pair_a, -2, "11:20"),
-        ("E3", "13:05", pair_a, -1, "13:05"),
-        ("E4", "10:15", pair_b, -4, "10:15"),
-        ("E6", "14:10", pair_a, -3, "14:10"),
+        ("E1", "09:10", pair_a, -5),
+        ("E2", "11:20", pair_a, -2),
+        ("E3", "13:05", pair_a, -1),
+        ("E4", "10:15", pair_b, -4),
+        ("E6", "14:10", pair_a, -3),
     ]
     if late_receipt:
-        events.append(("E5", "10:30", pair_a, 10, "13:50"))
-    # Flink dropped the late receipt: it arrived after its window closed.
+        events.append(("E5", "10:30", pair_a, 10))
     flink_hours = [(9, pair_a, -5), (11, pair_a, -2), (13, pair_a, -1), (14, pair_a, -3), (10, pair_b, -4)]
     with duckdb.connect(str(db)) as con:
         for ddl in _SILVER_DDL:
             con.execute(ddl)
-        for offset, (event_id, at, (product_id, store_id), qty, kafka_at) in enumerate(events):
+        con.execute("delete from silver.inventory_events")
+        con.execute("delete from silver.inventory_hourly")
+        con.execute("delete from silver.inventory_partition_coverage")
+        con.execute("delete from silver.inventory_cutoff")
+        for offset, (event_id, at, (product_id, store_id), qty) in enumerate(events):
             con.execute(
                 "insert into silver.inventory_events (event_id, event_time, store_id, product_id, qty_delta, "
                 "event_type, is_late, kafka_partition, kafka_offset, kafka_timestamp, export_run_id) "
                 "values (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
                 [event_id, f"{_DAY} {at}:00", store_id, product_id, qty,
                  "receipt" if qty > 0 else "sale_deduction", event_id == "E5", offset,
-                 f"{_DAY} {kafka_at}:00", run_id],
+                 f"{_DAY} {at}:00", run_id],
+            )
+        if extra_run_id is not None:
+            con.execute(
+                "insert into silver.inventory_events (event_id, event_time, store_id, product_id, qty_delta, "
+                "event_type, kafka_partition, kafka_offset, export_run_id) "
+                "values ('E9', ?, ?, ?, 1, 'receipt', 0, 99, ?)",
+                [f"{_DAY} 09:20:00", pair_a[1], pair_a[0], extra_run_id],
             )
         for hour, (product_id, store_id), qty in flink_hours:
             con.execute(
                 "insert into silver.inventory_hourly values (?, ?, ?, ?, ?, 0, true, ?)",
-                [int(_DAY.replace("-", "")), hour, product_id, store_id, qty, run_id],
+                [_DATE_KEY, hour, product_id, store_id, qty, "FLINK"],
             )
+        incomplete = 0
         for partition in range(_PARTITIONS):
-            last = "11:40" if partition == lagging_partition else "14:30"
+            lagging = partition == incomplete_partition
             con.execute(
                 "insert into silver.inventory_partition_coverage values "
-                "('retail-v1', 'inventory', ?, 0, 100, ?, ?, ?)",
-                [partition, f"{_DAY} 08:05:00", f"{_DAY} {last}:00", run_id],
+                "(?, 1, 'inventory.events.v1', ?, 0, 100, ?, ?, ?, ?)",
+                [run_id, partition, 99 if lagging else 100, 1 if lagging else 0,
+                 "INCOMPLETE" if lagging else "COMPLETE", run_id],
             )
+            incomplete += int(lagging)
+        con.execute(
+            "insert into silver.inventory_cutoff values (?, 1, ?, ?, ?, ?, ?)",
+            [run_id, closed_hour, closed_hour, status, incomplete, run_id],
+        )
 
 
 def _publish_cycle(tmp: Path, db: Path) -> None:
     with duckdb.connect(str(db)) as con:
-        clone_live_to_pending(con, _FACT, dialect="duckdb")
+        clone_live_to_pending(con, _PUBLISH, dialect="duckdb")
     _dbt(tmp, "run", "--vars", _PENDING, "--select", *_INVENTORY_MODELS)
+    _dbt(tmp, "test", "--vars", _PENDING, "--select", *_TESTS)
     with duckdb.connect(str(db)) as con:
-        publish_gold(con, _FACT, dialect="duckdb")
+        publish_gold(con, _PUBLISH, dialect="duckdb")
     _dbt(tmp, "run", "--select", "inventory_current_position")
-    _dbt(tmp, "test", "--select", "inventory_hourly_uses_one_export_run")
 
 
-def _snapshot(db: Path) -> tuple[dict, dict]:
-    """Live fact rows and current positions keyed by product/store (and hour)."""
+def _snapshot(db: Path) -> tuple[dict, dict, tuple]:
+    """Live fact rows, current positions, and the published cutoff."""
     with duckdb.connect(str(db), read_only=True) as con:
         duplicates = con.execute(
             "select count(*) - count(distinct (snapshot_date_key, snapshot_hour, product_key, store_key)) "
@@ -143,7 +185,7 @@ def _snapshot(db: Path) -> tuple[dict, dict]:
         ).fetchone()[0]
         assert duplicates == 0
         fact = {
-            (product_id, store_id, hour): (int(qty), estimated)
+            (product_id, store_id, hour): (int(qty), bool(estimated))
             for product_id, store_id, hour, qty, estimated in con.execute(
                 "select p.product_id, s.store_id, f.snapshot_hour, f.quantity_on_hand, f.is_estimated "
                 "from finance.fact_inventory_snapshot f "
@@ -158,10 +200,28 @@ def _snapshot(db: Path) -> tuple[dict, dict]:
                 "where provisional_qty_delta <> 0 or published_hour_key is not null"
             ).fetchall()
         }
-    return fact, current
+        control = con.execute(
+            "select inventory_run_id, closed_hour_exclusive, coverage_status "
+            "from control.inventory_publication"
+        ).fetchone()
+    return fact, current, control
 
 
-def test_partition_coverage_and_late_event_through_gold(tmp_path: Path) -> None:
+def _live_rows(db: Path) -> tuple[list, list]:
+    with duckdb.connect(str(db), read_only=True) as con:
+        fact = con.execute(
+            "select snapshot_date_key, snapshot_hour, product_key, store_key, quantity_on_hand, is_estimated "
+            "from finance.fact_inventory_snapshot order by 1, 2, 3, 4"
+        ).fetchall()
+        control = con.execute(
+            "select inventory_run_id, closed_hour_exclusive, coverage_status, incomplete_partitions "
+            "from control.inventory_publication"
+        ).fetchall()
+    return fact, control
+
+
+def test_canonical_cutoff_and_late_event_through_gold(tmp_path: Path) -> None:
+    assert "identity_graph" not in _INVENTORY_MODELS
     db = tmp_path / "local_retail.duckdb"
     (tmp_path / "profiles.yml").write_text(
         "global_retail_analytics:\n  target: local\n  outputs:\n    local:\n"
@@ -178,51 +238,110 @@ def test_partition_coverage_and_late_event_through_gold(tmp_path: Path) -> None:
             "order by o.product_id, o.store_id limit 2"
         ).fetchall()
     pair_a, pair_b = (a_product, a_store), (b_product, b_store)
+    a_open, b_open = int(a_open), int(b_open)
 
-    # 1. Partition 7 lags at 11:40: hours from 11 are not fully captured in Bronze.
-    _write_silver(db, "R1", pair_a, pair_b, lagging_partition=7, late_receipt=False)
-    # The catalog publishes the products the inventory events mention.
+    # 1. A lagging partition holds the cutoff at 11:00. Gold is canonical only.
+    _write_silver(
+        db, "R1", pair_a, pair_b,
+        closed_hour=2026110411, status="INCOMPLETE", incomplete_partition=7, late_receipt=False,
+    )
     _dbt(tmp_path, "run", "--vars", _PENDING, "--select", "+dim_product")
     bootstrap(db)
     _publish_cycle(tmp_path, db)
-    fact, _ = _snapshot(db)
+    fact, current, control = _snapshot(db)
+    assert control == ("R1", 2026110411, "INCOMPLETE")
     assert fact == {
         (*pair_a, 9): (a_open - 5, False),
-        (*pair_a, 11): (a_open - 7, True),
-        (*pair_a, 13): (a_open - 8, True),
-        (*pair_a, 14): (a_open - 11, True),
         (*pair_b, 10): (b_open - 4, False),
     }
+    assert current[pair_a] == a_open - 11
+    assert current[pair_b] == b_open - 4
 
-    # 2. Partition 7 catches up: hours 11 and 13 become canonical, balances unchanged.
-    _write_silver(db, "R2", pair_a, pair_b, lagging_partition=None, late_receipt=False)
+    # 2. Coverage catches up through 15:00. Later hours become canonical, not estimated.
+    _write_silver(
+        db, "R2", pair_a, pair_b,
+        closed_hour=2026110415, status="COMPLETE", incomplete_partition=None, late_receipt=False,
+    )
     _publish_cycle(tmp_path, db)
-    before, current_before = _snapshot(db)
-    assert before == {
+    fact, current, control = _snapshot(db)
+    assert control == ("R2", 2026110415, "COMPLETE")
+    assert fact == {
         (*pair_a, 9): (a_open - 5, False),
         (*pair_a, 11): (a_open - 7, False),
         (*pair_a, 13): (a_open - 8, False),
-        (*pair_a, 14): (a_open - 11, True),
+        (*pair_a, 14): (a_open - 11, False),
         (*pair_b, 10): (b_open - 4, False),
     }
-    assert current_before[pair_a] == a_open - 11
+    assert current[pair_a] == a_open - 11
+    assert current[pair_b] == b_open - 4
 
-    # 3. The late +10 receipt for 10:30 restates hour 10 and every later balance.
-    _write_silver(db, "R3", pair_a, pair_b, lagging_partition=None, late_receipt=True)
+    # 3. An hourly export during the published window is added once, and not to the fact.
+    with duckdb.connect(str(db)) as con:
+        con.execute(
+            "insert into silver.inventory_hourly values (?, 15, ?, ?, -4, 0, true, 'HOURLY')",
+            [_DATE_KEY, pair_a[0], pair_a[1]],
+        )
+        # One committed export: the previous Flink rows are this same export.
+        con.execute("update silver.inventory_hourly set export_run_id = 'HOURLY'")
+    held = _live_rows(db)
+    _dbt(tmp_path, "run", "--select", "inventory_current_position")
+    _dbt(tmp_path, "test", "--select", "inventory_hourly_export_is_one")
+    fact, current, _ = _snapshot(db)
+    assert _live_rows(db)[0] == held[0]
+    assert current[pair_a] == a_open - 15
+    assert fact[(*pair_a, 14)] == (a_open - 11, False)
+
+    # 4. The late +10 receipt restates hour 10 and every later balance, once.
+    _write_silver(
+        db, "R3", pair_a, pair_b,
+        closed_hour=2026110415, status="COMPLETE", incomplete_partition=None, late_receipt=True,
+    )
     _publish_cycle(tmp_path, db)
-    after, current_after = _snapshot(db)
-    assert after == {
+    fact, current, control = _snapshot(db)
+    assert control[1] == 2026110415
+    assert fact == {
         (*pair_a, 9): (a_open - 5, False),
         (*pair_a, 10): (a_open + 5, False),
         (*pair_a, 11): (a_open + 3, False),
         (*pair_a, 13): (a_open + 2, False),
-        (*pair_a, 14): (a_open - 1, True),
+        (*pair_a, 14): (a_open - 1, False),
         (*pair_b, 10): (b_open - 4, False),
     }
-    assert current_after[pair_a] == current_before[pair_a] + 10
-    assert current_after[pair_b] == current_before[pair_b] == b_open - 4
+    assert current[pair_a] == a_open - 1
+    assert current[pair_b] == b_open - 4
 
-    # 4. A rerun over the same export changes nothing.
-    _write_silver(db, "R4", pair_a, pair_b, lagging_partition=None, late_receipt=True)
+    # 5. The same export again changes nothing.
+    before = _snapshot(db)
+    _write_silver(
+        db, "R4", pair_a, pair_b,
+        closed_hour=2026110415, status="COMPLETE", incomplete_partition=None, late_receipt=True,
+    )
     _publish_cycle(tmp_path, db)
-    assert _snapshot(db) == (after, current_after)
+    assert _snapshot(db)[0] == before[0]
+    assert _snapshot(db)[1] == before[1]
+
+    # 6. No stock movement, and the cutoff still advances.
+    _write_silver(
+        db, "R5", pair_a, pair_b,
+        closed_hour=2026110416, status="COMPLETE", incomplete_partition=None, late_receipt=True,
+    )
+    _publish_cycle(tmp_path, db)
+    fact, current, control = _snapshot(db)
+    assert fact == before[0]
+    assert current[pair_a] == a_open - 1
+    assert control == ("R5", 2026110416, "COMPLETE")
+
+    # 7. Spark wrote Silver, then dbt fails. Live fact and control stay on R5.
+    published = _live_rows(db)
+    failed = _dbt(tmp_path, "run", "--vars", "{", "--select", "fact_inventory_snapshot", ok=False)
+    assert failed.returncode != 0
+    assert _live_rows(db) == published
+
+    _write_silver(
+        db, "R6", pair_a, pair_b,
+        closed_hour=2026110417, status="COMPLETE", incomplete_partition=None, late_receipt=True,
+        extra_run_id="OTHER",
+    )
+    mixed = _dbt(tmp_path, "test", "--select", "inventory_canonical_run_is_one", ok=False)
+    assert mixed.returncode != 0
+    assert _live_rows(db) == published

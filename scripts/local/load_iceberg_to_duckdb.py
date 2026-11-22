@@ -12,8 +12,9 @@ the Spectrum tables on ``main``, and materializes them into
   silver.inventory_events
   silver.inventory_hourly     (Spark export of Flink's committed snapshot)
   silver.inventory_offset_gaps (missing Kafka offsets in inventory Bronze)
-  silver.inventory_partition_coverage (first/last captured offset per
-                               inventory partition in the same snapshot)
+  silver.inventory_partition_coverage (Kafka frontier versus Bronze, one
+                               row per expected partition)
+  silver.inventory_cutoff     (one row: the daily closed hour)
   silver.identity_resolution  (Spark GraphFrames, ADR-010/011 — required in
                                fidelity mode)
   silver.identity_edges       (same Spark run; verified loyalty links that merged)
@@ -62,6 +63,7 @@ _EXPORTS: dict[str, str] = {
     "inventory_hourly": "silver",
     "inventory_offset_gaps": "silver",
     "inventory_partition_coverage": "silver",
+    "inventory_cutoff": "silver",
     "identity_resolution": "silver",
     "identity_edges": "silver",
     "loyalty_link_claims": "silver",

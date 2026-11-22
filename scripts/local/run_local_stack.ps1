@@ -41,7 +41,13 @@ param(
     # publishes every scope, which is what -Task all does.
     [Parameter(Mandatory = $false)]
     [ValidateSet("finance", "marketing", "catalog", "all")]
-    [string]$Scope = "all"
+    [string]$Scope = "all",
+    # all: clickstream, inventory canonicalization, the Flink export and identity.
+    # hourly / inventory match the two Airflow Spark steps. all must not run
+    # beside either of those: it writes both exports.
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("all", "hourly", "inventory")]
+    [string]$SparkMode = "all"
 )
 
 $ErrorActionPreference = "Stop"
@@ -451,7 +457,21 @@ function Invoke-SparkIdentityLocal {
     Ensure-IcebergHostDir
     $checkpointDir = Join-Path $RepoRoot '.local\graphframes-checkpoints'
     New-Item -ItemType Directory -Force -Path $checkpointDir | Out-Null
-    Invoke-CheckedCommand "docker compose -f $MainCompose --profile spark run --rm --build --no-deps spark-identity"
+    # The job runs on the compose network, so Kafka is the internal listener,
+    # not the host's 127.0.0.1:9092. Restore the host value afterwards.
+    $previousKafka = $env:KAFKA_BOOTSTRAP_SERVERS
+    $previousMode = $env:SPARK_MODE
+    $env:SPARK_MODE = $SparkMode
+    $env:KAFKA_BOOTSTRAP_SERVERS = "kafka:29092"
+    try {
+        Invoke-CheckedCommand "docker compose -f $MainCompose --profile spark run --rm --build --no-deps spark-identity"
+    }
+    finally {
+        if ($null -eq $previousKafka) { Remove-Item Env:KAFKA_BOOTSTRAP_SERVERS -ErrorAction SilentlyContinue }
+        else { $env:KAFKA_BOOTSTRAP_SERVERS = $previousKafka }
+        if ($null -eq $previousMode) { Remove-Item Env:SPARK_MODE -ErrorAction SilentlyContinue }
+        else { $env:SPARK_MODE = $previousMode }
+    }
 }
 
 # Views over Gold. Never WAP-published (only tables are), so they are built after

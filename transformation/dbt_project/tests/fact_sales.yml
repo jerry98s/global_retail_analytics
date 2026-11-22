@@ -134,12 +134,12 @@ models:
               arguments:
                 min_value: 0
       - name: is_estimated
-        description: "TRUE when the hour still comes from the Flink speed layer and can change once Spark covers it; FALSE once it comes from Spark canonical events."
+        description: "Always false. Gold inventory is Spark canonical through the published cutoff (ADR-012). The column stays because dropping a live column aborts the WAP publish; provisional hours live only in the serving view."
         tests:
           - not_null
           - accepted_values:
               arguments:
-                values: [false, true]
+                values: [false]
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:

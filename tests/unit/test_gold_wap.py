@@ -24,7 +24,7 @@ _DAGS = _REPO / "orchestration" / "airflow" / "dags"
 _PLUGINS = _REPO / "orchestration" / "airflow" / "plugins"
 _STACK = _REPO / "scripts" / "local" / "run_local_stack.ps1"
 
-WAP_GOLD_SCHEMAS = ("finance", "marketing", "summary")
+WAP_GOLD_SCHEMAS = ("finance", "marketing", "summary", "control")
 GOLD_INCREMENTAL_MODELS = [
     "models/marts/finance/fact_sales.sql",
     "models/marts/finance/fact_returns.sql",
@@ -163,9 +163,9 @@ class TestIncrementalSelfRefsUseThis:
         test = _read(_DBT / "tests/inventory_hourly_reconciles_canonical_events.sql")
         assert "severity='warn'" in test
         assert "unexplained_qty <> 0" in test
-        # The open hour is incomplete on the Spark side; comparing it is noise.
+        # Hours at or after the cutoff are not in Gold; comparing them is noise.
         assert "is_batch_covered" in test
-        assert "ref('int_inventory_batch_coverage')" in model
+        assert "ref('int_inventory_cutoff')" in model
 
 
 class TestInventoryLambda:
@@ -176,25 +176,20 @@ class TestInventoryLambda:
         assert "ref('int_inventory_hourly')" in src
         assert "source('silver', 'inventory_hourly')" not in src
 
-    def test_hourly_splits_on_batch_coverage(self) -> None:
+    def test_hourly_is_canonical_below_the_cutoff(self) -> None:
         src = _read(_DBT / "models/intermediate/int_inventory_hourly.sql")
         assert "source('silver', 'inventory_events')" in src
-        assert "source('silver', 'inventory_hourly')" in src
-        assert "ref('int_inventory_batch_coverage')" in src
+        assert "source('silver', 'inventory_hourly')" not in src
+        assert "ref('int_inventory_cutoff')" in src
         compact = " ".join(src.split())
-        assert "false as is_estimated, b.export_run_id from batch_hourly" in compact
-        assert "true as is_estimated, s.export_run_id from speed_hourly" in compact
-        assert "ref('int_inventory_coverage_gaps')" in src
-        # No coverage yet (Spark never ran) must keep every Flink hour.
-        assert "c.batch_start_hour_key is null" in compact
+        assert "false as is_estimated" in compact
+        assert "e.snapshot_date_key * 100 + e.snapshot_hour < c.closed_hour_exclusive" in compact
 
-    def test_coverage_closes_hours_with_flink_watermark(self) -> None:
-        src = _read(_DBT / "models/intermediate/int_inventory_batch_coverage.sql")
-        assert "var('inventory_silver_watermark_delay_seconds', 60)" in src
-        # The slowest partition closes hours, not the newest record overall.
-        assert "source('silver', 'inventory_partition_coverage')" in src
-        assert "'min(last_ts)'" in src
-        assert "captured_partitions = {{ expected_partitions }}" in src
+    def test_cutoff_is_the_spark_summary_row(self) -> None:
+        src = _read(_DBT / "models/intermediate/int_inventory_cutoff.sql")
+        assert "source('silver', 'inventory_cutoff')" in src
+        assert "closed_hour_exclusive" in src
+        assert "coverage_status" in src
 
     def test_expected_partitions_match_topic_config(self) -> None:
         import yaml
@@ -225,9 +220,10 @@ class TestInventoryLambda:
         # Stockout duration needs dense hours: only inventory_position_daily has it.
         assert "stockout_hour_count" not in compact
 
-    def test_is_estimated_allows_speed_layer_hours(self) -> None:
+    def test_is_estimated_is_always_false_in_gold(self) -> None:
         yml = _read(_DBT / "tests/fact_sales.yml")
-        assert "values: [false, true]" in yml
+        assert "values: [false]" in yml
+        assert "values: [false, true]" not in yml
 
 
 class TestGoldDistSortPreserved:

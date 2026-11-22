@@ -15,7 +15,7 @@ Airflow · Great Expectations · Terraform · Streamlit
 | Team | What they need | What the platform delivers |
 |---|---|---|
 | **Finance** | Sales figures that reconcile to the till, every day | `finance.fact_sales`: one row per POS line item, built daily and only published after automated checks pass |
-| **Store operations** | Current stock per product and store | `serving.inventory_current_position`: that pair's last published balance, plus Flink hours after its own hour and outside Spark coverage (about an hour old); `finance.fact_inventory_snapshot` holds hourly history, corrected by the full event history once each hour closes |
+| **Store operations** | Current stock per product and store | `serving.inventory_current_position`: the published balance plus Flink hours at or after `control.inventory_publication.closed_hour_exclusive` (provisional); `finance.fact_inventory_snapshot` is Spark-canonical for hours before that cutoff |
 | **Marketing** | One view of each customer across loyalty card, web and app, respecting consent | `serving.customer_360_serving`: identities merged by a graph algorithm, with personal data shown only where `marketing_consent` is given |
 | **Engineering** | Recoverable data and visible failures | Raw events kept in a replayable lake, bad events routed to dead-letter queues, a runbook for every incident |
 
@@ -136,6 +136,12 @@ uv sync --group dev
 uv sync --group dev
 .\scripts\local\run_local_stack.ps1 -Task all
 ```
+
+`-Task spark` accepts `-SparkMode all` (default), `hourly`, or `inventory`.
+`all` writes the identity exports and the daily inventory cutoff together;
+do not run it beside `hourly` or `inventory`. The Spark container reads Kafka
+at `kafka:29092` on the compose network. A lake that predates
+`silver.inventory_cutoff` needs one `all` or `inventory` Spark run before dbt.
 
 To send the fixed Customer 360 journeys instead of random load (an anonymous
 visit, a shared tablet, two accounts on one loyalty card, a consent opt-out, a

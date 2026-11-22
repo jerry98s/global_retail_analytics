@@ -33,56 +33,83 @@ low latency does not reach Gold readers for hours that are already closed.
 
 ## Decision
 
-Split each hour by who has complete data for it:
+Gold inventory is Spark-canonical through a cutoff. Flink stays the speed
+layer in serving, and the hourly Customer 360 job. The daily warehouse DAG
+runs inventory Spark before dbt. The marketing DAG runs hourly Spark
+(clickstream, the Flink `inventory_hourly` export, and identity). Airflow
+rejects `--mode all`; that mode is the local stack only. Both Spark steps
+use the `emr_spark` pool (one slot): `airflow pools set emr_spark 1 "one Spark step at a time"`.
+A manual local `all` run writes both exports and must not overlap either
+scheduled mode. There is no lock for that case.
 
-- `int_inventory_batch_coverage` defines the hours Spark fully covers, per
-  Kafka partition. Spark writes `silver.inventory_partition_coverage` from the
-  same pinned Bronze snapshot: the first and last captured offset and Kafka
-  time of each partition. The last captured offset is that partition's
-  high-water mark. Coverage runs from the hour of the first record Bronze
-  captured up to (not including) the hour still open on the slowest
-  partition: an hour counts as closed once every partition has records past
-  its end plus the Flink watermark delay. A partition whose first captured
-  offset is above 0 lost earlier records, so coverage starts the hour after
-  its first record. Until Bronze holds all `inventory_kafka_partitions`
-  partitions (pinned to `PARTITIONS_BY_TOPIC` by a unit test), nothing is
-  covered.
-- Spark records every break in Kafka offsets per partition of the pinned
-  Bronze snapshot in `silver.inventory_offset_gaps` (producers are not
-  transactional, so offsets are contiguous). `int_inventory_coverage_gaps`
-  widens each gap by the maximum event lateness
-  (`inventory_max_event_lateness_seconds`, default 3600) and those hours stay
-  on Flink even inside the coverage range. A warn-severity test reports them.
-- `int_inventory_hourly` sums Spark's canonical events for covered hours
-  (`is_estimated = false`) and takes Flink's `inventory_hourly` for every
-  other hour (`is_estimated = true`). The ranges do not overlap. It is a
-  table carrying `export_run_id`, and a blocking test fails the audit when
-  its inputs or the partition coverage come from more than one Spark run.
-- Flink deduplicates with a window Top-1 (`ROW_NUMBER() ... ORDER BY event_ts
-  ASC` per window and `event_id`, keep-first) feeding the window aggregate, so
-  the job is append-only end to end and each window is written once. Spark
-  also keeps the earliest copy of an `event_id`, and labels a later copy with
-  a different payload `payload_conflict` rather than a retry.
-- `serving.inventory_current_position` is the speed-layer read: the latest
-  published balance per product and store plus Flink hours after that
-  pair's own newest fact hour. Hours Spark covers are never added from Flink,
-  since Spark is canonical there. It is a view built after the warehouse publish, so it follows
-  every `inventory_hourly` export without waiting for the daily rebuild.
-- `fact_inventory_snapshot` reads `int_inventory_hourly`. Each run recomputes
-  every running balance and upserts only rows that are new or whose balance
-  or `is_estimated` changed. A rewritten hour keeps its stored `product_key`.
-  A stored hour that lost all its movement is re-emitted with delta 0 and the
-  carried balance.
-- `inventory_daily_product_store` rolls up every day and upserts only days
-  that changed.
-- The reconciliation test compares covered hours only. A mismatch there
-  measures how far the provisional Flink number was off; Gold already uses
-  Spark's number for that hour.
+- The target cutoff is the latest whole hour `T` such that
+  `T + watermark + inventory_max_event_lateness_seconds` is at or before the
+  run start. Defaults are 60 seconds and 3600 seconds. The local Flink window
+  uses a 5 second watermark; that setting is the speed layer only and does
+  not age this cutoff. `closed_hour_exclusive` is the first hour Gold does
+  not include (YYYYMMDDHH).
+- `spark/identity_resolution/kafka_frontier.py` asks Kafka, per partition,
+  for the earliest retained offset and the offset at the cutoff
+  (`offsetsForTimes`, beginning and end offsets, via `spark-sql-kafka`).
+  Cloud brokers are the Airflow Variable `msk_bootstrap_brokers`. Locally the
+  job uses the compose listener `kafka:29092`. The topic and partition count
+  match `TOPIC_INVENTORY` / `PARTITIONS_BY_TOPIC` (`inventory.events.v1`, 12).
+- `silver.inventory_partition_coverage` has one row per expected partition,
+  including a partition Bronze has never captured. The required range is
+  `[max(Kafka earliest, previous required end), offset at the cutoff)`.
+  `missing_offset_count` is that span minus the distinct Bronze offsets
+  inside it. `COMPLETE` means the count is zero. `silver.inventory_cutoff`
+  is the one summary row: when every partition is complete,
+  `closed_hour_exclusive` equals the target. Otherwise it is the hour of the
+  earliest gap's next Bronze timestamp, minus the lateness allowance, and
+  never earlier than the previous published cutoff. A tail gap (Bronze
+  behind Kafka, no later Bronze timestamp) or a partition Kafka does not
+  have holds the previous cutoff. Status is `INCOMPLETE`. An empty Kafka
+  range (`begin == end`) is complete, so a quiet hour can still advance.
+- An event whose event time is before the cutoff but which reaches Kafka
+  later is a correction for the next daily run. The fact recomputes balances
+  from full canonical history, so the correction lands once. An event Flink
+  drops after its watermark can be missing from hourly serving until that
+  publish. That is accepted.
+- `int_inventory_hourly` sums `silver.inventory_events` for hours strictly
+  before `closed_hour_exclusive`. Flink is not an input. `is_estimated` stays
+  on the fact because dropping a live column aborts WAP, and it is always
+  false. `silver.inventory_offset_gaps` stays Spark evidence and does not
+  feed Gold or serving.
+- `control.inventory_publication` is one row (run id, cutoff, coverage
+  status, incomplete partition count, `published_at`). It lives in `control`,
+  not in a Kimball schema, and it is on the finance WAP list so it commits
+  in the same transaction as `fact_inventory_snapshot`. Incomplete coverage
+  holds the cutoff and warns (`inventory_coverage_incomplete`). It does not
+  block the POS publish. The first run after this rollout rewrites Flink-only
+  hours already in live as zero movement; their balances change once.
+- Blocking tests read source run ids before any aggregation. Canonical
+  events, coverage and the cutoff share one `inventory_run_id`, and coverage
+  has exactly `inventory_kafka_partitions` rows. The Flink export is one
+  `export_run_id`. The pending publication run id is that canonical run, and
+  the new cutoff is never below the live cutoff.
+- `serving.inventory_current_position` is the latest published fact balance
+  plus Flink `silver.inventory_hourly` hours at or after the live published
+  cutoff. It never reads pending Spark coverage. Before the first control
+  row, every Flink hour is provisional on top of `inventory_opening_balance`.
+- `fact_inventory_snapshot` still recomputes every running balance and
+  upserts only rows that are new or whose balance or `is_estimated` changed.
+  A rewritten hour keeps its stored `product_key`. A stored hour that lost
+  its movement is re-emitted with delta 0. The hourly export and the daily
+  canonical run use different run ids; serving reads one committed Flink
+  export, so an hourly export during the daily build is not added twice.
+- `int_inventory_reconciliation_hourly` still compares Flink with Spark for
+  hours before the cutoff. A mismatch there is how far the provisional
+  number was off. Gold already uses Spark for that hour.
+- Flink still deduplicates with a window Top-1. Spark keeps the earliest
+  copy of an `event_id` and labels a later copy with a different payload
+  `payload_conflict`.
 
 ## Consequences
 
-- **Late scans and old duplicates are corrected in Gold** once Spark covers
-  the hour. Readers can tell provisional hours by `is_estimated`.
+- **Late scans and old duplicates are corrected in Gold** on the next daily
+  run, once. Gold has no provisional hours. `is_estimated` remains and is
+  always false. Provisional stock is only in `serving.inventory_current_position`.
 - **Past hours change.** A Spark correction moves that hour and every later
   balance for the same product and store. The fact and its daily summary are
   built for this, so no `--full-refresh` is needed after a correction.
@@ -95,19 +122,16 @@ Split each hour by who has complete data for it:
 - **Two hourly definitions must stay aligned.** `int_inventory_hourly` and
   Flink's SQL must bucket by the same event-time hour. The reconciliation
   check catches drift.
-- **Locally, hours rarely become covered.** A short laptop run sits inside one
-  clock hour, so almost every hour stays on Flink. Covered hours appear when
-  a run spans an hour boundary.
-- **Bronze gaps fall back to Flink.** A break in Bronze offsets keeps the
-  affected hours on Flink instead of publishing short Spark numbers. A gap
-  that Bronze never refills stays provisional until someone replays or
-  accepts it.
-- **The slowest partition holds coverage back.** A partition whose Bronze
-  capture lags, or that never reached Bronze, keeps the hours it has not
-  covered on Flink. Bronze alone cannot tell an idle partition from a
-  stalled one, so an idle partition holds coverage back too; the safe
-  failure is hours that stay `is_estimated`. A warn-severity test lists
-  partitions that are missing or more than an hour behind.
+- **A lake from before this cutoff export fails the DuckDB bridge** until
+  Spark runs again in `all` or `inventory` mode. The loader requires
+  `silver.inventory_cutoff`.
+- **Incomplete coverage holds the cutoff.** POS finance still publishes. The
+  warn test fires. A lagging or never-captured partition does not publish a
+  short Spark balance for the open hours; those hours stay on Flink in
+  serving only.
+- **The first publish after rollout restates Flink-only hours already in
+  live.** They are re-emitted with zero movement, and the balance changes
+  once to the canonical history.
 - **Current stock is about an hour old.** The serving view is as fresh as the
   Flink window (1 hour on cloud) plus the hourly `inventory_hourly` export.
 - **One stockout measure.** Stockout duration lives only in
@@ -140,8 +164,10 @@ Rejected: correct, but it restates every stored row to the current
 - [ADR-002 — Batch vs. stream per pipeline](ADR-002-batch-vs-stream.md)
 - [ADR-007 — Inventory kappa conversion](ADR-007-inventory-kappa.md)
 - [ADR-009 — Write-Audit-Publish](ADR-009-write-audit-publish.md)
-- `transformation/dbt_project/models/intermediate/int_inventory_batch_coverage.sql`
+- `spark/identity_resolution/kafka_frontier.py`
+- `transformation/dbt_project/models/intermediate/int_inventory_cutoff.sql`
 - `transformation/dbt_project/models/intermediate/int_inventory_hourly.sql`
+- `transformation/dbt_project/models/marts/control/inventory_publication.sql`
 - `transformation/dbt_project/models/marts/finance/fact_inventory_snapshot.sql`
 - `transformation/dbt_project/models/marts/serving/inventory_current_position.sql`
 - `scripts/local/demo_inventory_late_event.py` (late-event recovery demo)
