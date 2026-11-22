@@ -35,11 +35,18 @@ low latency does not reach Gold readers for hours that are already closed.
 
 Split each hour by who has complete data for it:
 
-- `int_inventory_batch_coverage` defines the hours Spark fully covers: from
-  the hour of the first record Bronze captured, up to (not including) the hour
-  that was still open when the snapshot was taken. An hour counts as closed
-  once Kafka has received records past its end plus the Flink watermark
-  delay.
+- `int_inventory_batch_coverage` defines the hours Spark fully covers, per
+  Kafka partition. Spark writes `silver.inventory_partition_coverage` from the
+  same pinned Bronze snapshot: the first and last captured offset and Kafka
+  time of each partition. The last captured offset is that partition's
+  high-water mark. Coverage runs from the hour of the first record Bronze
+  captured up to (not including) the hour still open on the slowest
+  partition: an hour counts as closed once every partition has records past
+  its end plus the Flink watermark delay. A partition whose first captured
+  offset is above 0 lost earlier records, so coverage starts the hour after
+  its first record. Until Bronze holds all `inventory_kafka_partitions`
+  partitions (pinned to `PARTITIONS_BY_TOPIC` by a unit test), nothing is
+  covered.
 - Spark records every break in Kafka offsets per partition of the pinned
   Bronze snapshot in `silver.inventory_offset_gaps` (producers are not
   transactional, so offsets are contiguous). `int_inventory_coverage_gaps`
@@ -50,7 +57,7 @@ Split each hour by who has complete data for it:
   (`is_estimated = false`) and takes Flink's `inventory_hourly` for every
   other hour (`is_estimated = true`). The ranges do not overlap. It is a
   table carrying `export_run_id`, and a blocking test fails the audit when
-  its inputs come from more than one Spark run.
+  its inputs or the partition coverage come from more than one Spark run.
 - Flink deduplicates with a window Top-1 (`ROW_NUMBER() ... ORDER BY event_ts
   ASC` per window and `event_id`, keep-first) feeding the window aggregate, so
   the job is append-only end to end and each window is written once. Spark
@@ -95,6 +102,12 @@ Split each hour by who has complete data for it:
   affected hours on Flink instead of publishing short Spark numbers. A gap
   that Bronze never refills stays provisional until someone replays or
   accepts it.
+- **The slowest partition holds coverage back.** A partition whose Bronze
+  capture lags, or that never reached Bronze, keeps the hours it has not
+  covered on Flink. Bronze alone cannot tell an idle partition from a
+  stalled one, so an idle partition holds coverage back too; the safe
+  failure is hours that stay `is_estimated`. A warn-severity test lists
+  partitions that are missing or more than an hour behind.
 - **Current stock is about an hour old.** The serving view is as fresh as the
   Flink window (1 hour on cloud) plus the hourly `inventory_hourly` export.
 - **One stockout measure.** Stockout duration lives only in
@@ -132,3 +145,5 @@ Rejected: correct, but it restates every stored row to the current
 - `transformation/dbt_project/models/marts/finance/fact_inventory_snapshot.sql`
 - `transformation/dbt_project/models/marts/serving/inventory_current_position.sql`
 - `scripts/local/demo_inventory_late_event.py` (late-event recovery demo)
+- `tests/integration/verify_inventory_lambda.py` (partition coverage and a
+  late event through the dbt incremental build and WAP publish)

@@ -11,6 +11,11 @@ test-paths: ["tests"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+vars:
+  # Must equal PARTITIONS_BY_TOPIC[TOPIC_INVENTORY] in ingestion/kafka/topics.py
+  # (tests/unit/test_gold_wap.py). Batch coverage needs every partition in Bronze.
+  inventory_kafka_partitions: 12
+
 seeds:
   global_retail_analytics:
     +quote_columns: false

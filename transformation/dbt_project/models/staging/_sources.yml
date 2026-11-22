@@ -51,6 +51,10 @@ sources:
       # Spark lists missing Kafka offsets in the pinned inventory Bronze
       # snapshot; int_inventory_coverage_gaps keeps those hours on Flink.
       - name: inventory_offset_gaps
+      # Same Spark run: first and last captured offset and Kafka time per
+      # inventory partition. int_inventory_batch_coverage closes an hour only
+      # once every partition has records past it.
+      - name: inventory_partition_coverage
       # Spark GraphFrames identity_resolution_job writes
       # silver.identity_resolution (ADR-010). int_identity_resolution is a
       # thin view over this source; fixture mode seeds it from

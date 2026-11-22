@@ -58,22 +58,8 @@ with
 {% set restate_from = "cast('" ~ restate.from_date ~ "' as date)" %}
 {% set restate_to = "cast('" ~ restate.to_date ~ "' as date)" %}
 {% set returns_to = "cast('" ~ restate.returns_to_date ~ "' as date)" %}
--- Return days holding a refund of a restated sale line: matched in the
--- corrected source, or matched before to a line the correction removed.
 rebuild_days as (
-    select r.return_date
-    from {{ ref('stg_pos_returns') }} r
-    join {{ ref('stg_pos_transactions') }} p
-      on p.transaction_id = r.original_transaction_id
-     and p.line_item_number = r.original_line_item_number
-    where p.transaction_date between {{ restate_from }} and {{ restate_to }}
-      and p.dt between {{ restate_from }} and {{ restate_to }}
-      and r.return_date between {{ restate_from }} and {{ returns_to }}
-      and r.dt between {{ restate_from }} and {{ returns_to }}
-    union
-    select {{ date_from_date_key('date_key') }}
-    from {{ this }}
-    where original_date_key between {{ restate.from_key }} and {{ restate.to_key }}
+    {{ pos_dependent_return_days(restate, this) }}
 ),
 
 {% endif %}

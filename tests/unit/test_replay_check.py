@@ -89,7 +89,10 @@ def test_snapshot_covers_spark_exports_models_and_every_pending_gold_table() -> 
 def test_replay_task_runs_spark_and_dbt_twice_and_never_publishes() -> None:
     stack = (_REPO / "scripts" / "local" / "run_local_stack.ps1").read_text(encoding="utf-8")
     block = re.search(r'"replay" \{(.*?)\n        "quality" \{', stack, re.S).group(1)
-    assert block.index("-Task pos-parquet") < block.index("foreach ($pass in @('first', 'second'))")
+    assert "-Task pos-parquet" not in block
+    dbt_task = stack.split("function Invoke-DbtIceberg {", 1)[1].split("\nfunction ", 1)[0]
+    assert "Invoke-PosParquetLocal" not in dbt_task
+    assert "foreach ($pass in @('first', 'second'))" in block
     assert "-Task spark" in block and "-Task dbt" in block
     assert "replay_check.py compare" in block
     assert "verify_customer_360.py --pending" in block

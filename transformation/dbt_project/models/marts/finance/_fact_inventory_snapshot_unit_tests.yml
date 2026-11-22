@@ -1,0 +1,45 @@
+unit_tests:
+  - name: fact_inventory_snapshot_late_event_restates_later_balances
+    description: >
+      P1/S1 opens at 100. The stored fact has hour 10 from Flink (-3), which
+      dropped a late +10 receipt. Spark now covers hour 10 and includes the
+      receipt (+7). Hour 10 and every later stored hour of P1/S1 (11, 13) move
+      by +10 and keep their stored product_key 1, although P1's current
+      catalog key is now 11. Hour 9 and P2/S1 did not change, so they are not
+      emitted.
+    model: fact_inventory_snapshot
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: this
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_key: 1, store_key: 1, quantity_on_hand: 95, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 10, product_key: 1, store_key: 1, quantity_on_hand: 92, is_estimated: true}
+          - {snapshot_date_key: 20261104, snapshot_hour: 11, product_key: 1, store_key: 1, quantity_on_hand: 90, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 13, product_key: 1, store_key: 1, quantity_on_hand: 89, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 10, product_key: 2, store_key: 1, quantity_on_hand: 48, is_estimated: false}
+      - input: ref('int_inventory_hourly')
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_id: P1, store_id: S1, qty_delta_hour: -5, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 10, product_id: P1, store_id: S1, qty_delta_hour: 7, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 11, product_id: P1, store_id: S1, qty_delta_hour: -2, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 13, product_id: P1, store_id: S1, qty_delta_hour: -1, is_estimated: false}
+          - {snapshot_date_key: 20261104, snapshot_hour: 10, product_id: P2, store_id: S1, qty_delta_hour: -2, is_estimated: false}
+      - input: ref('dim_product')
+        rows:
+          - {product_key: 1, product_id: P1, is_current: false}
+          - {product_key: 11, product_id: P1, is_current: true}
+          - {product_key: 2, product_id: P2, is_current: true}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_key: 1, store_id: S1}
+      - input: ref('inventory_opening_balance')
+        rows:
+          - {product_id: P1, store_id: S1, opening_qty: 100}
+          - {product_id: P2, store_id: S1, opening_qty: 50}
+    expect:
+      rows:
+        - {snapshot_date_key: 20261104, snapshot_hour: 10, product_key: 1, store_key: 1, quantity_on_hand: 102, quantity_available: 102, is_estimated: false}
+        - {snapshot_date_key: 20261104, snapshot_hour: 11, product_key: 1, store_key: 1, quantity_on_hand: 100, quantity_available: 100, is_estimated: false}
+        - {snapshot_date_key: 20261104, snapshot_hour: 13, product_key: 1, store_key: 1, quantity_on_hand: 99, quantity_available: 99, is_estimated: false}

@@ -21,6 +21,8 @@ Local default path reuses Flink Iceberg Parquet for dbt:
 .\scripts\local\run_local_stack.ps1 -Task topics
 .\scripts\local\run_local_stack.ps1 -Task flink          # start BEFORE simulate
 .\scripts\local\run_local_stack.ps1 -Task simulate
+.\scripts\local\run_local_stack.ps1 -Task pos-parquet    # land sales and returns before identity resolution
+.\scripts\local\run_local_stack.ps1 -Task spark
 .\scripts\local\run_local_stack.ps1 -Task dbt            # -DbtSource iceberg (default)
 ```
 

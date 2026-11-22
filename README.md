@@ -158,8 +158,9 @@ To prove a rerun gives the same answer, `-Task replay` runs Spark and dbt
 twice over the same Bronze, POS file and evaluation date, then compares a
 fingerprint of the Spark exports, the Customer 360 models and every pending Gold
 table. Run IDs and timestamps are excluded from the fingerprint. The replay
-never publishes. Keep the producers idle, and start and finish it on the same
-day, because the POS file is generated per date:
+never publishes. Land POS sales and returns with `-Task pos-parquet` before
+running Spark. Both dbt and replay reuse the delivered files. Keep producers
+idle during replay and run both passes on the same evaluation date.
 
 ```powershell
 .\scripts\local\run_local_stack.ps1 -Task replay

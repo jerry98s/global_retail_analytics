@@ -12,14 +12,13 @@
 -- The window matches the models' pos_restatement_days lookback, or the
 -- pos_restate_from / pos_restate_to range when set, so the Spectrum side
 -- scans only the partitions the run just reprocessed. A restatement also
--- re-judges refunds of the restated sales, so the returns and summary checks
--- extend pos_return_window_days past the range, as the models do.
+-- re-judges refunds on dependent return days. Summary checks cover the full
+-- extended range rebuilt by sales_daily_store.
 
 {% set restate = pos_restate_range() %}
 {% if restate %}
     {% set window_start = "cast('" ~ restate.from_date ~ "' as date)" %}
     {% set source_end = "and transaction_date <= cast('" ~ restate.to_date ~ "' as date)" %}
-    {% set return_source_end = "and return_date <= cast('" ~ restate.returns_to_date ~ "' as date)" %}
     {% set key_end = "and date_key <= " ~ restate.to_key %}
     {% set summary_key_end = "and date_key <= " ~ restate.returns_to_key %}
 {% else %}
@@ -34,12 +33,22 @@
         )
     {% endset %}
     {% set source_end = "" %}
-    {% set return_source_end = "" %}
     {% set key_end = "" %}
     {% set summary_key_end = "" %}
 {% endif %}
 
-with source_daily as (
+with
+{% if restate %}
+    {# Recover deleted sale links from the same live state cloned before the build. #}
+    {% set returns_fact = ref('fact_returns') %}
+    {% set prior = adapter.get_relation(
+        database=returns_fact.database, schema='finance', identifier=returns_fact.identifier
+    ) if execute else none %}
+dependent_days as (
+    {{ pos_dependent_return_days(restate, prior if prior is not none else returns_fact) }}
+),
+{% endif %}
+source_daily as (
     select
         {{ date_key_from_date('transaction_date') }} as date_key,
         count(*) as line_count,
@@ -84,7 +93,11 @@ return_source_daily as (
     from {{ ref('stg_pos_returns') }}
     where return_date >= {{ window_start }}
       and dt >= {{ window_start }}
-      {{ return_source_end }}
+      {% if restate %}
+      and dt <= cast('{{ restate.returns_to_date }}' as date)
+      and (return_date <= cast('{{ restate.to_date }}' as date)
+           or return_date in (select return_date from dependent_days))
+      {% endif %}
     group by 1
 ),
 
@@ -95,7 +108,10 @@ return_fact_daily as (
         sum(refund_amount) as refund_amount
     from {{ ref('fact_returns') }}
     where date_key >= {{ date_key_from_date(window_start) }}
-      {{ summary_key_end }}
+      {% if restate %}
+      and (date_key <= {{ restate.to_key }}
+           or date_key in (select {{ date_key_from_date('return_date') }} from dependent_days))
+      {% endif %}
     group by 1
 ),
 

@@ -257,8 +257,10 @@ class TestDbtHandoffContract:
             assert call in job
         assert "publish(frame, root, f'{stream}_{suffix}', run_id)" in events
         assert "publish(gaps, root, 'inventory_offset_gaps', run_id)" in events
+        assert "publish(coverage, root, 'inventory_partition_coverage', run_id)" in events
         assert set(bridge._EXPORTS) == {
             "clickstream_events", "inventory_events", "inventory_hourly",
-            "inventory_offset_gaps", "identity_resolution", "identity_edges",
+            "inventory_offset_gaps", "inventory_partition_coverage",
+            "identity_resolution", "identity_edges",
             "loyalty_link_claims", "device_session_associations",
         }

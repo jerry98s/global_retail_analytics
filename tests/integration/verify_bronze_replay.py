@@ -8,7 +8,7 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 
 from spark.identity_resolution.canonical_events import (
-    canonicalize, offset_gaps, promote_events, write_exports)
+    canonicalize, offset_gaps, partition_coverage, promote_events, write_exports)
 from spark.identity_resolution.consumer_exports import new_run_id, read_current
 
 
@@ -63,6 +63,14 @@ def main():
         assert offset_gaps(inv_raw).count() == 0
         gap = offset_gaps(inv_raw.filter('kafka_offset != 11')).collect()
         assert [(g.last_offset_before, g.first_offset_after, g.missing_offsets) for g in gap] == [(10, 12, 1)]
+        # Every partition reports its captured offset range, including the
+        # quarantined and duplicate records canonical events leave out.
+        later = datetime(2026, 9, 17, 1)
+        two = inv_raw.unionByName(spark.createDataFrame(
+            [(inv, b'key', 'test-v1', 'clicks', 1, 4, later, later, later.date())], schema))
+        coverage = {c.kafka_partition: (c.first_offset, c.last_offset, c.first_kafka_ts, c.last_kafka_ts)
+                    for c in partition_coverage(two).collect()}
+        assert coverage == {0: (10, 13, now, now), 1: (4, 4, later, later)}
         # Repartitioning and replaying the same snapshot cannot change winners.
         again, _, _ = canonicalize(raw.repartition(3), 'clickstream')
         assert {(r.event_id, r.kafka_offset) for r in again.collect()} == {('E1', 1), ('late', 6)}
@@ -98,6 +106,8 @@ def main():
                     assert outputs['inventory'].count() == 1
                     assert read_current(spark, root + '/consumer_current', 'clickstream_events').count() == 2
                     assert read_current(spark, root + '/consumer_current', 'inventory_offset_gaps').count() == 0
+                    assert read_current(spark, root + '/consumer_current',
+                                        'inventory_partition_coverage').count() == 1
                 assert spark.table('replay.bronze.clickstream_records').count() == 7
                 assert spark.sql('SELECT snapshot_id FROM replay.bronze.clickstream_records.snapshots').collect() == before
                 print('PASS: pinned Iceberg snapshots, repeat promotion, no Bronze mutations')

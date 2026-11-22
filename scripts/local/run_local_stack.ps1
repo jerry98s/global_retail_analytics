@@ -435,11 +435,12 @@ function Invoke-LoadDuckdb {
     if ($RestateFrom -and $RestateTo) {
         $restateArgs = @('--restate-from', $RestateFrom, '--restate-to', $RestateTo)
     }
-    Invoke-ProjectPython (@(
+    $loadArgs = @(
         'scripts/local/load_iceberg_to_duckdb.py',
         '--iceberg-dir', $IcebergHostDir,
         '--duckdb', (Join-Path $DbtDir 'local_retail.duckdb')
-    ) + $restateArgs)
+    ) + $restateArgs
+    Invoke-ProjectPython @loadArgs
 }
 
 # ADR-010: run the GraphFrames identity job in the local Spark image
@@ -544,9 +545,7 @@ function Invoke-DbtIceberg {
     $null = Get-PendingDbtVars
     Ensure-LocalDbtProfile
     Ensure-IcebergHostDir
-    Invoke-Step "Generate local POS Parquet (not streamed to Iceberg)" {
-        Invoke-PosParquetLocal
-    }
+    # Consume the POS delivery Spark used, including when this step starts after midnight.
     Invoke-Step "Load Iceberg + POS Parquet into DuckDB" {
         Invoke-LoadDuckdb
     }
@@ -659,7 +658,7 @@ try {
             }
         }
         "simulate" {
-            # POS is batch, not streamed: the dbt task's Invoke-PosParquetLocal
+            # POS is batch, not streamed: the pos-parquet task
             # writes Parquet to .local/iceberg/bronze/pos_transactions (the same
             # mechanism as cloud --output-s3). No Flink job consumes a POS Kafka
             # topic, so a POS stream producer here would emit into a void.
@@ -789,14 +788,13 @@ try {
         }
         # Replay: Spark + dbt twice over the same Bronze, POS file and evaluation
         # date, fingerprinting pending Gold each time. Publishes nothing; keep the
-        # producers idle and stay within one calendar day (POS is generated per date).
+        # producers idle and use the same evaluation date for both passes.
         "replay" {
             if ($DbtSource -ne "iceberg" -or (Test-PosRestatement)) {
                 throw "-Task replay needs -DbtSource iceberg and no restatement range."
             }
             $replayDir = Join-Path $RepoRoot '.local\replay'
-            # Spark reads POS loyalty ids, so today's file must exist before the first pass.
-            & $PSCommandPath -Task pos-parquet
+            # Both passes consume the POS deliveries already on disk.
             foreach ($pass in @('first', 'second')) {
                 & $PSCommandPath -Task spark
                 & $PSCommandPath -Task dbt
@@ -883,7 +881,8 @@ try {
                 Write-Host "Waiting 75s for silver windows / checkpoints ..." -ForegroundColor DarkGray
                 Start-Sleep -Seconds 75
                 if ($DbtSource -eq "iceberg") {
-                    & $PSCommandPath -Task pos-parquet -RestateFrom $RestateFrom -RestateTo $RestateTo
+                    & $PSCommandPath -Task pos-parquet -RestateFrom $RestateFrom -RestateTo $RestateTo `
+                        -RestateEmptyDates $RestateEmptyDates -PosTransactionCount $PosTransactionCount
                     & $PSCommandPath -Task spark
                     Invoke-Step "dbt local (Iceberg Parquet + dim seeds)" {
                         Invoke-DbtIceberg -ExecutionId $execId

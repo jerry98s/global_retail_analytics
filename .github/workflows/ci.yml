@@ -176,6 +176,15 @@ jobs:
               )
               """
           )
+          con.execute(
+              """
+              create table if not exists silver.inventory_partition_coverage (
+                source_system varchar, kafka_topic varchar, kafka_partition integer,
+                first_offset bigint, last_offset bigint,
+                first_kafka_ts timestamp, last_kafka_ts timestamp, export_run_id varchar
+              )
+              """
+          )
           PY
 
       - name: dbt run identity graph chain
@@ -206,6 +215,11 @@ jobs:
         run: |
           pip install pytest==8.4.1
           pytest tests/integration/test_dbt_idempotency.py -v -m integration_duckdb
+
+      - name: inventory partition coverage and late event through WAP (ADR-012)
+        # Own profile and DuckDB file in a pytest temporary directory.
+        working-directory: ${{ github.workspace }}
+        run: pytest tests/integration/verify_inventory_lambda.py -v -m integration_duckdb
 
   shell:
     name: shellcheck

@@ -99,6 +99,21 @@ def offset_gaps(raw: DataFrame) -> DataFrame:
                     F.col('kafka_timestamp').alias('gap_end_ts')))
 
 
+def partition_coverage(raw: DataFrame) -> DataFrame:
+    """First and last captured Kafka offset and time per partition in a Bronze snapshot.
+
+    The last captured offset is the partition's high-water mark in this
+    snapshot. dbt closes an hour only once every expected partition has
+    records past it, so a lagging or never-captured partition keeps the hour
+    on Flink. A first offset above 0 means earlier records never reached Bronze.
+    """
+    return (raw.groupBy(*PARTITION)
+            .agg(F.min('kafka_offset').alias('first_offset'),
+                 F.max('kafka_offset').alias('last_offset'),
+                 F.min('kafka_timestamp').alias('first_kafka_ts'),
+                 F.max('kafka_timestamp').alias('last_kafka_ts')))
+
+
 def write_exports(canonical, invalid, duplicates, root: str, stream: str, run_id: str) -> None:
     for suffix, frame in [('events', canonical), ('quarantine', invalid), ('duplicates', duplicates)]:
         publish(frame, root, f'{stream}_{suffix}', run_id)
@@ -124,7 +139,8 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
 
     Iceberg reads are snapshot-aware, and each plain-Parquet export switches
     atomically through its manifest (consumer_exports). Run one writer at a time.
-    Inventory also publishes ``inventory_offset_gaps`` for dbt's batch coverage.
+    Inventory also publishes ``inventory_offset_gaps`` and
+    ``inventory_partition_coverage`` for dbt's batch coverage.
     """
     outputs = {}
     run_id = run_id or new_run_id()
@@ -152,6 +168,10 @@ def promote_events(spark, bronze_catalog: str, silver_catalog: str, root: str,
                 gaps = offset_gaps(raw)
                 gaps.writeTo(f'{silver_catalog}.silver.inventory_offset_gaps').using('iceberg').createOrReplace()
                 publish(gaps, root, 'inventory_offset_gaps', run_id)
+                coverage = partition_coverage(raw)
+                coverage.writeTo(
+                    f'{silver_catalog}.silver.inventory_partition_coverage').using('iceberg').createOrReplace()
+                publish(coverage, root, 'inventory_partition_coverage', run_id)
             write_exports(*frames, root, stream, run_id)
             scanned = snapshot_bytes(spark, source) if head is not None else 0
             print(json.dumps(dict(stream=stream, bronze_snapshot_id=head.snapshot_id if head else None,

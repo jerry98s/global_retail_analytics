@@ -1,4 +1,55 @@
 unit_tests:
+  - name: int_inventory_batch_coverage_stops_at_slowest_partition
+    description: >
+      Partition 0 has records up to 12:30 but partition 1 only up to 10:15, so
+      hour 10 is still open for partition 1 and coverage ends there (exclusive),
+      not at 12 from the newest record overall.
+    model: int_inventory_batch_coverage
+    overrides:
+      vars:
+        inventory_kafka_partitions: 2
+    given:
+      - input: source('silver', 'inventory_partition_coverage')
+        rows:
+          - {kafka_partition: 0, first_offset: 0, last_offset: 900, first_kafka_ts: "2026-11-04 09:05:00", last_kafka_ts: "2026-11-04 12:30:00", export_run_id: R1}
+          - {kafka_partition: 1, first_offset: 0, last_offset: 300, first_kafka_ts: "2026-11-04 09:10:00", last_kafka_ts: "2026-11-04 10:15:00", export_run_id: R1}
+    expect:
+      rows:
+        - {batch_start_hour_key: 2026110409, batch_end_hour_key: 2026110410, export_run_id: R1}
+
+  - name: int_inventory_batch_coverage_needs_every_partition
+    description: >
+      Only partition 0 of the expected 2 reached Bronze, so no hour is
+      covered and every hour stays on Flink.
+    model: int_inventory_batch_coverage
+    overrides:
+      vars:
+        inventory_kafka_partitions: 2
+    given:
+      - input: source('silver', 'inventory_partition_coverage')
+        rows:
+          - {kafka_partition: 0, first_offset: 0, last_offset: 900, first_kafka_ts: "2026-11-04 09:05:00", last_kafka_ts: "2026-11-04 12:30:00", export_run_id: R1}
+    expect:
+      rows:
+        - {batch_start_hour_key: null, batch_end_hour_key: null, export_run_id: R1}
+
+  - name: int_inventory_batch_coverage_skips_partition_head_gap
+    description: >
+      Partition 1's first captured offset is 500, so records before 09:40
+      never reached Bronze. Hour 9 stays on Flink and coverage starts at 10.
+    model: int_inventory_batch_coverage
+    overrides:
+      vars:
+        inventory_kafka_partitions: 2
+    given:
+      - input: source('silver', 'inventory_partition_coverage')
+        rows:
+          - {kafka_partition: 0, first_offset: 0, last_offset: 900, first_kafka_ts: "2026-11-04 09:05:00", last_kafka_ts: "2026-11-04 12:30:00", export_run_id: R1}
+          - {kafka_partition: 1, first_offset: 500, last_offset: 800, first_kafka_ts: "2026-11-04 09:40:00", last_kafka_ts: "2026-11-04 12:20:00", export_run_id: R1}
+    expect:
+      rows:
+        - {batch_start_hour_key: 2026110410, batch_end_hour_key: 2026110412, export_run_id: R1}
+
   - name: int_inventory_hourly_keeps_offset_gap_hours_on_flink
     description: >
       Hour 10 is covered and gap-free, so Spark's canonical events win. Hour 11

@@ -191,8 +191,18 @@ class TestInventoryLambda:
     def test_coverage_closes_hours_with_flink_watermark(self) -> None:
         src = _read(_DBT / "models/intermediate/int_inventory_batch_coverage.sql")
         assert "var('inventory_silver_watermark_delay_seconds', 60)" in src
-        assert "min(cast(kafka_timestamp as timestamp))" in src
-        assert "max(cast(kafka_timestamp as timestamp))" in src
+        # The slowest partition closes hours, not the newest record overall.
+        assert "source('silver', 'inventory_partition_coverage')" in src
+        assert "'min(last_ts)'" in src
+        assert "captured_partitions = {{ expected_partitions }}" in src
+
+    def test_expected_partitions_match_topic_config(self) -> None:
+        import yaml
+
+        from ingestion.kafka.topics import PARTITIONS_BY_TOPIC, TOPIC_INVENTORY
+
+        project = yaml.safe_load(_read(_DBT / "dbt_project.yml"))
+        assert project["vars"]["inventory_kafka_partitions"] == PARTITIONS_BY_TOPIC[TOPIC_INVENTORY]
 
     def test_fact_rewrites_changed_past_hours(self) -> None:
         # An append-only "hours after max" filter would never apply a Spark
