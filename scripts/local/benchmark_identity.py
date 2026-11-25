@@ -187,11 +187,11 @@ def run_scale(copies: int, source: Path, benchmark: Path, driver_memory: str, pr
     ).format(n=copies, memory=driver_memory)
     identity = (
         "exec /opt/spark/bin/spark-submit --master local[*] --driver-memory {memory} "
-        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py "
+        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,pos_loyalty.py "
         "identity_resolution_job.py --local "
         "--bronze-warehouse file:///tmp/benchmark/scale-{n} "
         "--silver-warehouse file:///tmp/benchmark/scale-{n} "
-        "--pos-parquet-path /tmp/benchmark/scale-{n}/pos "
+        "--pos-loyalty-path /tmp/benchmark/scale-{n}/pos "
         "--checkpoint-dir /tmp/benchmark/scale-{n}/checkpoints"
     ).format(n=copies, memory=driver_memory)
     subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True, check=False)

@@ -14,7 +14,7 @@ decision.
 
 | Source | Field | Role |
 |--------|-------|------|
-| POS | `loyalty_id` | Graph node `loyalty:{value}` |
+| POS | `loyalty_id` | Graph node `loyalty:{value}`, from the per-date distinct extract |
 | Clickstream | `customer_id` (signed-in account, `CUST-*` in simulators) | Graph node `customer:{value}` |
 | Clickstream login (v1.3+) | `properties.loyalty_id` + `properties.loyalty_link_verified` | Merge edge when verified |
 | Clickstream | `client_id` + `session_instance_id` | Device-session association only, never a node |
@@ -163,7 +163,7 @@ Nothing is inferred: loyalty membership and signing in are not consent.
 ## Customer 360 output chain
 
 ```
-bronze.clickstream_events + bronze.pos_transactions
+bronze.clickstream_events + bronze/pos_loyalty_ids
   → Spark GraphFrames job → silver.identity_resolution (Iceberg)   [ADR-010]
                            → consumer_current/identity_resolution (Parquet)
   → int_identity_resolution (thin view over the silver source)

@@ -111,6 +111,7 @@ simulators. Details in the [evidence ledger](./docs/evidence/README.md).
 | Iceberg for the lake | Open format, snapshots for replay and time travel | [ADR-001](./docs/decisions/ADR-001-table-format.md) |
 | Stream inventory, batch finance | Ops needs fresh stock; finance needs reconciled totals | [ADR-002](./docs/decisions/ADR-002-batch-vs-stream.md), [ADR-012](./docs/decisions/ADR-012-inventory-lambda.md) |
 | Flink for streaming, Spark for the identity graph | Flink for stateful event-time processing; Spark GraphFrames for connected components | [ADR-006](./docs/decisions/ADR-006-flink-vs-spark.md), [ADR-010](./docs/decisions/ADR-010-spark-graphframes-identity.md) |
+| POS loyalty extract | The hourly identity job reads one distinct loyalty-id file per POS date, written by the daily POS step | [ADR-010 amendment](./docs/decisions/ADR-010-amendment-pos-loyalty-extract.md) |
 | Redshift Serverless for Gold | Pay-per-use warehouse with Spectrum over the lake | [ADR-005](./docs/decisions/ADR-005-warehouse-redshift.md) |
 | Write-Audit-Publish | Consumers only ever see audited data | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) |
 | Semantic layer for metrics | One metric definition for the dashboard and analysts; on-hand is semi-additive | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) |
@@ -171,8 +172,10 @@ To prove a rerun gives the same answer, `-Task replay` runs Spark and dbt
 twice over the same Bronze, POS file and evaluation date, then compares a
 fingerprint of the Spark exports, the Customer 360 models and every pending Gold
 table. Run IDs and timestamps are excluded from the fingerprint. The replay
-never publishes. Land POS sales and returns with `-Task pos-parquet` before
-running Spark. Both dbt and replay reuse the delivered files. Keep producers
+never publishes. Land POS sales, returns, and the loyalty-id extract with
+`-Task pos-parquet` before running Spark. Both dbt and replay reuse the
+delivered files. A restatement run of `-Task pos-parquet` keeps the delivered
+POS files and rewrites the loyalty files for those dates. Keep producers
 idle during replay and run both passes on the same evaluation date.
 
 ```powershell

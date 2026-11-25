@@ -147,6 +147,7 @@ class TestStackWiring:
     def test_restatement_skips_the_pos_generator(self):
         body = _STACK.split("function Invoke-PosParquetLocal {", 1)[1]
         assert body.index("Test-PosRestatement") < body.index("generate_pos_parquet")
+        assert body.index("generate_pos_returns_parquet") < body.index("Invoke-PosLoyaltyExtractLocal")
         assert "-Task pos-parquet -RestateFrom $RestateFrom -RestateTo $RestateTo" in _STACK
 
     def test_gate_runs_before_publish_and_baseline_after(self):

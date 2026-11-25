@@ -33,9 +33,11 @@ repeats are kept.
 | `clickstream.events.v1` | `bronze.clickstream_records` | `iceberg/bronze/clickstream_records/data/` | Spark promotion only |
 | `inventory.events.v1` | `bronze.inventory_records` | `iceberg/bronze/inventory_records/data/` | Spark promotion only |
 | *(batch POS)* | *(Parquet only)* | `iceberg/bronze/pos_transactions/data/` | `bronze.pos_transactions` (dbt source) |
+| *(batch POS loyalty ids)* | *(Parquet only)* | `iceberg/bronze/pos_loyalty_ids/data/` | Spark identity job |
 
 POS is a **batch exception**: grain is line items, not events, so the name stays
-`pos_transactions`.
+`pos_transactions`. The loyalty path is one file of distinct `loyalty_id`
+values per POS date, written from those line items for the identity job.
 
 `bronze.clickstream_events` / `bronze.inventory_events` are legacy filtered
 tables from before ADR-011. `main` still registers them in Spectrum, but no

@@ -421,22 +421,64 @@ function Save-RowCountBaselineLocal {
     Invoke-ProjectPython scripts/local/row_count_gate.py save --state $RowCountGateState
 }
 
-function Invoke-PosParquetLocal {
-    if (Test-PosRestatement) {
-        $null = Get-PendingDbtVars
-        Write-Host "Restatement $RestateFrom..$RestateTo`: keeping POS files on disk (no generator)." -ForegroundColor Yellow
-        return
+function Get-PosPartitionDates {
+    # Same date list the warehouse DAG registers, so a restatement extracts
+    # exactly the delivered days and a normal run extracts today.
+    $env:POS_RESTATE_FROM = $RestateFrom
+    $env:POS_RESTATE_TO = $RestateTo
+    $env:POS_RESTATE_EMPTY_DATES = ($RestateEmptyDates -join ",")
+    try {
+        $out = & (Get-PythonCmd) -c @"
+import os, sys
+from datetime import date
+sys.path.insert(0, r'$RepoRoot')
+from orchestration.airflow.plugins.pos_restatement import is_restatement, pos_partition_dates
+empty = [d.strip() for d in os.environ.get('POS_RESTATE_EMPTY_DATES', '').split(',') if d.strip()]
+params = {'restate_from': os.environ.get('POS_RESTATE_FROM') or None,
+          'restate_to': os.environ.get('POS_RESTATE_TO') or None,
+          'restate_empty_dates': empty}
+try:
+    is_restatement(params)
+    print(','.join(pos_partition_dates(params, date.today().isoformat())))
+except ValueError as exc:
+    print(exc)
+    sys.exit(2)
+"@
+        if ($LASTEXITCODE -ne 0) {
+            throw "Invalid -RestateFrom/-RestateTo/-RestateEmptyDates: $out"
+        }
+        return @($out.Split(',') | Where-Object { $_ })
     }
+    finally {
+        Remove-Item Env:POS_RESTATE_FROM, Env:POS_RESTATE_TO, Env:POS_RESTATE_EMPTY_DATES -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-PosLoyaltyExtractLocal {
+    param([Parameter(Mandatory = $true)][string[]]$Dates)
+    Invoke-ProjectPython -m ingestion.batch.extract_pos_loyalty_ids `
+        --pos-dir (Join-Path $IcebergHostDir 'bronze\pos_transactions') `
+        --output-dir (Join-Path $IcebergHostDir 'bronze\pos_loyalty_ids') `
+        --dates ($Dates -join ',')
+}
+
+function Invoke-PosParquetLocal {
+    $dates = @(Get-PosPartitionDates)
     $outDir = Join-Path $IcebergHostDir 'bronze\pos_transactions'
-    $txnDate = (Get-Date).ToString('yyyy-MM-dd')
-    Invoke-ProjectPython -m ingestion.batch.generate_pos_parquet `
-        --date $txnDate `
-        --output-dir $outDir `
-        --transaction-count $PosTransactionCount
-    Invoke-ProjectPython -m ingestion.batch.generate_pos_returns_parquet `
-        --date $txnDate `
-        --pos-dir $outDir `
-        --output-dir (Join-Path $IcebergHostDir 'bronze\pos_returns')
+    if (Test-PosRestatement) {
+        Write-Host "Restatement $RestateFrom..$RestateTo`: keeping POS files on disk (no generator)." -ForegroundColor Yellow
+    } else {
+        $txnDate = $dates[0]
+        Invoke-ProjectPython -m ingestion.batch.generate_pos_parquet `
+            --date $txnDate `
+            --output-dir $outDir `
+            --transaction-count $PosTransactionCount
+        Invoke-ProjectPython -m ingestion.batch.generate_pos_returns_parquet `
+            --date $txnDate `
+            --pos-dir $outDir `
+            --output-dir (Join-Path $IcebergHostDir 'bronze\pos_returns')
+    }
+    Invoke-PosLoyaltyExtractLocal -Dates $dates
 }
 
 function Invoke-LoadDuckdb {

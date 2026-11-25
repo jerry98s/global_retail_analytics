@@ -33,6 +33,7 @@ import duckdb
 _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO))
 
+from ingestion.batch.extract_pos_loyalty_ids import extract_local  # noqa: E402
 from ingestion.batch.generate_pos_parquet import write_identity_change_parquet  # noqa: E402
 from ingestion.kafka.sim_entities import (  # noqa: E402
     IDENTITY_CHANGE_ACCOUNT,
@@ -170,8 +171,15 @@ def main() -> int:
         return 2
 
     print("Phase 1: unverified sign-in and one purchase on each card", flush=True)
-    path = write_identity_change_parquet(_REPO / ".local" / "iceberg" / "bronze" / "pos_transactions", date.today())
+    pos_dir = _REPO / ".local" / "iceberg" / "bronze" / "pos_transactions"
+    path = write_identity_change_parquet(pos_dir, date.today())
+    loyalty = extract_local(
+        pos_dir,
+        [date.today().isoformat()],
+        _REPO / ".local" / "iceberg" / "bronze" / "pos_loyalty_ids",
+    )
     print(f"  wrote {path}", flush=True)
+    print(f"  loyalty extract {loyalty[0]}", flush=True)
     _produce(1)
     print(f"  waiting {_BRONZE_WAIT_SECONDS}s for the Flink checkpoint", flush=True)
     time.sleep(_BRONZE_WAIT_SECONDS)

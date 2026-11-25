@@ -13,6 +13,11 @@ GraphFrames connected components, and writes:
 - ``silver.device_session_associations`` — signed-in intervals per device and
   session instance (attribution only; never graph edges).
 
+POS input is the daily distinct loyalty-id extract, one file per POS date
+(``ingestion/batch/extract_pos_loyalty_ids.py``). The job does not read POS
+line items. A POS date with no loyalty file is logged and left out; dates
+that already have a file are still read.
+
 The business rules live in ``graph_logic.py`` and are shared with the dbt
 seed fixture generator — this job mirrors them in DataFrame/GraphFrames
 operations.
@@ -30,7 +35,7 @@ warehouse DAG:
       identity_resolution_job.py --mode hourly \
       --bronze-warehouse s3://<bucket>-bronze/iceberg \
       --silver-warehouse s3://<bucket>-silver/iceberg \
-      --pos-parquet-path s3://<bucket>-bronze/iceberg/bronze/pos_transactions/ \
+      --pos-loyalty-path s3://<bucket>-bronze/iceberg/bronze/pos_loyalty_ids/data \
       --checkpoint-dir s3://<bucket>-checkpoints/graphframes/
 
 Local (laptop, local-testing-version stack):
@@ -46,7 +51,6 @@ from __future__ import annotations
 import argparse
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import urlparse
 
 from pyspark.sql import Column, DataFrame, SparkSession
@@ -62,6 +66,14 @@ try:
         read_published_frontier,
         write_inventory_coverage,
     )
+    from .pos_loyalty import (
+        dates_without_loyalty,
+        local_parquet_bytes,
+        local_partition_dates,
+        missing_loyalty_message,
+        partition_dates_from_names,
+        pos_data_path_beside,
+    )
 except ImportError:
     from canonical_events import log_stage, promote_events
     from consumer_exports import new_run_id, publish
@@ -71,6 +83,14 @@ except ImportError:
         proven_end_offsets,
         read_published_frontier,
         write_inventory_coverage,
+    )
+    from pos_loyalty import (
+        dates_without_loyalty,
+        local_parquet_bytes,
+        local_partition_dates,
+        missing_loyalty_message,
+        partition_dates_from_names,
+        pos_data_path_beside,
     )
 
 try:  # package import in tests; script import under spark-submit
@@ -144,8 +164,8 @@ def _parse_args() -> argparse.Namespace:
                         help="Iceberg Hadoop catalog warehouse holding bronze.*_records")
     parser.add_argument("--silver-warehouse", required=True,
                         help="Iceberg Hadoop catalog warehouse for silver.identity_* output")
-    parser.add_argument("--pos-parquet-path",
-                        help="POS batch Parquet path (plain Parquet, not Iceberg)")
+    parser.add_argument("--pos-loyalty-path",
+                        help="Per-date distinct POS loyalty ids (plain Parquet under data/dt=)")
     parser.add_argument("--checkpoint-dir", default="/tmp/graphframes-checkpoints",
                         help="GraphFrames checkpoint dir (S3 on EMR, local path otherwise)")
     parser.add_argument(
@@ -445,14 +465,91 @@ def _pinned_inventory(spark: SparkSession, snapshot_id: int | None):
     return spark.read.option('snapshot-id', str(snapshot_id)).table(source)
 
 
+def _hadoop_path(spark: SparkSession, uri: str):
+    return spark._jvm.org.apache.hadoop.fs.Path(uri)
+
+
+def _hadoop_fs(spark: SparkSession, uri: str):
+    path = _hadoop_path(spark, uri)
+    return path, path.getFileSystem(spark._jsc.hadoopConfiguration())
+
+
+def _hadoop_partition_dates(spark: SparkSession, uri: str) -> set[str]:
+    path, fs = _hadoop_fs(spark, uri)
+    if not fs.exists(path):
+        return set()
+    names = [
+        status.getPath().getName()
+        for status in fs.listStatus(path)
+        if status.isDirectory()
+    ]
+    return partition_dates_from_names(names)
+
+
+def _hadoop_parquet_bytes(spark: SparkSession, uri: str) -> int:
+    """Size the loyalty input where the driver has no local copy (S3)."""
+    path, fs = _hadoop_fs(spark, uri)
+    if not fs.exists(path):
+        return 0
+    total = 0
+    listing = fs.listFiles(path, True)
+    while listing.hasNext():
+        status = listing.next()
+        if status.getPath().getName().endswith(".parquet"):
+            total += int(status.getLen())
+    return total
+
+
+def _partition_dates(spark: SparkSession, uri: str) -> set[str]:
+    local = local_partition_dates(uri)
+    if local is not None:
+        return local
+    return _hadoop_partition_dates(spark, uri)
+
+
+def _input_bytes(spark: SparkSession, uri: str) -> int:
+    local = local_parquet_bytes(uri)
+    if local is not None:
+        return local
+    return _hadoop_parquet_bytes(spark, uri)
+
+
+def _warn_missing_loyalty_dates(spark: SparkSession, loyalty_path: str) -> None:
+    pos_path = pos_data_path_beside(loyalty_path)
+    if not pos_path:
+        return
+    try:
+        missing = dates_without_loyalty(
+            _partition_dates(spark, pos_path),
+            _partition_dates(spark, loyalty_path),
+        )
+    except Exception as exc:
+        print(
+            f"WARNING: could not compare POS dates with the loyalty extract: {exc}",
+            flush=True,
+        )
+        return
+    if missing:
+        print(missing_loyalty_message(missing), flush=True)
+
+
+def _read_loyalty(spark: SparkSession, loyalty_path: str) -> tuple[DataFrame, int]:
+    """Loyalty ids, and the bytes read. An empty extract is an empty frame."""
+    _warn_missing_loyalty_dates(spark, loyalty_path)
+    nbytes = _input_bytes(spark, loyalty_path)
+    if nbytes == 0:
+        return spark.createDataFrame([], schema="loyalty_id string"), 0
+    return spark.read.parquet(loyalty_path), nbytes
+
+
 def main() -> None:
     args = _parse_args()
     spark = _build_session(args)
     streams = _streams_for(args.mode)
     run_identity = 'clickstream' in streams and not args.canonical_only
 
-    if run_identity and not args.pos_parquet_path:
-        raise ValueError('--pos-parquet-path is required unless --canonical-only or --mode inventory is set')
+    if run_identity and not args.pos_loyalty_path:
+        raise ValueError('--pos-loyalty-path is required unless --canonical-only or --mode inventory is set')
     if 'inventory' in streams and not args.kafka_bootstrap_servers:
         raise ValueError('--kafka-bootstrap-servers is required when inventory coverage is written')
     client_properties = kafka_client_properties(args.kafka_security_protocol, args.kafka_sasl_mechanism)
@@ -490,10 +587,7 @@ def main() -> None:
         return
     identity_started = time.perf_counter()
     clickstream = events['clickstream']
-    pos = spark.read.parquet(args.pos_parquet_path)
-    pos_bytes = sum(
-        path.stat().st_size for path in Path(args.pos_parquet_path).rglob("*.parquet") if path.is_file()
-    )
+    pos, pos_bytes = _read_loyalty(spark, args.pos_loyalty_path)
 
     claims = loyalty_claims(clickstream)
     edges = build_edges(claims)

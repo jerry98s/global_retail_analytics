@@ -115,6 +115,7 @@ def _render(template: str, params: dict) -> str:
         var={"value": {
             "artifacts_bucket": "artifacts-example",
             "pos_bronze_s3_path": "s3://bronze-example/iceberg/bronze/pos_transactions/",
+            "pos_loyalty_ids_s3_path": "s3://bronze-example/iceberg/bronze/pos_loyalty_ids/",
             "pos_returns_bronze_s3_path": "s3://bronze-example/iceberg/bronze/pos_returns/",
         }},
         **pr.AIRFLOW_MACROS,
@@ -168,6 +169,19 @@ def test_restatement_keeps_returns_files_and_registers_the_range() -> None:
         "2026-10-01", "2026-10-02", "2026-10-03",
     ]
     assert "pos_returns/data/dt=2026-10-02/'" in sql
+
+
+def test_loyalty_extract_covers_the_run_dates_including_a_restatement() -> None:
+    daily = _render(_task_template("extract_pos_loyalty_ids", "bash_command"), _DAILY)
+    assert "exit 0" not in daily
+    assert '--dates "2026-11-04"' in daily
+    assert "pos_loyalty_ids/data/dt=2026-11-04/part-00000.parquet" in daily
+    ranged = _render(_task_template("extract_pos_loyalty_ids", "bash_command"), _RANGE)
+    assert "extract_pos_loyalty_ids" in ranged
+    assert '--dates "2026-10-01,2026-10-02,2026-10-03"' in ranged
+    for day in ("2026-10-01", "2026-10-02", "2026-10-03"):
+        assert f"pos_transactions/data/dt={day}/" in ranged
+        assert f"pos_loyalty_ids/data/dt={day}/part-00000.parquet" in ranged
 
 
 def test_returns_lookback_comes_from_the_generator() -> None:

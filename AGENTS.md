@@ -67,7 +67,7 @@ uv sync --group dev
 ```
 
 - Default `-DbtSource iceberg`: Flink Parquet under `.local/iceberg` + local POS
-  and POS returns Parquet (`-Task pos-parquet` writes both) → DuckDB; seed only `dim_date` / `dim_store` / `product_master` /
+  and POS returns Parquet (`-Task pos-parquet` writes sales, returns, and one distinct loyalty-id file per date) → DuckDB; seed only `dim_date` / `dim_store` / `product_master` /
   `inventory_opening_balance` (catalog attributes for `dim_product` and opening
   shelf counts for `fact_inventory_snapshot`, generated from
   `ingestion/kafka/sim_entities.py`; CI runs
@@ -86,7 +86,10 @@ uv sync --group dev
   `.local/iceberg/silver/identity_resolution`. `-SparkMode all|hourly|inventory`
   (default `all`) matches the job: `hourly` is clickstream and identity;
   `inventory` is canonical inventory plus Kafka coverage; `all` writes
-  both and must not overlap a scheduled mode. `silver.inventory_hourly` is
+  both and must not overlap a scheduled mode. Identity reads
+  `.local/iceberg/bronze/pos_loyalty_ids` (one distinct loyalty-id file per
+  POS date). A POS date with no loyalty file is named in a warning and left
+  out; earlier dates stay. `silver.inventory_hourly` is
   Flink's Iceberg table, loaded from its current snapshot, not a Spark export.
   The container uses compose
   `kafka:29092`, not the host `127.0.0.1:9092`. `-Task all` (iceberg source)

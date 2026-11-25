@@ -41,7 +41,10 @@ Restating corrected POS days (same contract as the warehouse DAG's
 `restate_from` / `restate_to`): fix the Parquet under
 `.local/iceberg/bronze/pos_transactions` or `.local/iceberg/bronze/pos_returns`,
 then pass the inclusive range to both steps. The POS and returns generators are
-skipped and only those days are rebuilt, audited and published. A returns file
+skipped and only those days are rebuilt, audited and published. The same
+`-Task pos-parquet` range rewrites the loyalty-id files from the delivered
+POS partitions; run it before `-Task spark` so the identity graph sees the
+correction. A returns file
 is the full delivery for its date: a day with no returns is a zero-row file,
 and the restated range of `fact_returns` is replaced whole. The DuckDB load
 fails when a POS day or a restated day has no returns file. Later return days
