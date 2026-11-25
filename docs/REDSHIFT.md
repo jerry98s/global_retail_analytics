@@ -124,7 +124,7 @@ Surrogate keys via dbt macros; grains documented in `docs/data-model/dimensional
 After apply, run `.\scripts\cloud\deploy_platform.ps1 -Env dev -Action airflow-vars` and set values in
 the MWAA UI. Required for `warehouse_daily_batch_pipeline`:
 
-- From Terraform: `emr_cluster_id`, `artifacts_bucket`, `redshift_*`, `pos_bronze_s3_path`, `pos_returns_bronze_s3_path`, …
+- From Terraform: `emr_cluster_id`, `artifacts_bucket`, `redshift_*`, `pos_bronze_s3_path`, `pos_loyalty_ids_s3_path`, `pos_returns_bronze_s3_path`, …
 - Manual: `redshift_user`
 
 Full list: `terraform output airflow_variables` or `.cursor/rules/airflow.mdc`.

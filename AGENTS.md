@@ -81,7 +81,10 @@ uv sync --group dev
 - `-Task quality`: `dbt test` (the Gold WAP gate) + GE `silver_events_local` (Silver event contract) + `pytest tests/unit`.
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
-  `.local/iceberg/silver/identity_resolution`. `-Task all` (iceberg source)
+  `.local/iceberg/silver/identity_resolution`. The hourly job reads the
+  per-date POS loyalty extract (`bronze/pos_loyalty_ids`), not the POS line
+  items. A POS date with no loyalty file is named in a warning and left out;
+  earlier dates stay. `-Task all` (iceberg source)
   includes this after POS Parquet. Spark first promotes raw Bronze to canonical
   Silver (ADR-011). Fidelity mode requires these exports; use `-DbtSource seeds`
   explicitly for fixtures. See `docs/runbooks/bronze-replay.md`.

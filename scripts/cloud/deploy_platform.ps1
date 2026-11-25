@@ -121,10 +121,10 @@ function Submit-SparkIdentityResolution {
     $checkpointsBucket = $Out.checkpoints_bucket_name.value
     $bronzeWarehouse   = $Out.bronze_iceberg_warehouse.value
     $silverWarehouse   = $Out.silver_iceberg_warehouse.value
-    $posPath           = $Out.pos_bronze_s3_path.value
+    $loyaltyPath       = $Out.pos_loyalty_ids_s3_path.value
 
-    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $bronzeWarehouse -or -not $silverWarehouse -or -not $posPath) {
-        throw "Missing terraform outputs for Spark submit (emr_cluster_id, artifacts/checkpoints buckets, warehouses, pos_bronze_s3_path)."
+    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $bronzeWarehouse -or -not $silverWarehouse -or -not $loyaltyPath) {
+        throw "Missing terraform outputs for Spark submit (emr_cluster_id, artifacts/checkpoints buckets, warehouses, pos_loyalty_ids_s3_path)."
     }
 
     Sync-SparkCode $artifactsBucket
@@ -135,11 +135,11 @@ function Submit-SparkIdentityResolution {
     $cmd = "aws s3 sync s3://$artifactsBucket/spark /opt/spark-identity " +
         "&& cd /opt/spark-identity/identity_resolution " +
         "&& spark-submit --master yarn --deploy-mode cluster --packages $packages " +
-        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,kafka_frontier.py identity_resolution_job.py " +
+        "--py-files graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,kafka_frontier.py,pos_loyalty.py identity_resolution_job.py " +
         "--mode hourly " +
         "--bronze-warehouse $bronzeWarehouse " +
         "--silver-warehouse $silverWarehouse " +
-        "--pos-parquet-path $posPath " +
+        "--pos-loyalty-path ${loyaltyPath}data " +
         "--checkpoint-dir s3://$checkpointsBucket/graphframes/"
 
     Write-Host "==> Submitting step spark-identity-resolution" -ForegroundColor Cyan

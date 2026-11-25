@@ -1,6 +1,7 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: {POS and POS returns Parquet bronze → Spectrum partition
+Orchestrates: {POS Parquet bronze, its per-date loyalty-id extract and POS
+returns → Spectrum partition
 register, daily Spark inventory canonicalization → inventory outcome} → dbt
 staging (owned models) → WAP clone live→pending → dbt marts (pending) → dbt
 tests (pending) → row-count gate (pending) → WAP publish to live →
@@ -77,6 +78,7 @@ Required Airflow Variables (seed from `.\scripts\cloud\deploy_platform.ps1 -Env 
                                   Tasks fetch the value at runtime, so the
                                   password itself is never an Airflow Variable.
   - pos_bronze_s3_path          : s3://<bronze-bucket>/iceberg/bronze/pos_transactions/
+  - pos_loyalty_ids_s3_path     : s3://<bronze-bucket>/iceberg/bronze/pos_loyalty_ids/
   - pos_returns_bronze_s3_path  : s3://<bronze-bucket>/iceberg/bronze/pos_returns/
   - alert_topic_arn             : SNS topic for task-failure alerts
 
@@ -267,6 +269,33 @@ with DAG(
             python -m ingestion.batch.generate_pos_parquet \
                 --date {{ ds }} \
                 --output-s3 {{ var.value.pos_bronze_s3_path }}
+        """,
+    )
+
+    # One distinct loyalty-id file per POS date, for the hourly identity job.
+    # A restatement still runs this: it reads the delivered (corrected) POS
+    # partitions and replaces only those dates. A missing partition fails here.
+    extract_pos_loyalty_ids = BashOperator(
+        task_id      = "extract_pos_loyalty_ids",
+        bash_command = """
+            set -e
+            WORK="$(mktemp -d /tmp/pos_loyalty.XXXXXX)"
+            trap 'rm -rf "$WORK"' EXIT
+            aws s3 sync --only-show-errors s3://{{ var.value.artifacts_bucket }}/ingestion "$WORK/ingestion"
+            cd "$WORK"
+            {% for dt in pos_partition_dates(params, ds) %}
+            aws s3 sync --only-show-errors \
+                "{{ var.value.pos_bronze_s3_path }}data/dt={{ dt }}/" "$WORK/pos/data/dt={{ dt }}/"
+            {% endfor %}
+            python -m ingestion.batch.extract_pos_loyalty_ids \
+                --pos-dir "$WORK/pos" \
+                --output-dir "$WORK/loyalty" \
+                --dates "{{ pos_partition_dates(params, ds) | join(',') }}"
+            {% for dt in pos_partition_dates(params, ds) %}
+            aws s3 cp --only-show-errors \
+                "$WORK/loyalty/data/dt={{ dt }}/part-00000.parquet" \
+                "{{ var.value.pos_loyalty_ids_s3_path }}data/dt={{ dt }}/part-00000.parquet"
+            {% endfor %}
         """,
     )
 
@@ -515,6 +544,7 @@ with DAG(
     (
         metadata_start
         >> generate_pos_parquet
+        >> extract_pos_loyalty_ids
         >> generate_pos_returns_parquet
         >> register_pos_partition
         >> register_pos_returns_partition

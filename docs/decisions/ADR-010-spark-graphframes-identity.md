@@ -43,7 +43,8 @@ GraphFrames batch job. Everything downstream stays in dbt.**
   cluster (Spark 3.4 on emr-6.15.0 — no new infra, per ADR-006's "cheap to
   add later" rationale).
 - Inputs: bronze `clickstream_events` (Iceberg, Hadoop catalog) + POS loyalty
-  IDs (batch Parquet prefix).
+  IDs. The loyalty IDs are the per-date extract the daily POS step writes
+  (amendment, 2026-11-25); the job does not read POS line items.
 - Outputs (Iceberg, silver warehouse):
   - `silver.identity_resolution` — one row per identifier with
     `customer_key`, `confidence_score`, `resolution_method`, component rep
@@ -122,3 +123,8 @@ GraphFrames batch job. Everything downstream stays in dbt.**
 - **Full C360 in Spark**: rejected — sessions/RFM/dim_customer are Kimball
   SQL, dbt's sweet spot (ADR-006 rationale still holds for them), and moving
   them would forfeit dbt tests + WAP for marketing Gold.
+
+## Amendment
+
+2026-11-25: the hourly job reads the per-date loyalty extract. See
+[ADR-010 amendment](./ADR-010-amendment-pos-loyalty-extract.md).

@@ -7,7 +7,8 @@ audits → WAP publish → C360 view refresh, on an hourly cadence
 
 Identity resolution (ADR-010): the Spark job
 `spark/identity_resolution/identity_resolution_job.py` rebuilds
-`silver.identity_resolution` (Iceberg) from bronze clickstream + POS before
+`silver.identity_resolution` (Iceberg) from bronze clickstream and the
+daily POS loyalty-id extract before
 dbt runs; `int_identity_resolution` is a thin view over that source, so the
 rest of the C360 chain is unchanged.
 
@@ -38,7 +39,7 @@ tasks alert through SNS (`alert_topic_arn`).
 
 Enable MWAA and set the same Redshift Variables as warehouse_daily_batch_pipeline,
 plus `emr_cluster_id`, `bronze_iceberg_warehouse`, `silver_iceberg_warehouse`,
-`checkpoints_bucket`, and `pos_bronze_s3_path` for the Spark step.
+`checkpoints_bucket`, and `pos_loyalty_ids_s3_path` for the Spark step.
 """
 
 from datetime import datetime, timedelta

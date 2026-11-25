@@ -52,14 +52,15 @@ def test_spark_step_rejects_all_and_uses_the_pool() -> None:
     hourly = spark_step("hourly")
     command = hourly["HadoopJarStep"]["Args"][-1]
     assert "--mode hourly" in command
-    assert "--pos-parquet-path" in command
+    assert "--pos-loyalty-path {{ var.value.pos_loyalty_ids_s3_path }}data" in command
+    assert "pos_loyalty.py" in command
     assert "--kafka-bootstrap-servers" not in command
     assert "spark-sql-kafka" in SPARK_PACKAGES
     assert POOL == "emr_spark"
     inventory = spark_step("inventory")["HadoopJarStep"]["Args"][-1]
     assert "--mode inventory" in inventory
     assert "--kafka-bootstrap-servers {{ var.value.msk_bootstrap_brokers }}" in inventory
-    assert "--pos-parquet-path" not in inventory
+    assert "--pos-loyalty-path" not in inventory
 
 
 def test_inventory_step_signs_into_msk_with_iam() -> None:

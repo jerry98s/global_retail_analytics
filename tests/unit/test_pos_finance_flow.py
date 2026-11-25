@@ -101,6 +101,7 @@ class TestPosFinanceFlow:
         assert "register_pos_returns_spectrum_partition" in src
         assert (
             ">> generate_pos_parquet\n"
+            "        >> extract_pos_loyalty_ids\n"
             "        >> generate_pos_returns_parquet\n"
             "        >> register_pos_partition\n"
             "        >> register_pos_returns_partition\n"

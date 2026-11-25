@@ -128,6 +128,11 @@ output "pos_returns_bronze_s3_path" {
   value       = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_returns/"
 }
 
+output "pos_loyalty_ids_s3_path" {
+  description = "S3 prefix for the per-date POS loyalty-id extract (Airflow pos_loyalty_ids_s3_path)."
+  value       = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_loyalty_ids/"
+}
+
 output "bronze_iceberg_warehouse" {
   description = "Iceberg bronze warehouse URI (Airflow bronze_iceberg_warehouse)."
   value       = "s3://${module.s3.bronze_bucket_name}/iceberg"
@@ -168,6 +173,7 @@ output "airflow_variables" {
     redshift_metadata_database = var.redshift_metadata_database_name
     redshift_secret_arn        = aws_secretsmanager_secret.redshift_admin.arn
     pos_bronze_s3_path         = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_transactions/"
+    pos_loyalty_ids_s3_path    = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_loyalty_ids/"
     pos_returns_bronze_s3_path = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_returns/"
     alert_topic_arn            = aws_sns_topic.alerts.arn
   }

@@ -31,7 +31,8 @@ SPARK_PACKAGES = (
     "software.amazon.msk:aws-msk-iam-auth:1.1.9"
 )
 PY_FILES = (
-    "graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,kafka_frontier.py"
+    "graph_logic.py,canonical_events.py,consumer_exports.py,event_contract.py,"
+    "kafka_frontier.py,pos_loyalty.py"
 )
 POOL = "emr_spark"
 SCHEDULED_MODES = ("hourly", "inventory")
@@ -56,7 +57,7 @@ def spark_step(mode: str) -> dict:
             "all is the local stack only, so it cannot run beside a scheduled mode."
         )
     identity = (
-        "--pos-parquet-path {{ var.value.pos_bronze_s3_path }} "
+        "--pos-loyalty-path {{ var.value.pos_loyalty_ids_s3_path }}data "
         if mode == "hourly" else ""
     )
     kafka = (

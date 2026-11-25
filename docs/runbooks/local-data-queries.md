@@ -15,6 +15,10 @@ Local default path reuses Flink Iceberg Parquet for dbt:
 | `bronze.pos_transactions` | `generate_pos_parquet --output-dir` (no local Flink POS job) | `.local/iceberg/bronze/pos_transactions/` |
 | `finance.dim_date` / `dim_store` | No stream | **dbt seeds only** |
 
+The daily POS step also writes `.local/iceberg/bronze/pos_loyalty_ids/`, one
+distinct loyalty-id file per POS date. The Spark identity job reads that
+extract. dbt still reads `bronze.pos_transactions` for the finance facts.
+
 ```powershell
 .\scripts\local\run_local_stack.ps1 -Task up
 .\scripts\local\run_local_stack.ps1 -Task topics

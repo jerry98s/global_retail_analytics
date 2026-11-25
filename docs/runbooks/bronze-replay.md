@@ -104,7 +104,8 @@ airflow dags trigger warehouse_daily_batch_pipeline \
   --conf '{"restate_from": "2026-10-01", "restate_to": "2026-10-03"}'
 ```
 
-That run skips the POS and returns generators, registers each partition in
+That run skips the POS and returns generators, rewrites the loyalty-id
+extract from the delivered POS partitions, registers each partition in
 the range for both, and passes `pos_restate_from` / `pos_restate_to` to dbt:
 `fact_sales`, `fact_returns` and `sales_daily_store` replace exactly those
 days in pending, and

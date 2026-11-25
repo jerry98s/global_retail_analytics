@@ -112,6 +112,16 @@ aws s3 sync "$($env:POS_BRONZE_S3_PATH)data/" .local\cloud-pos\data\
 aws s3 cp ".local\cloud-returns\data\dt=$Day\part-00000.parquet" "${Returns}data/dt=$Day/part-00000.parquet"
 ```
 
+The identity job reads the distinct loyalty ids for that day, not the POS
+line items. Extract them from the same downloaded POS files and upload the
+one file:
+
+```powershell
+$Loyalty = "<pos_loyalty_ids_s3_path from terraform output>"
+.\.venv\Scripts\python.exe -m ingestion.batch.extract_pos_loyalty_ids --pos-dir .local\cloud-pos --output-dir .local\cloud-loyalty --dates $Day
+aws s3 cp ".local\cloud-loyalty\data\dt=$Day\part-00000.parquet" "${Loyalty}data/dt=$Day/part-00000.parquet"
+```
+
 ## Step 6 — Bronze promotion and Spark GraphFrames identity
 
 ADR-011: first confirm both `bronze.*_records` tables have committed Iceberg
@@ -122,7 +132,7 @@ Do not resume catalog, dbt or GE consumers on a failed or incomplete export.
 For existing deployments, use [the migration procedure](bronze-replay.md),
 including the source-incarnation setting and fresh initial raw-job state.
 
-POS must exist before this step. The command submits the real GraphFrames job
+POS and its loyalty extract must exist before this step. The command submits the real GraphFrames job
 and blocks until the EMR step reaches `COMPLETED`; a failed or timed-out step
 returns a non-zero exit instead of allowing stale identity data downstream.
 
