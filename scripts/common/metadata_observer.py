@@ -32,7 +32,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, NamedTuple, Sequence
 
 import yaml
 
@@ -119,8 +119,14 @@ CREATE TABLE IF NOT EXISTS meta.table_freshness (
     measured_at TIMESTAMP NOT NULL,
     collector_version VARCHAR,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    freshness_basis VARCHAR,
+    last_published_at TIMESTAMP,
+    coverage_cutoff_at TIMESTAMP,
     PRIMARY KEY (execution_id, schema_name, table_name)
 );
+ALTER TABLE meta.table_freshness ADD COLUMN IF NOT EXISTS freshness_basis VARCHAR;
+ALTER TABLE meta.table_freshness ADD COLUMN IF NOT EXISTS last_published_at TIMESTAMP;
+ALTER TABLE meta.table_freshness ADD COLUMN IF NOT EXISTS coverage_cutoff_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS meta.dq_check_result (
     execution_id VARCHAR NOT NULL,
@@ -272,9 +278,25 @@ class RedshiftMetadataWriter(MetadataWriter):
 
     def ensure_schema(self) -> None:
         # Cloud schema is created by the warehouse SQL on mainmetadata DDL.
-        # Only ensure meta schema exists for resilience.
+        # Only ensure meta schema exists for resilience, and add freshness
+        # columns a table created before them lacks. Redshift has no
+        # ADD COLUMN IF NOT EXISTS.
         with self._conn.cursor() as cur:
             cur.execute("CREATE SCHEMA IF NOT EXISTS meta")
+        existing = {
+            str(row[0])
+            for row in self.fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'meta' AND table_name = 'table_freshness'"
+            )
+        }
+        if not existing:
+            return
+        for name, redshift_type in FRESHNESS_COLUMNS:
+            if name not in existing:
+                self.execute(
+                    f"ALTER TABLE meta.table_freshness ADD COLUMN {name} {redshift_type}"
+                )
 
     def execute(self, sql: str, params: Sequence[Any] | None = None) -> None:
         with self._conn.cursor() as cur:
@@ -392,18 +414,69 @@ def load_layer_catalog(catalog_dir: Path = _DEFAULT_CATALOG_DIR) -> list[dict[st
     return list(_load_yaml(catalog_dir / "layer_catalog.yml").get("objects") or [])
 
 
+# Columns meta.table_freshness gained after its first release, with their
+# Redshift types. The DuckDB DDL above adds the same columns.
+FRESHNESS_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("freshness_basis", "VARCHAR(16)"),
+    ("last_published_at", "TIMESTAMP"),
+    ("coverage_cutoff_at", "TIMESTAMP"),
+)
+
+FRESHNESS_BASES = ("event", "published", "cutoff")
+
+
+class FreshnessTarget(NamedTuple):
+    """One table to measure. The SLA is judged on the ``basis`` timestamp.
+
+    event: latest business event (``timestamp_column``).
+    published: latest committed release (``published_column``).
+    cutoff: latest source time proven complete (``cutoff_column``).
+    """
+
+    schema: str
+    table: str
+    timestamp_column: str | None
+    sla_minutes: int | None
+    published_column: str | None = None
+    cutoff_column: str | None = None
+    basis: str = "event"
+
+
 def freshness_targets(
     catalog_dir: Path = _DEFAULT_CATALOG_DIR,
-) -> list[tuple[str, str, str | None, int]]:
-    """(schema, table, timestamp_column, sla_minutes) for active objects with an SLA."""
+) -> list[FreshnessTarget]:
+    """Freshness targets for active catalog objects with an SLA."""
     targets = []
     for obj in load_layer_catalog(catalog_dir):
         sla = obj.get("freshness_sla_minutes")
         if sla is None or not obj.get("is_active", True):
             continue
         schema, table = obj["object_fqn"].split(".", 1)
-        targets.append((schema, table, obj.get("timestamp_column"), int(sla)))
+        target = FreshnessTarget(
+            schema,
+            table,
+            obj.get("timestamp_column"),
+            int(sla),
+            obj.get("published_column"),
+            obj.get("cutoff_column"),
+            obj.get("freshness_basis") or "event",
+        )
+        if target.basis not in FRESHNESS_BASES:
+            raise ValueError(f"{obj['object_fqn']}: unknown freshness_basis {target.basis!r}")
+        if _basis_column(target) is None:
+            raise ValueError(
+                f"{obj['object_fqn']}: freshness_basis {target.basis} has no column"
+            )
+        targets.append(target)
     return targets
+
+
+def _basis_column(target: FreshnessTarget) -> str | None:
+    return {
+        "event": target.timestamp_column,
+        "published": target.published_column,
+        "cutoff": target.cutoff_column,
+    }[target.basis]
 
 
 _MODEL_REF = re.compile(r"ref\('([^']+)'\)")
@@ -796,6 +869,10 @@ def _as_loaded_through(value: Any, hour_value: int | None = None) -> datetime | 
         if hour_value is not None:
             return base + timedelta(hours=hour_value + 1)
         return base + timedelta(days=1)
+    if re.fullmatch(r"\d{10}", text):
+        # YYYYMMDDHH exclusive hour key (closed_hour_exclusive): complete up to
+        # the start of that hour.
+        return datetime.strptime(text, "%Y%m%d%H")
     try:
         return datetime.fromisoformat(text.replace("Z", "")).replace(tzinfo=None)
     except ValueError:
@@ -916,22 +993,58 @@ def record_pipeline_signals(
     return len(signals)
 
 
+def _max_event_at(analytics_conn: Any, schema: str, table: str, ts_col: str) -> datetime | None:
+    """Latest event time, using a companion ``*_hour`` column for date keys."""
+    hour_col = _infer_hour_column(ts_col)
+    if hour_col:
+        try:
+            row = _reader_execute(
+                analytics_conn,
+                f"SELECT MAX({ts_col}), MAX({hour_col}) FROM {schema}.{table} "
+                f"WHERE {ts_col} = (SELECT MAX({ts_col}) FROM {schema}.{table})",
+            )
+            if row and row[0] is not None:
+                hour = int(row[1]) if row[1] is not None else None
+                return _as_loaded_through(row[0], hour)
+        except Exception:  # noqa: BLE001
+            # No hour column: fall back to the date alone.
+            pass
+    return _max_loaded_through(analytics_conn, schema, table, ts_col)
+
+
+def _max_loaded_through(analytics_conn: Any, schema: str, table: str, col: str) -> datetime | None:
+    row = _reader_execute(analytics_conn, f"SELECT MAX({col}) FROM {schema}.{table}")
+    if row and row[0] is not None:
+        return _as_loaded_through(row[0])
+    return None
+
+
 def collect_table_freshness(
     writer: MetadataWriter,
     analytics_conn: Any,
     *,
     execution_id: str,
-    targets: Sequence[tuple[str, str, str | None, int | None]] | None = None,
+    targets: Sequence[tuple[Any, ...]] | None = None,
     measured_at: datetime | None = None,
 ) -> int:
+    """Write one meta.table_freshness row per target.
+
+    Event, publication and coverage-cutoff times are recorded separately; the
+    SLA is judged on the target's basis. A table can be valid and current with
+    an old event time, for example inventory with no movements.
+    """
     measured = measured_at or utc_now()
     measured_s = _iso(measured)
     written = 0
     if targets is None:
         targets = freshness_targets()
-    for schema, table, ts_col, sla in targets:
+    for raw in targets:
+        target = FreshnessTarget(*raw)
+        schema, table, sla = target.schema, target.table, target.sla_minutes
         row_count: int | None = None
         max_ts: datetime | None = None
+        published_at: datetime | None = None
+        cutoff_at: datetime | None = None
         lag: int | None = None
         sla_status = "unknown"
         try:
@@ -939,37 +1052,21 @@ def collect_table_freshness(
                 analytics_conn, f"SELECT COUNT(*) FROM {schema}.{table}"
             )
             row_count = int(row[0]) if row and row[0] is not None else 0
-            if ts_col:
-                # Check if this is an hourly table with a companion hour column
-                hour_col = _infer_hour_column(ts_col)
-                max_hour: int | None = None
-                
-                # First try to query with hour column if it might exist
-                if hour_col:
-                    try:
-                        row_with_hour = _reader_execute(
-                            analytics_conn,
-                            f"SELECT MAX({ts_col}), MAX({hour_col}) FROM {schema}.{table} "
-                            f"WHERE {ts_col} = (SELECT MAX({ts_col}) FROM {schema}.{table})",
-                        )
-                        if row_with_hour and row_with_hour[0] is not None:
-                            max_hour = int(row_with_hour[1]) if row_with_hour[1] is not None else None
-                            max_ts = _as_loaded_through(row_with_hour[0], max_hour)
-                    except Exception:  # noqa: BLE001
-                        # Hour column doesn't exist, fall back to date-only
-                        max_hour = None
-                
-                # If hour-based query failed or hour column doesn't exist, use date only
-                if max_ts is None:
-                    row_ts = _reader_execute(
-                        analytics_conn,
-                        f"SELECT MAX({ts_col}) FROM {schema}.{table}",
-                    )
-                    if row_ts and row_ts[0] is not None:
-                        max_ts = _as_loaded_through(row_ts[0])
-                
-                if max_ts is not None:
-                    lag = int((measured - max_ts).total_seconds() / 60)
+            if target.timestamp_column:
+                max_ts = _max_event_at(analytics_conn, schema, table, target.timestamp_column)
+            if target.published_column:
+                published_at = _max_loaded_through(
+                    analytics_conn, schema, table, target.published_column
+                )
+            if target.cutoff_column:
+                cutoff_at = _max_loaded_through(
+                    analytics_conn, schema, table, target.cutoff_column
+                )
+            basis_at = {"event": max_ts, "published": published_at, "cutoff": cutoff_at}[
+                target.basis
+            ]
+            if basis_at is not None:
+                lag = int((measured - basis_at).total_seconds() / 60)
             if sla is None:
                 sla_status = "ok" if row_count is not None else "unknown"
             elif lag is None:
@@ -995,20 +1092,24 @@ def collect_table_freshness(
             """
             INSERT INTO meta.table_freshness (
                 execution_id, schema_name, table_name, row_count, max_event_ts,
-                lag_minutes, sla_status, measured_at, collector_version, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                lag_minutes, sla_status, measured_at, collector_version, created_at,
+                freshness_basis, last_published_at, coverage_cutoff_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 execution_id,
                 schema,
                 table,
                 row_count,
-                _iso(max_ts) if isinstance(max_ts, datetime) else max_ts,
+                _iso(max_ts),
                 lag,
                 sla_status,
                 measured_s,
                 COLLECTOR_VERSION,
                 measured_s,
+                target.basis,
+                _iso(published_at),
+                _iso(cutoff_at),
             ),
         )
         written += 1

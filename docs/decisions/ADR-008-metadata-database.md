@@ -53,6 +53,15 @@ keep queries lightweight.
 - Catalog seeds live in `metadata/catalog/*.yml` and are upserted by the
   collector.
 - Freshness and DQ rows are append-only, keyed by `execution_id`.
+- A freshness row records three times: `max_event_ts` (latest business event),
+  `last_published_at` (latest committed release) and `coverage_cutoff_at`
+  (latest source time proven complete). `freshness_basis` names the one its
+  SLA is judged on, set per object in `layer_catalog.yml`. Inventory with no
+  movements keeps an old event time while its daily run is current, so
+  `silver.inventory_events` has no event SLA: `silver.inventory_cutoff`
+  measures the daily Spark run, `control.inventory_publication` the finance
+  publish, and `silver.inventory_hourly` stays the hourly Flink check. These
+  rows are observations from a fail-open collector, not the release record.
 - Summary models read **one** Gold fact each (no fact-to-fact joins).
 
 ## Alternatives considered

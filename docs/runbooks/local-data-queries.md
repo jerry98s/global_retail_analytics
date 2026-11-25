@@ -229,7 +229,8 @@ print(con.execute('''
   limit 5
 ''').fetchdf())
 print(con.execute('''
-  select schema_name, table_name, row_count, sla_status, measured_at
+  select schema_name, table_name, row_count, freshness_basis, max_event_ts,
+         last_published_at, coverage_cutoff_at, lag_minutes, sla_status, measured_at
   from meta.table_freshness
   order by measured_at desc
   limit 20
