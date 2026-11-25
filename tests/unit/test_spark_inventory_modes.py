@@ -52,7 +52,8 @@ def test_spark_step_rejects_all_and_uses_the_pool() -> None:
     hourly = spark_step("hourly")
     command = hourly["HadoopJarStep"]["Args"][-1]
     assert "--mode hourly" in command
-    assert "--pos-loyalty-path {{ var.value.pos_loyalty_ids_s3_path }}data" in command
+    assert "--pos-loyalty-path {{ var.value.pos_loyalty_ids_s3_path }} " in command
+    assert "pos_loyalty_ids_s3_path }}data" not in command
     assert "pos_loyalty.py" in command
     assert "--kafka-bootstrap-servers" not in command
     assert "spark-sql-kafka" in SPARK_PACKAGES
@@ -92,6 +93,7 @@ def test_warehouse_dag_runs_inventory_beside_pos_and_holds_on_failure() -> None:
     assert pos.index("register_pos_partition") < pos.index("dbt_staging")
     outcome = src.split("inventory_outcome = PythonOperator(", 1)[1].split(")", 1)[0]
     assert "TriggerRule.ALL_DONE" in outcome
+    assert 'select(WAREHOUSE_LIVE_MODELS) + INVENTORY_HOLD' in src
     assert 'OWNED_SELECT + INVENTORY_HOLD' in src
     assert 'TEST_SELECT + INVENTORY_HOLD' in src
     assert "identity_graph" not in src.split("OWNED_SELECT", 1)[1].split("TEST_SELECT", 1)[0]
@@ -160,13 +162,23 @@ def test_submit_adds_the_step_when_the_cluster_is_idle() -> None:
     assert client.added[0]["JobFlowId"] == "j-1"
 
 
-def test_hold_excludes_inventory_marts_and_their_audits_only() -> None:
+def test_hold_excludes_inventory_staging_marts_and_audits() -> None:
     assert inventory_hold_exclude("complete") == ""
     assert inventory_hold_exclude(None) == ""
     held = inventory_hold_exclude("held")
     assert held == f" --exclude {INVENTORY_HOLD_EXCLUDE}"
-    for node in ("fact_inventory_snapshot+", "inventory_publication+", "inventory_canonical_run_is_one"):
+    for node in (
+        "stg_inventory_events",
+        "int_inventory_cutoff",
+        "int_inventory_hourly",
+        "int_inventory_reconciliation_hourly",
+        "fact_inventory_snapshot+",
+        "inventory_publication+",
+        "inventory_canonical_run_is_one",
+    ):
         assert node in held
+    assert "stg_pos_transactions" not in held
+    assert "stg_pos_returns" not in held
     assert "fact_sales" not in held and "fact_returns" not in held
 
 

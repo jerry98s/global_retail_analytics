@@ -1,32 +1,46 @@
-"""Write one distinct loyalty-id file per POS date.
+"""Commit one distinct loyalty-id file per POS date.
 
-The hourly identity job reads this extract instead of the POS line-item
-files. Each requested date is its own partition, so a missing day leaves the
-other days in place and a restated day replaces only itself.
+Files for a run land under ``run=<id>/`` first. The ``manifest`` is replaced
+only after every requested date has been written, and it keeps previously
+committed dates that this run did not touch. A failure deletes the new run
+and leaves the previous manifest in place, so a reader never sees a mix of
+old and new dates.
 
-Layouts, matching the POS bronze partitions::
+Layouts::
 
   <pos-dir>/data/dt=<YYYY-MM-DD>/*.parquet
-  <output-dir>/data/dt=<YYYY-MM-DD>/part-00000.parquet
-  s3://<bucket>/<prefix>/data/dt=<YYYY-MM-DD>/part-00000.parquet
+  <output-dir>/run=<id>/dt=<YYYY-MM-DD>/part-00000.parquet
+  <output-dir>/manifest
 
 Blank and whitespace-only loyalty ids are dropped. A requested date with no
-POS Parquet file fails; an empty file is a day with no loyalty ids and is
-written as an empty extract.
+POS Parquet file fails. An empty POS file is a committed day with no loyalty
+ids.
 """
 
 from __future__ import annotations
 
 import argparse
 import io
+import json
+import os
 import re
-from datetime import date
+import shutil
+import uuid
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from spark.identity_resolution.pos_loyalty import merge_manifest, parse_manifest
+
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MANIFEST_NAME = "manifest"
+
+
+def new_run_id() -> str:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
 def parse_dates(text: str) -> list[str]:
@@ -71,25 +85,44 @@ def _read_local_partition(part_dir: Path) -> pa.Table:
     return pa.concat_tables(tables)
 
 
-def _write_local(output_dir: Path, txn_date: str, table: pa.Table) -> str:
-    part_dir = output_dir / "data" / f"dt={txn_date}"
-    part_dir.mkdir(parents=True, exist_ok=True)
-    for old in part_dir.glob("*.parquet"):
-        old.unlink()
-    path = part_dir / "part-00000.parquet"
-    pq.write_table(table, path, compression="snappy")
-    return str(path)
+def _read_local_manifest(root: Path) -> dict | None:
+    path = root / MANIFEST_NAME
+    if not path.is_file():
+        return None
+    return parse_manifest(json.loads(path.read_text(encoding="utf-8")))
 
 
-def extract_local(pos_dir: str | Path, dates: list[str], output_dir: str | Path) -> list[str]:
-    """Extract ``dates`` from a local POS tree. Returns the files written."""
+def _commit_local_manifest(root: Path, run_dir: Path, payload: dict) -> None:
+    temporary = run_dir / "manifest.tmp"
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(temporary, root / MANIFEST_NAME)
+
+
+def extract_local(pos_dir: str | Path, dates: list[str], output_dir: str | Path) -> dict:
+    """Extract ``dates`` and commit the manifest. Returns the committed manifest."""
     source = Path(pos_dir)
-    target = Path(output_dir)
-    written: list[str] = []
-    for txn_date in dates:
-        table = distinct_loyalty_table(_read_local_partition(source / "data" / f"dt={txn_date}"))
-        written.append(_write_local(target, txn_date, table))
-    return written
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    run_id = new_run_id()
+    run_dir = root / f"run={run_id}"
+    created = False
+    try:
+        run_dir.mkdir()
+        created = True
+        updates: list[tuple[str, str]] = []
+        for txn_date in dates:
+            table = distinct_loyalty_table(_read_local_partition(source / "data" / f"dt={txn_date}"))
+            part_dir = run_dir / f"dt={txn_date}"
+            part_dir.mkdir()
+            pq.write_table(table, part_dir / "part-00000.parquet", compression="snappy")
+            updates.append((txn_date, f"run={run_id}/dt={txn_date}/part-00000.parquet"))
+        payload = merge_manifest(_read_local_manifest(root), updates, run_id)
+        _commit_local_manifest(root, run_dir, payload)
+    except Exception:
+        if created:
+            shutil.rmtree(run_dir, ignore_errors=True)
+        raise
+    return payload
 
 
 def parse_s3_uri(uri: str) -> tuple[str, str]:
@@ -127,33 +160,71 @@ def _read_s3_partition(client, bucket: str, prefix: str, txn_date: str) -> pa.Ta
     return pa.concat_tables(tables)
 
 
-def _write_s3(client, bucket: str, prefix: str, txn_date: str, table: pa.Table) -> str:
-    part = f"{prefix}data/dt={txn_date}/"
-    key = f"{part}part-00000.parquet"
+def _missing_object(exc: Exception) -> bool:
+    if isinstance(exc, KeyError):
+        return True
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        return response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}
+    return False
+
+
+def _read_s3_manifest(client, bucket: str, key: str) -> dict | None:
+    try:
+        body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+    except Exception as exc:
+        if _missing_object(exc):
+            return None
+        raise
+    return parse_manifest(json.loads(body))
+
+
+def _put_parquet(client, bucket: str, key: str, table: pa.Table) -> None:
     buffer = io.BytesIO()
     pq.write_table(table, buffer, compression="snappy")
-    for old in _s3_parquet_keys(client, bucket, part):
-        if old != key:
-            client.delete_object(Bucket=bucket, Key=old)
     client.put_object(Bucket=bucket, Key=key, Body=buffer.getvalue())
-    return f"s3://{bucket}/{key}"
 
 
-def extract_s3(pos_s3: str, output_s3: str, dates: list[str], client=None) -> list[str]:
-    """Extract ``dates`` from POS objects in S3. Returns the object URIs written."""
+def extract_s3(pos_s3: str, output_s3: str, dates: list[str], client=None) -> dict:
+    """Extract ``dates`` and commit the manifest. Returns the committed manifest.
+
+    New objects are removed if a later date fails, and the previous manifest
+    is left untouched.
+    """
     if client is None:
         import boto3
 
         client = boto3.client("s3")
     source_bucket, source_prefix = parse_s3_uri(pos_s3)
     target_bucket, target_prefix = parse_s3_uri(output_s3)
-    written: list[str] = []
-    for txn_date in dates:
-        table = distinct_loyalty_table(
-            _read_s3_partition(client, source_bucket, source_prefix, txn_date)
+    run_id = new_run_id()
+    uploaded: list[str] = []
+    try:
+        updates: list[tuple[str, str]] = []
+        for txn_date in dates:
+            table = distinct_loyalty_table(
+                _read_s3_partition(client, source_bucket, source_prefix, txn_date)
+            )
+            relative = f"run={run_id}/dt={txn_date}/part-00000.parquet"
+            key = f"{target_prefix}{relative}"
+            _put_parquet(client, target_bucket, key, table)
+            uploaded.append(key)
+            updates.append((txn_date, relative))
+        payload = merge_manifest(
+            _read_s3_manifest(client, target_bucket, f"{target_prefix}{MANIFEST_NAME}"),
+            updates,
+            run_id,
         )
-        written.append(_write_s3(client, target_bucket, target_prefix, txn_date, table))
-    return written
+        client.put_object(
+            Bucket=target_bucket,
+            Key=f"{target_prefix}{MANIFEST_NAME}",
+            Body=json.dumps(payload).encode("utf-8"),
+        )
+    except Exception:
+        for key in uploaded:
+            client.delete_object(Bucket=target_bucket, Key=key)
+        raise
+    return payload
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -179,13 +250,15 @@ def main(argv: list[str] | None = None) -> None:
     if args.pos_dir:
         if not args.output_dir:
             raise SystemExit("--pos-dir writes with --output-dir.")
-        written = extract_local(args.pos_dir, dates, args.output_dir)
+        committed = extract_local(args.pos_dir, dates, args.output_dir)
     else:
         if not args.output_s3:
             raise SystemExit("--pos-s3 writes with --output-s3.")
-        written = extract_s3(args.pos_s3, args.output_s3, dates)
-    for path in written:
-        print(path)
+        committed = extract_s3(args.pos_s3, args.output_s3, dates)
+    print(
+        f"committed loyalty extract {committed['run_id']} "
+        f"dates={','.join(committed['dates'])}"
+    )
 
 
 if __name__ == "__main__":

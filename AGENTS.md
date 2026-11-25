@@ -86,10 +86,9 @@ uv sync --group dev
   `.local/iceberg/silver/identity_resolution`. `-SparkMode all|hourly|inventory`
   (default `all`) matches the job: `hourly` is clickstream and identity;
   `inventory` is canonical inventory plus Kafka coverage; `all` writes
-  both and must not overlap a scheduled mode. Identity reads
-  `.local/iceberg/bronze/pos_loyalty_ids` (one distinct loyalty-id file per
-  POS date). A POS date with no loyalty file is named in a warning and left
-  out; earlier dates stay. `silver.inventory_hourly` is
+  both and must not overlap a scheduled mode. Identity reads the committed
+  manifest under `.local/iceberg/bronze/pos_loyalty_ids`. A POS date that
+  manifest does not cover fails the job before it writes. `silver.inventory_hourly` is
   Flink's Iceberg table, loaded from its current snapshot, not a Spark export.
   The container uses compose
   `kafka:29092`, not the host `127.0.0.1:9092`. `-Task all` (iceberg source)
@@ -111,7 +110,7 @@ live on `main`.
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` (01:15 UTC) — POS beside inventory Spark (`--mode inventory`), then dbt staging + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete inventory coverage holds the cutoff and warns; a failed inventory Spark step alerts and publishes POS with inventory unchanged. After publish it promotes the live run's `inventory_frontier/published.json`, where the next inventory run starts. Param `acknowledge_kafka_loss` accepts partitions whose offsets expired from Kafka before Bronze had them.
+- `warehouse_daily_batch_pipeline` (01:15 UTC) — POS beside inventory Spark (`--mode inventory`), then dbt staging + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete inventory coverage holds the cutoff and warns; a failed inventory Spark step alerts, skips inventory staging, and publishes POS with inventory unchanged. After publish it promotes the live run's `inventory_frontier/published.json`, where the next inventory run starts. Param `acknowledge_kafka_loss` accepts partitions whose offsets expired from Kafka before Bronze had them.
 - `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` (clickstream and identity) + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Both submit only when no other Spark step is on the cluster. Airflow rejects `--mode all`.
 - `streaming_manual_flink_jobs`
 - `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC

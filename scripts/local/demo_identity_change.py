@@ -179,7 +179,7 @@ def main() -> int:
         _REPO / ".local" / "iceberg" / "bronze" / "pos_loyalty_ids",
     )
     print(f"  wrote {path}", flush=True)
-    print(f"  loyalty extract {loyalty[0]}", flush=True)
+    print(f"  loyalty extract {loyalty['run_id']}", flush=True)
     _produce(1)
     print(f"  waiting {_BRONZE_WAIT_SECONDS}s for the Flink checkpoint", flush=True)
     time.sleep(_BRONZE_WAIT_SECONDS)

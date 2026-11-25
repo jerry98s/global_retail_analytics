@@ -175,13 +175,14 @@ def test_loyalty_extract_covers_the_run_dates_including_a_restatement() -> None:
     daily = _render(_task_template("extract_pos_loyalty_ids", "bash_command"), _DAILY)
     assert "exit 0" not in daily
     assert '--dates "2026-11-04"' in daily
-    assert "pos_loyalty_ids/data/dt=2026-11-04/part-00000.parquet" in daily
+    assert 'pos_loyalty_ids/data/dt=' not in daily
+    assert daily.index('--exclude "manifest"') < daily.rindex("pos_loyalty_ids/manifest")
     ranged = _render(_task_template("extract_pos_loyalty_ids", "bash_command"), _RANGE)
     assert "extract_pos_loyalty_ids" in ranged
     assert '--dates "2026-10-01,2026-10-02,2026-10-03"' in ranged
     for day in ("2026-10-01", "2026-10-02", "2026-10-03"):
         assert f"pos_transactions/data/dt={day}/" in ranged
-        assert f"pos_loyalty_ids/data/dt={day}/part-00000.parquet" in ranged
+    assert ranged.index('--exclude "manifest"') < ranged.rindex("pos_loyalty_ids/manifest")
 
 
 def test_returns_lookback_comes_from_the_generator() -> None:

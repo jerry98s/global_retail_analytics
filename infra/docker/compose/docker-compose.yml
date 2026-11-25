@@ -166,7 +166,7 @@ services:
           --acknowledge-kafka-loss "$${ACKNOWLEDGE_KAFKA_LOSS:-}" \
           --bronze-warehouse file:///tmp/iceberg \
           --silver-warehouse file:///tmp/iceberg \
-          --pos-loyalty-path /tmp/iceberg/bronze/pos_loyalty_ids/data \
+          --pos-loyalty-path /tmp/iceberg/bronze/pos_loyalty_ids \
           --checkpoint-dir /tmp/graphframes-checkpoints
 
 volumes:

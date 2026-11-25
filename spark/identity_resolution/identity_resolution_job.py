@@ -13,10 +13,10 @@ GraphFrames connected components, and writes:
 - ``silver.device_session_associations`` — signed-in intervals per device and
   session instance (attribution only; never graph edges).
 
-POS input is the daily distinct loyalty-id extract, one file per POS date
-(``ingestion/batch/extract_pos_loyalty_ids.py``). The job does not read POS
-line items. A POS date with no loyalty file is logged and left out; dates
-that already have a file are still read.
+POS input is the committed loyalty-id manifest
+(``ingestion/batch/extract_pos_loyalty_ids.py``). The job reads only the
+files that manifest names. A POS date the manifest does not cover fails the
+run before any identity table is written.
 
 The business rules live in ``graph_logic.py`` and are shared with the dbt
 seed fixture generator — this job mirrors them in DataFrame/GraphFrames
@@ -35,7 +35,7 @@ warehouse DAG:
       identity_resolution_job.py --mode hourly \
       --bronze-warehouse s3://<bucket>-bronze/iceberg \
       --silver-warehouse s3://<bucket>-silver/iceberg \
-      --pos-loyalty-path s3://<bucket>-bronze/iceberg/bronze/pos_loyalty_ids/data \
+      --pos-loyalty-path s3://<bucket>-bronze/iceberg/bronze/pos_loyalty_ids/ \
       --checkpoint-dir s3://<bucket>-checkpoints/graphframes/
 
 Local (laptop, local-testing-version stack):
@@ -49,6 +49,7 @@ Local (laptop, local-testing-version stack):
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -67,12 +68,13 @@ try:
         write_inventory_coverage,
     )
     from .pos_loyalty import (
-        dates_without_loyalty,
-        local_parquet_bytes,
         local_partition_dates,
-        missing_loyalty_message,
+        local_path,
+        parse_manifest,
         partition_dates_from_names,
         pos_data_path_beside,
+        require_committed_coverage,
+        resolve_files,
     )
 except ImportError:
     from canonical_events import log_stage, promote_events
@@ -85,12 +87,13 @@ except ImportError:
         write_inventory_coverage,
     )
     from pos_loyalty import (
-        dates_without_loyalty,
-        local_parquet_bytes,
         local_partition_dates,
-        missing_loyalty_message,
+        local_path,
+        parse_manifest,
         partition_dates_from_names,
         pos_data_path_beside,
+        require_committed_coverage,
+        resolve_files,
     )
 
 try:  # package import in tests; script import under spark-submit
@@ -165,7 +168,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--silver-warehouse", required=True,
                         help="Iceberg Hadoop catalog warehouse for silver.identity_* output")
     parser.add_argument("--pos-loyalty-path",
-                        help="Per-date distinct POS loyalty ids (plain Parquet under data/dt=)")
+                        help="Committed POS loyalty extract root (manifest plus run directories)")
     parser.add_argument("--checkpoint-dir", default="/tmp/graphframes-checkpoints",
                         help="GraphFrames checkpoint dir (S3 on EMR, local path otherwise)")
     parser.add_argument(
@@ -486,20 +489,6 @@ def _hadoop_partition_dates(spark: SparkSession, uri: str) -> set[str]:
     return partition_dates_from_names(names)
 
 
-def _hadoop_parquet_bytes(spark: SparkSession, uri: str) -> int:
-    """Size the loyalty input where the driver has no local copy (S3)."""
-    path, fs = _hadoop_fs(spark, uri)
-    if not fs.exists(path):
-        return 0
-    total = 0
-    listing = fs.listFiles(path, True)
-    while listing.hasNext():
-        status = listing.next()
-        if status.getPath().getName().endswith(".parquet"):
-            total += int(status.getLen())
-    return total
-
-
 def _partition_dates(spark: SparkSession, uri: str) -> set[str]:
     local = local_partition_dates(uri)
     if local is not None:
@@ -507,39 +496,59 @@ def _partition_dates(spark: SparkSession, uri: str) -> set[str]:
     return _hadoop_partition_dates(spark, uri)
 
 
-def _input_bytes(spark: SparkSession, uri: str) -> int:
-    local = local_parquet_bytes(uri)
+def _hadoop_text(spark: SparkSession, uri: str) -> str | None:
+    path, fs = _hadoop_fs(spark, uri)
+    if not fs.exists(path):
+        return None
+    rows = spark.sparkContext.wholeTextFiles(uri).collect()
+    if not rows:
+        return None
+    return rows[0][1]
+
+
+def _read_manifest(spark: SparkSession, loyalty_path: str) -> dict | None:
+    uri = loyalty_path.rstrip("/\\") + "/manifest"
+    local = local_path(uri)
     if local is not None:
-        return local
-    return _hadoop_parquet_bytes(spark, uri)
+        if not local.is_file():
+            return None
+        return parse_manifest(json.loads(local.read_text(encoding="utf-8")))
+    text = _hadoop_text(spark, uri)
+    if text is None:
+        return None
+    return parse_manifest(json.loads(text))
 
 
-def _warn_missing_loyalty_dates(spark: SparkSession, loyalty_path: str) -> None:
+def pin_loyalty(spark: SparkSession, loyalty_path: str) -> list[str]:
+    """Files committed by the current manifest.
+
+    Called before the job writes anything. A POS date the manifest does not
+    cover raises, so the previous identity tables stay as they are.
+    """
+    manifest = _read_manifest(spark, loyalty_path)
     pos_path = pos_data_path_beside(loyalty_path)
-    if not pos_path:
-        return
-    try:
-        missing = dates_without_loyalty(
-            _partition_dates(spark, pos_path),
-            _partition_dates(spark, loyalty_path),
-        )
-    except Exception as exc:
-        print(
-            f"WARNING: could not compare POS dates with the loyalty extract: {exc}",
-            flush=True,
-        )
-        return
-    if missing:
-        print(missing_loyalty_message(missing), flush=True)
+    if pos_path:
+        require_committed_coverage(_partition_dates(spark, pos_path), manifest)
+    elif manifest is None:
+        raise ValueError(f"loyalty extract has no committed manifest: {loyalty_path}")
+    if manifest is None:
+        return []
+    return resolve_files(loyalty_path, manifest)
 
 
-def _read_loyalty(spark: SparkSession, loyalty_path: str) -> tuple[DataFrame, int]:
-    """Loyalty ids, and the bytes read. An empty extract is an empty frame."""
-    _warn_missing_loyalty_dates(spark, loyalty_path)
-    nbytes = _input_bytes(spark, loyalty_path)
-    if nbytes == 0:
+def _file_bytes(spark: SparkSession, uri: str) -> int:
+    local = local_path(uri)
+    if local is not None:
+        return local.stat().st_size if local.is_file() else 0
+    path, fs = _hadoop_fs(spark, uri)
+    return int(fs.getFileStatus(path).getLen())
+
+
+def _loyalty_frame(spark: SparkSession, paths: list[str]) -> tuple[DataFrame, int]:
+    nbytes = sum(_file_bytes(spark, path) for path in paths)
+    if not paths:
         return spark.createDataFrame([], schema="loyalty_id string"), 0
-    return spark.read.parquet(loyalty_path), nbytes
+    return spark.read.parquet(*paths), nbytes
 
 
 def main() -> None:
@@ -554,6 +563,9 @@ def main() -> None:
         raise ValueError('--kafka-bootstrap-servers is required when inventory coverage is written')
     client_properties = kafka_client_properties(args.kafka_security_protocol, args.kafka_sasl_mechanism)
     acknowledged_loss = parse_acknowledged_loss(args.acknowledge_kafka_loss, args.inventory_partitions)
+    # Pin the loyalty manifest before any write. A gap fails this run and
+    # leaves the previous identity tables in place.
+    loyalty_files = pin_loyalty(spark, args.pos_loyalty_path) if run_identity else []
     # One run id for every export this mode writes, so dbt can check it combined one run.
     run_id = new_run_id()
     snapshots: dict[str, int | None] = {}
@@ -587,7 +599,7 @@ def main() -> None:
         return
     identity_started = time.perf_counter()
     clickstream = events['clickstream']
-    pos, pos_bytes = _read_loyalty(spark, args.pos_loyalty_path)
+    pos, pos_bytes = _loyalty_frame(spark, loyalty_files)
 
     claims = loyalty_claims(clickstream)
     edges = build_edges(claims)

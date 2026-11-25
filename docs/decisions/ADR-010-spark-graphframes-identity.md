@@ -125,5 +125,6 @@ GraphFrames batch job. Everything downstream stays in dbt.**
 
 ## Amendment
 
-2026-11-25: the hourly job reads the per-date loyalty extract. See
+2026-11-25: the hourly job reads the committed per-date loyalty extract. A
+POS date missing from that manifest blocks identity publication. See
 [ADR-010 amendment](./ADR-010-amendment-pos-loyalty-extract.md).

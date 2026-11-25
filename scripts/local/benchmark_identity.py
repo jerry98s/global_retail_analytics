@@ -166,6 +166,27 @@ def _scale_dir(root: Path, copies: int) -> Path:
     return root / f"scale-{copies}"
 
 
+def _commit_benchmark_manifest(pos: Path) -> None:
+    """One manifest over the replicated POS files.
+
+    The copy is not a ``pos_loyalty_ids`` tree, so the identity job skips the
+    POS-date check and reads only the files named here.
+    """
+    files = sorted(
+        path.relative_to(pos).as_posix()
+        for path in pos.rglob("*.parquet")
+        if path.is_file()
+    )
+    if not files:
+        raise SystemExit(f"replicated POS has no parquet files: {pos}")
+    payload = {
+        "run_id": "benchmark",
+        "dates": ["1970-01-01"],
+        "files": [{"date": "1970-01-01", "relative_path": relative} for relative in files],
+    }
+    (pos / "manifest").write_text(json.dumps(payload), encoding="utf-8")
+
+
 def run_scale(copies: int, source: Path, benchmark: Path, driver_memory: str, prepare: bool) -> dict:
     import time
 
@@ -205,6 +226,7 @@ def run_scale(copies: int, source: Path, benchmark: Path, driver_memory: str, pr
             )
         if proc.returncode != 0:
             raise SystemExit(f"replicate {copies}x failed; see {replicate_log}")
+    _commit_benchmark_manifest(dest / "pos")
     prepared = _input_counts(replicate_log.read_text(encoding="utf-8"))
     identity_log = dest / "identity.log"
     subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True, check=False)
