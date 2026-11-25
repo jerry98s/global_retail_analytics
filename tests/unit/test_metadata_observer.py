@@ -277,14 +277,173 @@ def test_seed_catalogs_refuses_partial_sources(tmp_path: Path) -> None:
 
 def test_freshness_targets_come_from_layer_catalog() -> None:
     targets = {
-        f"{schema}.{table}": (ts, sla)
-        for schema, table, ts, sla in mo.freshness_targets(_REPO / "metadata" / "catalog")
+        f"{t.schema}.{t.table}": t for t in mo.freshness_targets(_REPO / "metadata" / "catalog")
     }
-    assert targets["bronze.clickstream_records"] == ("ingested_at", 60)
-    assert targets["summary.inventory_position_daily"] == ("snapshot_date_key", 1440)
+    assert targets["bronze.clickstream_records"][2:4] == ("ingested_at", 60)
+    assert targets["summary.inventory_position_daily"][2:4] == ("snapshot_date_key", 1440)
+    assert targets["bronze.clickstream_records"].basis == "event"
     assert "bronze.clickstream_events" not in targets
     # No SLA, no freshness probe.
     assert "finance.dim_store" not in targets
+
+
+def test_daily_inventory_is_measured_by_its_run_not_by_event_time() -> None:
+    targets = {
+        f"{t.schema}.{t.table}": t for t in mo.freshness_targets(_REPO / "metadata" / "catalog")
+    }
+    # Hourly Flink and the daily Spark run have separate targets.
+    assert targets["silver.inventory_hourly"].sla_minutes == 120
+    assert "silver.inventory_events" not in targets
+    cutoff = targets["silver.inventory_cutoff"]
+    assert (cutoff.basis, cutoff.cutoff_column, cutoff.sla_minutes) == (
+        "cutoff", "closed_hour_exclusive", 1680,
+    )
+    publication = targets["control.inventory_publication"]
+    assert (publication.basis, publication.published_column, publication.cutoff_column) == (
+        "published", "published_at", "closed_hour_exclusive",
+    )
+
+
+def test_freshness_basis_without_its_column_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "layer_catalog.yml").write_text(
+        "objects:\n"
+        "  - object_fqn: control.x\n"
+        "    timestamp_column: null\n"
+        "    freshness_basis: published\n"
+        "    freshness_sla_minutes: 60\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="has no column"):
+        mo.freshness_targets(tmp_path)
+
+
+def test_freshness_records_publication_and_cutoff_apart_from_events(tmp_path: Path) -> None:
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA control")
+    analytics.execute(
+        "CREATE TABLE control.inventory_publication AS SELECT "
+        "TIMESTAMP '2026-11-25 02:00:00' AS published_at, 2026112500 AS closed_hour_exclusive"
+    )
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    targets = [
+        mo.FreshnessTarget(
+            "control", "inventory_publication", None, 1680,
+            "published_at", "closed_hour_exclusive", "published",
+        ),
+    ]
+    mo.collect_table_freshness(
+        writer, analytics, execution_id="e1", targets=targets,
+        measured_at=datetime(2026, 11, 25, 12, 0),
+    )
+    row = writer.fetchone(
+        "SELECT freshness_basis, max_event_ts, last_published_at, coverage_cutoff_at, "
+        "lag_minutes, sla_status FROM meta.table_freshness WHERE execution_id = 'e1'"
+    )
+    assert row == (
+        "published",
+        None,
+        datetime(2026, 11, 25, 2, 0),
+        datetime(2026, 11, 25, 0, 0),
+        600,
+        "ok",
+    )
+    writer.close()
+    analytics.close()
+
+
+def test_held_inventory_cutoff_breaches_even_when_the_run_succeeds(tmp_path: Path) -> None:
+    import duckdb
+
+    analytics = duckdb.connect(str(tmp_path / "analytics.duckdb"))
+    analytics.execute("CREATE SCHEMA silver")
+    # Incomplete coverage held the cutoff three days ago.
+    analytics.execute("CREATE TABLE silver.inventory_cutoff AS SELECT 2026112200 AS closed_hour_exclusive")
+    writer = mo.DuckDBMetadataWriter(tmp_path / "local_metadata.duckdb")
+    writer.ensure_schema()
+    mo.collect_table_freshness(
+        writer, analytics, execution_id="e1",
+        targets=[mo.FreshnessTarget(
+            "silver", "inventory_cutoff", None, 1680, None, "closed_hour_exclusive", "cutoff",
+        )],
+        measured_at=datetime(2026, 11, 25, 12, 0),
+    )
+    lag, status = writer.fetchone(
+        "SELECT lag_minutes, sla_status FROM meta.table_freshness WHERE execution_id = 'e1'"
+    )
+    assert (lag, status) == (84 * 60, "breach")
+    writer.close()
+    analytics.close()
+
+
+def test_existing_local_freshness_table_gains_the_new_columns(tmp_path: Path) -> None:
+    import duckdb
+
+    path = tmp_path / "local_metadata.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute("CREATE SCHEMA meta")
+    con.execute(
+        "CREATE TABLE meta.table_freshness (execution_id VARCHAR NOT NULL, "
+        "schema_name VARCHAR NOT NULL, table_name VARCHAR NOT NULL, row_count BIGINT, "
+        "max_event_ts TIMESTAMP, lag_minutes INTEGER, sla_status VARCHAR, "
+        "measured_at TIMESTAMP NOT NULL, collector_version VARCHAR, "
+        "created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (execution_id, schema_name, table_name))"
+    )
+    con.close()
+    writer = mo.DuckDBMetadataWriter(path)
+    writer.ensure_schema()
+    columns = {
+        r[0] for r in writer.fetchall(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'meta' AND table_name = 'table_freshness'"
+        )
+    }
+    assert {name for name, _ in mo.FRESHNESS_COLUMNS} <= columns
+    writer.close()
+
+
+def test_redshift_ddl_declares_the_freshness_columns_the_collector_migrates() -> None:
+    ddl = (_REPO / "transformation/redshift/metadata/01_meta_schema.sql").read_text(encoding="utf-8")
+    table = ddl.split("CREATE TABLE IF NOT EXISTS meta.table_freshness", 1)[1].split(");", 1)[0]
+    for name, redshift_type in mo.FRESHNESS_COLUMNS:
+        assert re.search(rf"\b{name}\s+{re.escape(redshift_type)}", table), name
+
+
+def test_redshift_writer_adds_only_missing_freshness_columns() -> None:
+    statements: list[str] = []
+
+    class Cursor:
+        rows: list[tuple[str]] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params=None):
+            statements.append(sql)
+            if "information_schema.columns" in sql:
+                Cursor.rows = [("execution_id",), ("freshness_basis",)]
+
+        def fetchall(self):
+            return Cursor.rows
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+    writer = object.__new__(mo.RedshiftMetadataWriter)
+    writer._conn = Conn()
+    writer.ensure_schema()
+    alters = [s for s in statements if s.startswith("ALTER TABLE")]
+    assert alters == [
+        "ALTER TABLE meta.table_freshness ADD COLUMN last_published_at TIMESTAMP",
+        "ALTER TABLE meta.table_freshness ADD COLUMN coverage_cutoff_at TIMESTAMP",
+    ]
 
 
 def test_freshness_reads_date_keys_as_end_of_day(tmp_path: Path) -> None:

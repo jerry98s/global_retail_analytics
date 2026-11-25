@@ -36,6 +36,9 @@ objects:
     freshness_sla_minutes: 60
     is_active: true
 
+  # Daily canonical Spark output. A quiet store leaves event_time old while the
+  # run is current, so this table has no event SLA; silver.inventory_cutoff
+  # measures the daily run.
   - object_fqn: silver.inventory_events
     object_type: external
     platform_layer: silver
@@ -43,7 +46,21 @@ objects:
     owner: data-platform
     grain: (event_id)
     timestamp_column: event_time
-    freshness_sla_minutes: 60
+    freshness_sla_minutes: null
+    is_active: true
+
+  # The 01:15 UTC Spark run closes about an hour behind its start, so a
+  # healthy cutoff is up to about 27 hours old just before the next run.
+  - object_fqn: silver.inventory_cutoff
+    object_type: external
+    platform_layer: silver
+    domain: supply
+    owner: data-platform
+    grain: one row, the daily Spark inventory cutoff
+    timestamp_column: null
+    cutoff_column: closed_hour_exclusive
+    freshness_basis: cutoff
+    freshness_sla_minutes: 1680
     is_active: true
 
   - object_fqn: silver.identity_resolution
@@ -132,8 +149,12 @@ objects:
     domain: supply
     owner: analytics-engineering
     grain: one row, the cutoff published with fact_inventory_snapshot
-    timestamp_column: published_at
-    freshness_sla_minutes: 1440
+    timestamp_column: null
+    published_column: published_at
+    cutoff_column: closed_hour_exclusive
+    # Publishes after the 01:15 UTC run and up to two hours of catalog wait.
+    freshness_basis: published
+    freshness_sla_minutes: 1680
     is_active: true
 
   - object_fqn: intermediate.int_inventory_hourly

@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS meta.table_freshness (
     measured_at          TIMESTAMP     NOT NULL,
     collector_version    VARCHAR(32),
     created_at           TIMESTAMP     NOT NULL DEFAULT GETDATE(),
+    -- The SLA is judged on one of three times (layer_catalog freshness_basis).
+    -- A table created before these columns gains them from the collector's
+    -- ensure_schema.
+    freshness_basis      VARCHAR(16),  -- event|published|cutoff
+    last_published_at    TIMESTAMP,
+    coverage_cutoff_at   TIMESTAMP,
     PRIMARY KEY (execution_id, schema_name, table_name)
 );
 

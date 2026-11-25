@@ -105,6 +105,8 @@ Cost: significant. Benefit: marginal over querying CloudWatch/Flink UI directly.
 
 **Future consideration:** If incremental models show "up-to-date" event timestamps but haven't actually run in days (e.g., skipped due to upstream failure), this could cause false "fresh" signals. Revisit if operational metrics show this gap.
 
+**Revisited 2026-11-25.** Event time alone misjudged daily inventory: a quiet store keeps an old event time while the run is current. `meta.table_freshness` now also records `last_published_at` and `coverage_cutoff_at`, and each catalog object names the time its SLA uses (`freshness_basis`). Event time stays the default. See ADR-008, Consequences.
+
 ### C. Invent new DLQ Iceberg tables
 
 **Deferred (P2).** Flink jobs log quarantine events; they're visible in EMR logs and CloudWatch Logs Insights. Adding `bronze.clickstream_dlq` / `bronze.inventory_dlq` Iceberg tables is a clean enhancement but not urgent — schema validation is stable and DLQ volume is near zero.

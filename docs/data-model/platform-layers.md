@@ -74,7 +74,7 @@ sales and returns are never joined line to line.
 | `meta.layer_catalog` | Object registry (YAML-seeded) |
 | `meta.metric_catalog` | Metric definitions: operational from `metric_catalog.yml`, analytics from the dbt semantic layer |
 | `meta.pipeline_run` | One row per run/attempt |
-| `meta.table_freshness` | Append-only freshness / row counts |
+| `meta.table_freshness` | Append-only row counts plus event, publication and coverage-cutoff times; the SLA uses the object's `freshness_basis` |
 | `meta.dq_check_result` | Append-only dbt / GE / reconciliation outcomes |
 | `meta.pipeline_signal` | Identity-change counts, and a quarantine rate or replay result when those inputs are present |
 
