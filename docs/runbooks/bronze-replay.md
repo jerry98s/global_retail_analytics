@@ -104,13 +104,22 @@ airflow dags trigger warehouse_daily_batch_pipeline \
   --conf '{"restate_from": "2026-10-01", "restate_to": "2026-10-03"}'
 ```
 
-That run skips the POS generator, registers each partition in the range, and
-passes `pos_restate_from` / `pos_restate_to` to dbt: `fact_sales` and
-`sales_daily_store` replace exactly those days in pending, and
+That run skips the POS and returns generators, registers each partition in
+the range for both, and passes `pos_restate_from` / `pos_restate_to` to dbt:
+`fact_sales`, `fact_returns` and `sales_daily_store` replace exactly those
+days in pending, and
 `pos_revenue_reconciles_through_gold` must match source, fact and summary
 money per day before publish. Do not clear the original daily run instead: it
 regenerates simulator data over the corrected file and only reloads the last
 lookback days.
+
+Returns (ADR-015): every day in the range needs a delivered
+`pos_returns_bronze_s3_path` file (zero rows for a day without returns), or
+`generate_pos_returns_parquet` fails before dbt runs. A returns file is a full
+delivery for its date, so the restated range of `fact_returns` is replaced
+whole. Later return days that refund a restated sale line, up to
+`pos_return_window_days`, are rebuilt too, and `sales_daily_store` is
+re-aggregated over that span.
 
 Every day in the range must have source lines, or the audit
 `pos_restatement_days_have_source_rows` blocks the publish: a missing file is

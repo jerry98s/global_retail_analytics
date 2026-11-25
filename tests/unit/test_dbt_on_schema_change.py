@@ -125,10 +125,10 @@ def test_all_incremental_models_covered() -> None:
     # too: sessions of any age can change after late events or identity changes.
     # dim_customer and int_rfm_scoring are full rebuilds: RFM scores are
     # relative across customers, and merged-away customer keys must leave.
-    #   fact_sales, fact_inventory_snapshot, fact_customer_session,
+    #   fact_sales, fact_returns, fact_inventory_snapshot, fact_customer_session,
     #   dim_product, sales_daily_store, inventory_daily_product_store,
     #   inventory_position_daily
-    assert len(_INCREMENTAL_MODELS) == 7, (
-        f"Expected 7 incremental models, found {len(_INCREMENTAL_MODELS)}: "
+    assert len(_INCREMENTAL_MODELS) == 8, (
+        f"Expected 8 incremental models, found {len(_INCREMENTAL_MODELS)}: "
         f"{[str(p.relative_to(_REPO_ROOT)) for p in _INCREMENTAL_MODELS]}"
     )

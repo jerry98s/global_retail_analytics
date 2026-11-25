@@ -3,11 +3,13 @@
 -- ===========================================================================
 -- Spectrum must never scan an Iceberg table's data/ directory: superseded
 -- and uncommitted snapshot files live there and would be returned as rows.
--- The hourly Spark step (spark/identity_resolution) reads each table through
+-- The Spark step (spark/identity_resolution) reads each exported table through
 -- the Iceberg catalog and publishes a snapshot-safe export: a run directory
 -- plus a manifest object that is replaced atomically
--- (spark/identity_resolution/consumer_exports.py). Every table below points
--- at <export>/manifest, so a query sees one complete run.
+-- (spark/identity_resolution/consumer_exports.py). Every Parquet table below
+-- points at <export>/manifest, so a query sees one complete run.
+-- silver.inventory_hourly is not one of those exports (ADR-017). Flink commits
+-- it through Glue, and this schema's Glue database already exposes that table.
 -- Re-run this DDL only if a schema changes; data refreshes need no action.
 -- Spectrum maps Parquet columns by position. publish() appends export_run_id
 -- as the last column of every export, so it stays last here.
@@ -33,21 +35,17 @@ DATABASE '<GLUE_SILVER_DB>'
 IAM_ROLE '<REDSHIFT_IAM_ROLE_ARN>'
 CREATE EXTERNAL DATABASE IF NOT EXISTS;
 
-DROP TABLE IF EXISTS silver.inventory_hourly;
-CREATE EXTERNAL TABLE silver.inventory_hourly (
-    snapshot_date_key   integer,
-    snapshot_hour       integer,
-    product_id          varchar(32),
-    store_id            varchar(32),
-    qty_delta_hour      bigint,
-    qty_received_hour   bigint,
-    is_estimated        boolean,
-    export_run_id       varchar(64)
-)
-STORED AS PARQUET
-LOCATION 's3://<SILVER_BUCKET>/iceberg/consumer_current/inventory_hourly/manifest';
-
-SELECT COUNT(*) AS inventory_hourly_rows FROM silver.inventory_hourly;
+-- silver.inventory_hourly is Flink's Glue Iceberg table (ADR-017). Do not
+-- CREATE or DROP it here: DROP TABLE would delete the Glue table Flink commits.
+-- Once, before the first Glue commit, drop the old Parquet external table if
+-- it still occupies the name:
+--   DROP TABLE IF EXISTS silver.inventory_hourly;
+--
+-- After a checkpoint, a committed snapshot is visible as:
+--   SELECT snapshot_date_key, snapshot_hour, product_id, store_id, qty_delta_hour
+--   FROM silver.inventory_hourly
+--   ORDER BY snapshot_date_key DESC, snapshot_hour DESC
+--   LIMIT 10;
 
 -- ---------------------------------------------------------------------------
 -- Identity exports (ADR-010). Column order matches the Spark select, and

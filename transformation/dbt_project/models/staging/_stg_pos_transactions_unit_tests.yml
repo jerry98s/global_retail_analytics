@@ -1,0 +1,25 @@
+unit_tests:
+  - name: stg_pos_transactions_derives_is_voided_from_statuses
+    description: >
+      T1 has an active line and a line void; T2 is a transaction void, so
+      both its lines are voided even though Bronze sent is_voided false on
+      one. L1 and L2 predate the status columns: the old flag maps to a line
+      void, and a NULL flag stays NULL so fact_sales' not_null test blocks it.
+    model: stg_pos_transactions
+    given:
+      - input: source('bronze', 'pos_transactions')
+        rows:
+          - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-11-21", is_voided: false, line_status: ACTIVE, transaction_status: COMPLETED}
+          - {transaction_id: T1, line_item_number: 2, transaction_date: "2026-11-21", is_voided: true, line_status: VOIDED, transaction_status: COMPLETED}
+          - {transaction_id: T2, line_item_number: 1, transaction_date: "2026-11-21", is_voided: false, line_status: ACTIVE, transaction_status: VOIDED}
+          - {transaction_id: T2, line_item_number: 2, transaction_date: "2026-11-21", is_voided: true, line_status: ACTIVE, transaction_status: VOIDED}
+          - {transaction_id: L1, line_item_number: 1, transaction_date: "2026-11-01", is_voided: true}
+          - {transaction_id: L2, line_item_number: 1, transaction_date: "2026-11-01", is_voided: null}
+    expect:
+      rows:
+        - {transaction_id: T1, line_item_number: 1, line_status: ACTIVE, transaction_status: COMPLETED, is_voided: false}
+        - {transaction_id: T1, line_item_number: 2, line_status: VOIDED, transaction_status: COMPLETED, is_voided: true}
+        - {transaction_id: T2, line_item_number: 1, line_status: ACTIVE, transaction_status: VOIDED, is_voided: true}
+        - {transaction_id: T2, line_item_number: 2, line_status: ACTIVE, transaction_status: VOIDED, is_voided: true}
+        - {transaction_id: L1, line_item_number: 1, line_status: VOIDED, transaction_status: COMPLETED, is_voided: true}
+        - {transaction_id: L2, line_item_number: 1, line_status: null, transaction_status: null, is_voided: null}

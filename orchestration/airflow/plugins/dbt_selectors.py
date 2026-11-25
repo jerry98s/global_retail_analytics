@@ -11,10 +11,18 @@ from __future__ import annotations
 
 WAREHOUSE_LIVE_MODELS: tuple[str, ...] = (
     "stg_pos_transactions",
+    "stg_pos_returns",
     "stg_inventory_events",
     "int_inventory_cutoff",
     "int_inventory_hourly",
     "int_inventory_reconciliation_hourly",
+)
+
+# Singular tests whose parents are only Silver sources, so a model selection
+# never picks them. The finance audit names them: they guard the inventory
+# Gold it publishes and the serving view it builds.
+WAREHOUSE_SOURCE_TESTS: tuple[str, ...] = (
+    "inventory_canonical_run_is_one",
 )
 
 MARKETING_LIVE_MODELS: tuple[str, ...] = (
@@ -33,8 +41,8 @@ CATALOG_LIVE_MODELS: tuple[str, ...] = (
     "int_product_catalog",
 )
 
-# Marketing-owned marts. The summary models are each built from one marketing
-# Gold table. dim_product stays with the catalog DAG.
+# Marketing-owned marts. summary models here are built from one marketing Gold
+# table each; dim_product stays with the catalog DAG.
 MARKETING_MART_SELECT = (
     "marts.marketing sessions_daily_platform consent_identity_daily customer_segments"
 )
@@ -53,7 +61,9 @@ QUALITY_SELECTIONS: dict[str, dict[str, object]] = {
     "finance": {
         "select": select(
             WAREHOUSE_LIVE_MODELS,
-            "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily",
+            "marts.finance sales_daily_store inventory_daily_product_store "
+            "inventory_position_daily inventory_publication",
+            WAREHOUSE_SOURCE_TESTS,
         ),
         "exclude": [],
     },

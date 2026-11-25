@@ -238,7 +238,7 @@ DuckDB — no Redshift credentials required.
 
 | Path | Purpose |
 |---|---|
-| `ingestion/` | Schemas, Kafka topics/producers, POS Parquet generator |
+| `ingestion/` | Schemas, Kafka topics/producers, POS and POS returns Parquet generators |
 | `streaming/` | Flink jobs + YAML config |
 | `spark/` | GraphFrames identity-resolution job + deterministic reference rules |
 | `transformation/` | dbt project + Redshift DDL / Spectrum / serving views |
@@ -271,6 +271,9 @@ DuckDB — no Redshift credentials required.
 | [ADR-012](./docs/decisions/ADR-012-inventory-lambda.md) | Inventory lambda: Spark owns covered hours |
 | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) | dbt Semantic Layer (MetricFlow) for metrics |
 | [ADR-014](./docs/decisions/ADR-014-catalog-refresh-frequency.md) | Daily product catalog refresh; finance waits for its publish |
+| [ADR-015](./docs/decisions/ADR-015-pos-voids-and-returns.md) | POS voids versus returns; refunds in `fact_returns` |
+| [ADR-016](./docs/decisions/ADR-016-scd2-as-of-product-joins.md) | Facts join `dim_product` as of their business date |
+| [ADR-017](./docs/decisions/ADR-017-hourly-iceberg-read.md) | Hourly inventory is read from Flink's Iceberg snapshot |
 
 Cost figures are planning scenarios, not observed cloud bills.
 
@@ -387,7 +390,8 @@ AWS production deployment or a measured 10k events/s load test.
 
 | Consumer | Product | Grain |
 |---|---|---|
-| Finance | `finance.fact_sales` | `(transaction_id, line_item_number)` |
+| Finance | `finance.fact_sales` | `(transaction_id, line_item_number)`; voided lines kept, flagged |
+| Finance | `finance.fact_returns` | `(return_id, return_line_number)`; refunds on the return date (ADR-015) |
 | Ops | `finance.fact_inventory_snapshot` | product/store/hour |
 | Ops | `serving.inventory_current_position` | product/store; published balance plus newer Flink hours (about an hour old) |
 | Marketing | `marketing.fact_customer_session` | `session_id` |

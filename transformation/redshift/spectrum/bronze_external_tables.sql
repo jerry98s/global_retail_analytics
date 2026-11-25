@@ -76,7 +76,14 @@ CREATE EXTERNAL TABLE bronze.pos_transactions (
     gross_revenue     decimal(18,2),
     net_revenue       decimal(18,2),
     gross_margin      decimal(18,2),
-    is_voided         boolean
+    is_voided         boolean,
+    -- ADR-015 void lifecycle. Files written before these columns read NULL;
+    -- stg_pos_transactions maps their is_voided flag to a line void.
+    line_status       varchar(16),
+    transaction_status varchar(16),
+    voided_at         timestamp,
+    void_reason       varchar(64),
+    source_updated_at timestamp
 )
 PARTITIONED BY (dt date)
 STORED AS PARQUET
@@ -85,8 +92,35 @@ LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/pos_transactions/data/';
 --   ALTER TABLE bronze.pos_transactions ADD IF NOT EXISTS PARTITION (dt='YYYY-MM-DD')
 --   LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/pos_transactions/data/dt=YYYY-MM-DD/';
 
+-- pos_returns (daily returns batch — generate_pos_returns_parquet.py, ADR-015)
+-- One full delivery per return date at .../pos_returns/data/dt=<YYYY-MM-DD>/;
+-- a zero-row file is a day without returns. The warehouse DAG registers each
+-- day the same way as pos_transactions (register_pos_returns_spectrum_partition).
+DROP TABLE IF EXISTS bronze.pos_returns;
+CREATE EXTERNAL TABLE bronze.pos_returns (
+    return_id                  varchar(64),
+    return_line_number         integer,
+    return_date                date,
+    original_transaction_id    varchar(64),
+    original_line_item_number  integer,
+    return_store_id            varchar(32),
+    product_id                 varchar(32),
+    quantity_returned          integer,
+    refund_amount              decimal(18,2),
+    return_status              varchar(16),
+    reason_code                varchar(64),
+    processed_at               timestamp
+)
+PARTITIONED BY (dt date)
+STORED AS PARQUET
+LOCATION 's3://<BRONZE_BUCKET>/iceberg/bronze/pos_returns/data/';
+-- Dropping and recreating either POS table forgets its partitions. Re-register
+-- each delivered day with ALTER TABLE ... ADD IF NOT EXISTS PARTITION as above.
+
 SELECT 'clickstream' AS tbl, COUNT(*) AS rows FROM bronze.clickstream_events
 UNION ALL
 SELECT 'inventory', COUNT(*) FROM bronze.inventory_events
 UNION ALL
-SELECT 'pos', COUNT(*) FROM bronze.pos_transactions;
+SELECT 'pos', COUNT(*) FROM bronze.pos_transactions
+UNION ALL
+SELECT 'pos_returns', COUNT(*) FROM bronze.pos_returns;

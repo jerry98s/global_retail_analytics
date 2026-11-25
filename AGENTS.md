@@ -125,8 +125,8 @@ dbt/GE, evidence capture, destroy checklist), follow
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` — POS + inventory Spark (`--mode inventory`) before dbt + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete coverage holds the cutoff and warns; it does not block this publish.
-- `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Airflow rejects `--mode all`.
+- `warehouse_daily_batch_pipeline` (01:15 UTC) — POS and POS returns Parquet (Spectrum `bronze.pos_returns`, `finance.fact_returns`, ADR-015) beside inventory Spark (`--mode inventory`, MSK IAM), then dbt + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete coverage holds the cutoff and warns; a failed inventory Spark step alerts and publishes POS and returns with inventory unchanged. After publish it promotes the live run's `inventory_frontier/published.json`, where the next inventory run starts. Param `acknowledge_kafka_loss` accepts partitions whose offsets expired from Kafka before Bronze had them.
+- `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Both submit only when no other Spark step is on the cluster. Airflow rejects `--mode all`.
 - `streaming_manual_flink_jobs`
 - `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC
 - `quality_hourly_ge_checkpoint`
@@ -149,7 +149,7 @@ across normal restarts and change it after Kafka topic/cluster recreation.
   (Iceberg), plus `consumer_current/<name>/` exports for Spectrum: a new
   `run=<ts>/` directory per run and an atomically replaced `manifest` that
   Spectrum `LOCATION`s point at (`consumer_exports.py`). `silver.inventory_hourly`
-  is exported the same way from its committed Iceberg snapshot. Never glob
+  is Flink's Glue Iceberg table (ADR-017), not one of those exports. Never glob
   Iceberg `data/` dirs — superseded snapshot files can linger. Blank identifiers
   are normalized away before graph build. Only verified v1.3 account-to-loyalty
   logins merge (ADR-003); devices never merge customers.
@@ -167,7 +167,8 @@ across normal restarts and change it after Kafka topic/cluster recreation.
 ## Metadata + Summary
 
 - Analytics schema `summary.*` (dbt `marts.summary`) holds rollups from
-  one Gold table each — see `docs/data-model/platform-layers.md`.
+  one Gold table each (`sales_daily_store` also rolls up `fact_returns`,
+  ADR-015) — see `docs/data-model/platform-layers.md`.
   `consent_identity_daily` reads `fact_customer_session` and
   `customer_segments` reads `dim_customer`.
 - Operational DB `metadata.meta.*` (local: `local_metadata.duckdb`) is written
@@ -184,6 +185,8 @@ across normal restarts and change it after Kafka topic/cluster recreation.
 
 - Kimball facts and dims with surrogate integer keys. No fact-to-fact joins
   (drill across conformed dims instead).
+- Facts join `dim_product` as of their business date through
+  `product_versions()` / `product_as_of()`, never on `is_current` (ADR-016).
 - Gate PII with `marketing_consent`.
 - Event contract changes bump `schema_version` (`ingestion/schemas/`).
 - POS lands as Parquet in Bronze; there is no POS Kafka topic.

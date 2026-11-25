@@ -13,6 +13,16 @@ models:
         description: "Line item sequence within transaction."
         tests: [not_null]
 
+  - name: stg_pos_returns
+    description: "Staging model for POS returns; exact duplicate deliveries collapse to one row."
+    columns:
+      - name: return_id
+        description: "Return transaction identifier."
+        tests: [not_null]
+      - name: return_line_number
+        description: "Line sequence within the return."
+        tests: [not_null]
+
   - name: stg_clickstream_events
     description: "Staging model for clickstream events."
     columns:

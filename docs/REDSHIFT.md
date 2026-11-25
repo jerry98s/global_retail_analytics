@@ -16,14 +16,15 @@ only per-env tfvars differ (RPU sizing, `allowed_cidrs`, database name).
 |---|---|---|
 | Platform stack | `infra/terraform/` | MSK + EMR + Redshift + S3 (+ optional MWAA + dashboard) |
 | Redshift module | `infra/terraform/modules/redshift/` | Serverless namespace/workgroup, IAM (S3+Glue), Glue catalog DB, usage limit |
-| Spectrum SQL | `transformation/redshift/spectrum/bronze_external_tables.sql` | `CREATE EXTERNAL SCHEMA` + three bronze external tables |
+| Spectrum SQL | `transformation/redshift/spectrum/bronze_external_tables.sql` | `CREATE EXTERNAL SCHEMA` + four bronze external tables |
 | POS batch | `ingestion/batch/generate_pos_parquet.py` | Daily Parquet → `bronze/pos_transactions/` |
+| POS returns batch | `ingestion/batch/generate_pos_returns_parquet.py` | Daily returns Parquet → `bronze/pos_returns/` (ADR-015) |
 | Flink bronze | `streaming/flink_jobs/*_bronze_job.py` | Clickstream + inventory raw events |
 | dbt | `transformation/dbt_project/` | Staging → marts on Redshift |
-| Airflow | `warehouse_daily_batch_pipeline` DAG | POS → dbt → GE checkpoint (00:15 UTC) |
+| Airflow | `warehouse_daily_batch_pipeline` DAG | POS + returns → dbt → GE checkpoint (01:15 UTC) |
 | Serving DDL | `transformation/redshift/` | Hand-written Gold tables + views |
 | Metadata DDL | `transformation/redshift/metadata/` | Separate `metadata` DB (`meta.*`); not namespace `db_name` |
-| Summary | dbt `marts.summary` → schema `summary` | Daily rollups from one Gold fact each |
+| Summary | dbt `marts.summary` → schema `summary` | Daily rollups from one Gold fact each (`sales_daily_store` also rolls up `fact_returns`, ADR-015) |
 
 ---
 
@@ -80,13 +81,14 @@ Iceberg/Spectrum catalog.
 
 ## Bronze Spectrum tables
 
-All three dbt bronze sources are defined in `transformation/redshift/spectrum/bronze_external_tables.sql`:
+All four bronze external tables are defined in `transformation/redshift/spectrum/bronze_external_tables.sql`:
 
 | Spectrum table | S3 path suffix | Producer |
 |---|---|---|
 | `bronze.clickstream_events` | `iceberg/bronze/clickstream_events/data/` | Flink `clickstream_bronze_job` |
 | `bronze.inventory_events` | `iceberg/bronze/inventory_events/data/` | Flink `inventory_bronze_job` |
 | `bronze.pos_transactions` | `iceberg/bronze/pos_transactions/data/` | `generate_pos_parquet.py` |
+| `bronze.pos_returns` | `iceberg/bronze/pos_returns/data/` | `generate_pos_returns_parquet.py` |
 
 Run the Spectrum script **after** Flink jobs and at least one POS batch run have
 written Parquet files, otherwise `COUNT(*)` sanity queries return zero rows.
@@ -122,7 +124,7 @@ Surrogate keys via dbt macros; grains documented in `docs/data-model/dimensional
 After apply, run `.\scripts\cloud\deploy_platform.ps1 -Env dev -Action airflow-vars` and set values in
 the MWAA UI. Required for `warehouse_daily_batch_pipeline`:
 
-- From Terraform: `emr_cluster_id`, `artifacts_bucket`, `redshift_*`, `pos_bronze_s3_path`, …
+- From Terraform: `emr_cluster_id`, `artifacts_bucket`, `redshift_*`, `pos_bronze_s3_path`, `pos_returns_bronze_s3_path`, …
 - Manual: `redshift_user`
 
 Full list: `terraform output airflow_variables` or `.cursor/rules/airflow.mdc`.

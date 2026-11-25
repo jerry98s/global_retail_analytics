@@ -25,7 +25,7 @@ capacity plus usage limits managed in `infra/terraform/modules/redshift`.
 
 ```
 spectrum/bronze_external_tables.sql   # once per env — bronze over S3
-spectrum/silver_external_tables.sql   # optional — silver inventory_hourly
+spectrum/silver_external_tables.sql   # silver exports; inventory_hourly is the Glue table (ADR-017)
 ddl/01_schemas.sql
 ddl/02_dim_date.sql
 ddl/03_dim_store.sql
@@ -38,11 +38,15 @@ ddl/07_fact_sales.sql
 ddl/08_fact_inventory_snapshot.sql
 ddl/09_fact_customer_session.sql
 ddl/11_summary_customer_360.sql
+ddl/12_inventory_publication.sql
+ddl/13_fact_returns.sql
 views/dim_product_current.sql
 views/customer_360_serving.sql
 ```
 
 `ddl/10_customer_360_columns.sql` is not part of a fresh deploy. Run it once on a cluster whose `identity_graph` still has `is_public_device`, whose `fact_customer_session` predates the session-instance columns, or whose `summary.sessions_daily_platform` has no `anonymous_session_count`. A fresh run of 06, 09 and 11 already has the new shape. Skip a statement when that table or column is already in the new shape.
+
+The `fact_sales` void columns in `ddl/07_fact_sales.sql` (ADR-015) need no migration script: the next WAP publish adds a column that only the pending table has (`ALTER TABLE ... ADD COLUMN`). `spectrum/bronze_external_tables.sql` recreates `bronze.pos_transactions` with those columns and adds `bronze.pos_returns`. Recreating an external table forgets its partitions. Re-register delivered days with the `ALTER TABLE ... ADD IF NOT EXISTS PARTITION` statement shown in that file. A warehouse DAG restatement run (`restate_from` / `restate_to`) also registers its range, but it fails on a day that has no returns delivery.
 
 Generate a filled bootstrap script (terraform outputs substituted):
 

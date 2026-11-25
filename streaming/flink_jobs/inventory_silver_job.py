@@ -16,6 +16,7 @@ from pyflink.table import EnvironmentSettings, StreamTableEnvironment
 
 from _config import (  # noqa: E402
     apply_state_config,
+    iceberg_catalog_sql,
     kafka_security_options,
     load_simple_yaml,
     resolve_config_path,
@@ -92,22 +93,23 @@ def run() -> None:
     window_interval = _silver_window_interval()
 
     catalog = str(flink_cfg["iceberg_catalog_name"])
+    namespace = str(flink_cfg.get("iceberg_silver_namespace") or SILVER_NAMESPACE)
     t_env.execute_sql(
-        f"""
-        CREATE CATALOG {catalog} WITH (
-          'type' = 'iceberg',
-          'catalog-type' = '{flink_cfg["iceberg_catalog_type"]}',
-          'warehouse' = '{flink_cfg["iceberg_warehouse_silver"]}'
+        iceberg_catalog_sql(
+            catalog,
+            str(flink_cfg["iceberg_warehouse_silver"]),
+            str(flink_cfg.get("iceberg_silver_catalog_impl") or ""),
+            str(flink_cfg.get("iceberg_io_impl") or ""),
         )
-        """
     )
     # Iceberg catalog only manages Iceberg tables (no watermarks, no Kafka
     # connector). We register the managed sink there, and create the Kafka
     # source in the in-memory `default_catalog`.
-    t_env.execute_sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{SILVER_NAMESPACE}")
+    t_env.execute_sql(f"CREATE DATABASE IF NOT EXISTS {catalog}.{namespace}")
+    target = f"{catalog}.{namespace}.{INVENTORY_HOURLY}"
     t_env.execute_sql(
         f"""
-        CREATE TABLE IF NOT EXISTS {catalog}.{SILVER_NAMESPACE}.{INVENTORY_HOURLY} (
+        CREATE TABLE IF NOT EXISTS {target} (
           snapshot_date_key INT,
           snapshot_hour INT,
           product_id STRING,
@@ -166,7 +168,7 @@ def run() -> None:
         """
     )
 
-    job_sql = f"INSERT INTO {catalog}.{SILVER_NAMESPACE}.{INVENTORY_HOURLY}\n" + hourly_select_sql(
+    job_sql = f"INSERT INTO {target}\n" + hourly_select_sql(
         source="default_catalog.default_database.inventory_events",
         window_interval=window_interval,
     )

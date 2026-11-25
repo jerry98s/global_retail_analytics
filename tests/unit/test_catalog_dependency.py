@@ -30,7 +30,7 @@ def test_schedules_put_the_catalog_run_before_finance() -> None:
     catalog = (_DAGS / f"{cd.CATALOG_DAG_ID}.py").read_text(encoding="utf-8")
     warehouse = (_DAGS / "warehouse_daily_batch_pipeline.py").read_text(encoding="utf-8")
     assert 'schedule_interval="0 0 * * *"' in catalog
-    assert re.search(r'schedule_interval\s*=\s*"15 0 \* \* \*"', warehouse)
+    assert re.search(r'schedule_interval\s*=\s*"15 1 \* \* \*"', warehouse)
     assert f'task_id="{cd.CATALOG_PUBLISH_TASK_ID}"' in catalog
     assert cd.WAIT_TIMEOUT == timedelta(hours=2)
 

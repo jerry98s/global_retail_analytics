@@ -15,10 +15,12 @@ unit_tests:
           - {identifier_type: customer_id, identifier_value: C2, customer_key: 100}
           - {identifier_type: customer_id, identifier_value: C3, customer_key: 300}
       - input: source('gold_marketing', 'identity_graph')
-        rows:
-          - {identifier_type: customer_id, identifier_value: C1, customer_key: 100}
-          - {identifier_type: customer_id, identifier_value: C2, customer_key: 200}
-          - {identifier_type: client_id, identifier_value: D1, customer_key: 100}
+        # This live relation is absent during the first pending audit.
+        format: sql
+        rows: |
+          select 'customer_id' as identifier_type, 'C1' as identifier_value, cast(100 as bigint) as customer_key
+          union all select 'customer_id', 'C2', 200
+          union all select 'client_id', 'D1', 100
     expect:
       rows:
         - {identifier_type: customer_id, identifier_value: C2, change_type: rekeyed, published_customer_key: 200, current_customer_key: 100}
@@ -35,7 +37,11 @@ unit_tests:
         rows:
           - {identifier_type: loyalty_id, identifier_value: L1, customer_key: 100}
       - input: source('gold_marketing', 'identity_graph')
-        rows: []
+        format: sql
+        rows: |
+          select cast(null as varchar) as identifier_type, cast(null as varchar) as identifier_value,
+                 cast(null as bigint) as customer_key
+          where 1 = 0
     expect:
       rows:
         - {identifier_type: loyalty_id, identifier_value: L1, change_type: added, published_customer_key: null, current_customer_key: 100}

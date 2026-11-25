@@ -220,5 +220,14 @@ class TestInventoryPositionDaily:
         assert "full outer join opening" in src
         assert "last_value(e.day_end_qty ignore nulls)" in src
         assert "ref('inventory_opening_balance')" in src
-        assert "wap_live_ref('dim_product')" in src
         assert "unique_key=['snapshot_date_key', 'product_id', 'store_id']" in src
+
+    def test_position_runs_through_the_last_closed_day(self) -> None:
+        src = (
+            _REPO / "transformation" / "dbt_project" / "models" / "marts" / "summary"
+            / "inventory_position_daily.sql"
+        ).read_text(encoding="utf-8")
+        # The grid ends at the published cutoff, not at the last movement day.
+        assert "ref('inventory_publication')" in src
+        assert "d.date_key * 100 + 23 < c.closed_hour_exclusive" in src
+        assert "max(snapshot_date_key) from fact_hours" not in src

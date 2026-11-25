@@ -3,8 +3,8 @@ lake checklist applied 2026-07-05).
 
 These tests guard the in-SQL `PARTITIONED BY` declarations on the three
 Flink Iceberg sinks (bronze inventory_events, bronze clickstream_events,
-silver inventory_hourly) plus the Hive-style partition key on the POS
-Spectrum external table. Removing the partition spec silently regresses
+silver inventory_hourly) plus the Hive-style partition key on the POS and
+POS returns Spectrum external tables. Removing the partition spec silently regresses
 Spectrum scan performance (full table scan instead of partition pruning),
 so we lint the source SQL rather than rely on a runtime check.
 """
@@ -120,21 +120,22 @@ class TestIcebergPartitionSpecs:
 
 
 class TestSpectrumPosPartitioning:
-    """POS Spectrum external table must declare the dt partition key so
-    Spectrum can prune to a single day when filtering on transaction_date."""
+    """POS and POS returns Spectrum external tables must declare the dt
+    partition key so Spectrum can prune to a single day when filtering on dt."""
 
-    def test_pos_external_table_has_dt_partition(self) -> None:
+    @pytest.mark.parametrize("table", ["pos_transactions", "pos_returns"])
+    def test_pos_external_table_has_dt_partition(self, table: str) -> None:
         src = _read(_SPECTRUM)
-        # Locate the bronze.pos_transactions CREATE EXTERNAL TABLE block.
+        # Locate the table's CREATE EXTERNAL TABLE block.
         m = re.search(
-            r"CREATE EXTERNAL TABLE\s+bronze\.pos_transactions\s*\((?:[^()]|\([^()]*\))*\)\s*([^;]*);",
+            rf"CREATE EXTERNAL TABLE\s+bronze\.{table}\s*\((?:[^()]|\([^()]*\))*\)\s*([^;]*);",
             src,
             re.DOTALL | re.IGNORECASE,
         )
-        assert m is not None, "bronze.pos_transactions external table not found"
+        assert m is not None, f"bronze.{table} external table not found"
         tail = m.group(1)
         assert re.search(r"PARTITIONED BY\s*\(\s*dt\s+date\s*\)", tail, re.IGNORECASE), (
-            "bronze.pos_transactions Spectrum DDL must declare "
+            f"bronze.{table} Spectrum DDL must declare "
             "`PARTITIONED BY (dt date)` so Hive-style dt=YYYY-MM-DD "
             "directories are pruned by Spectrum. Register each day with "
             "ALTER TABLE ... ADD IF NOT EXISTS PARTITION after the POS batch."

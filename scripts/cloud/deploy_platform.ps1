@@ -183,9 +183,10 @@ function Submit-FlinkJobs {
     $mskBootstrap      = $Out.kafka_bootstrap_brokers_sasl_iam.value
     $bronzeWarehouse   = $Out.bronze_iceberg_warehouse.value
     $silverWarehouse   = $Out.silver_iceberg_warehouse.value
+    $glueSilver        = $Out.glue_silver_database.value
 
-    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $mskBootstrap -or -not $bronzeWarehouse -or -not $silverWarehouse) {
-        throw "Missing terraform outputs for Flink deploy (emr_cluster_id, artifacts/checkpoints buckets, MSK brokers, warehouses)."
+    if (-not $clusterId -or -not $artifactsBucket -or -not $checkpointsBucket -or -not $mskBootstrap -or -not $bronzeWarehouse -or -not $silverWarehouse -or -not $glueSilver) {
+        throw "Missing terraform outputs for Flink deploy (emr_cluster_id, artifacts/checkpoints buckets, MSK brokers, warehouses, glue_silver_database)."
     }
 
     $jobsDir         = Join-Path $RepoRoot 'streaming/flink_jobs'
@@ -220,6 +221,9 @@ function Submit-FlinkJobs {
                 "KAFKA_SASL_MECHANISM='AWS_MSK_IAM' " +
                 "ICEBERG_BRONZE_WAREHOUSE='$bronzeWarehouse' " +
                 "ICEBERG_SILVER_WAREHOUSE='$silverWarehouse' " +
+                "ICEBERG_SILVER_CATALOG_IMPL='org.apache.iceberg.aws.glue.GlueCatalog' " +
+                "ICEBERG_IO_IMPL='org.apache.iceberg.aws.s3.S3FileIO' " +
+                "ICEBERG_SILVER_NAMESPACE='$glueSilver' " +
                 # Match Kafka partition counts (ingestion/kafka/topics.py):
                 # inventory.events.v1=12, clickstream.events.v1=24.
                 "INVENTORY_PARALLELISM='12' " +
@@ -279,7 +283,7 @@ function Invoke-PlatformVerify {
     if (-not $bronze) {
         Write-Host "  S3 bronze: skipped (no bronze_bucket_name output)" -ForegroundColor Yellow
     } else {
-        foreach ($prefix in @('iceberg/bronze/clickstream_records/', 'iceberg/bronze/inventory_records/', 'iceberg/bronze/pos_transactions/')) {
+        foreach ($prefix in @('iceberg/bronze/clickstream_records/', 'iceberg/bronze/inventory_records/', 'iceberg/bronze/pos_transactions/', 'iceberg/bronze/pos_returns/')) {
             $count = (aws s3 ls "s3://$bronze/$prefix" --recursive --summarize --region $Region 2>$null |
                 Select-String 'Total Objects:' | ForEach-Object { ($_ -split ':')[-1].Trim() })
             $objCount = if ($count) { [int]$count } else { 0 }

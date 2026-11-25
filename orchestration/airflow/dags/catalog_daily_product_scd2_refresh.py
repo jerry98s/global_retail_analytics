@@ -57,7 +57,7 @@ last published version through the `wap_live_ref` dbt macro rather than
 rebuilding it, so the two DAGs never write each other's pending table.
 
 ### Ordering with finance
-`warehouse_daily_batch_pipeline` runs at 00:15 UTC and waits up to two hours
+`warehouse_daily_batch_pipeline` runs at 01:15 UTC and waits up to two hours
 for this DAG's `wap_publish_dim_product` of the same day. If this run fails
 or is late, finance alerts and continues on the last published version.
 

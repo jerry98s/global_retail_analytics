@@ -33,6 +33,11 @@ variable "bronze_bucket" {
   type        = string
 }
 
+variable "silver_bucket" {
+  description = "S3 silver bucket. Tasks read and write only the inventory frontier files under iceberg/consumer_current/inventory_frontier/."
+  type        = string
+}
+
 variable "airflow_version" {
   description = "Managed Airflow version."
   type        = string

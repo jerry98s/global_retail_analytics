@@ -241,7 +241,6 @@ class TestDbtHandoffContract:
             _REPO / "transformation/redshift/spectrum/silver_external_tables.sql"
         ).read_text(encoding="utf-8")
         for name in (
-            "inventory_hourly",
             "identity_resolution",
             "identity_edges",
             "loyalty_link_claims",
@@ -252,6 +251,8 @@ class TestDbtHandoffContract:
         ):
             assert f"consumer_current/{name}/manifest'" in ddl
         assert "/data/'" not in ddl
+        assert "CREATE EXTERNAL TABLE silver.inventory_hourly" not in ddl
+        assert "ADR-017" in ddl
 
     def test_job_publishes_every_export_with_one_run_id(self) -> None:
         job = (_REPO / "spark/identity_resolution/identity_resolution_job.py").read_text(encoding="utf-8")
@@ -261,8 +262,8 @@ class TestDbtHandoffContract:
             'publish(edges, root, "identity_edges", run_id)',
             'publish(claims, root, "loyalty_link_claims", run_id)',
             'publish(associations, root, "device_session_associations", run_id)',
-            'publish(frame, root, "inventory_hourly", run_id or new_run_id())',
         ):
             assert call in job
+        assert "export_inventory_hourly" not in job
         assert "publish(frame, root, f'{stream}_{suffix}', run_id)" in events
         assert "publish(gaps, root, 'inventory_offset_gaps', run_id)" in events

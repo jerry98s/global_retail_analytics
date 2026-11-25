@@ -11,6 +11,11 @@ test-paths: ["tests"]
 target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
+vars:
+  # Must equal PARTITIONS_BY_TOPIC[TOPIC_INVENTORY] in ingestion/kafka/topics.py
+  # (tests/unit/test_gold_wap.py). Batch coverage needs every partition in Bronze.
+  inventory_kafka_partitions: 12
+
 seeds:
   global_retail_analytics:
     +quote_columns: false
@@ -42,6 +47,20 @@ seeds:
           loyalty_id: varchar
           store_id: varchar
           product_id: varchar
+          line_status: varchar
+          transaction_status: varchar
+          voided_at: timestamp
+          void_reason: varchar
+          source_updated_at: timestamp
+      pos_returns:
+        +column_types:
+          return_id: varchar
+          return_date: date
+          original_transaction_id: varchar
+          return_store_id: varchar
+          product_id: varchar
+          refund_amount: decimal(18,2)
+          processed_at: timestamp
     finance:
       +schema: finance
       dim_date:

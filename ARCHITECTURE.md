@@ -80,7 +80,7 @@ flowchart LR
 
   subgraph BATCH["Batch — Airflow MWAA"]
 
-    POSJOB["generate_pos_parquet<br/>daily 00:15 UTC"]
+    POSJOB["generate_pos_parquet<br/>daily 01:15 UTC"]
 
     C360["marketing_hourly_customer_360_pipeline<br/>hourly :00 UTC"]
 
@@ -122,7 +122,7 @@ flowchart LR
 
   subgraph ORCH["Orchestration — MWAA"]
 
-    DAG["warehouse_daily_batch_pipeline<br/>POS → dbt finance → WAP publish"]
+    DAG["warehouse_daily_batch_pipeline<br/>POS + returns → dbt finance → WAP publish"]
 
   end
 
@@ -238,7 +238,8 @@ Gold marts ship with Write-Audit-Publish ([ADR-009](docs/decisions/ADR-009-write
 live Gold is cloned into `finance_pending` / `marketing_pending` /
 `summary_pending`, dbt rebuilds tables there, dbt tests audit the pending
 copies, and an atomic rename promotes the DAG-owned set to live only on success.
-`marketing.dim_product` is catalog-owned; warehouse facts join the live table.
+`marketing.dim_product` is catalog-owned; warehouse facts join the live table
+as of each row's business date ([ADR-016](docs/decisions/ADR-016-scd2-as-of-product-joins.md)).
 A failing run never touches the tables consumers read.
 
 

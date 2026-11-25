@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: fact_sales
-    description: "Sales fact table at transaction line-item grain. One row per (transaction_id, line_item_number) from stg_pos_transactions. Joins dim_product current version (not as-of SCD2), dim_store, and int_identity_resolution (loyalty_id -> customer_key; NULL for anonymous transactions)."
+    description: "Sales fact table at transaction line-item grain. One row per (transaction_id, line_item_number) from stg_pos_transactions. Joins dim_product as-of SCD2 on transaction_date (ADR-016), dim_store, and int_identity_resolution (loyalty_id -> customer_key; NULL for anonymous transactions)."
     columns:
       - name: transaction_id
         description: "Transaction identifier (UUID from generate_pos_parquet.py)."
@@ -19,7 +19,7 @@ models:
                 to: source('gold_finance', 'dim_date')
                 field: date_key
       - name: product_key
-        description: "Resolved product surrogate key. Joins live dim_product on is_current=true (current attributes at load time, not as-of SCD2). -1 = product not yet published by the catalog DAG; re-keyed inside the pos_restatement_days window."
+        description: "dim_product version valid on transaction_date (as-of SCD2, ADR-016); a sale older than the product's first version takes that first version. -1 = product not yet published by the catalog DAG; the day is re-keyed once it publishes."
         tests:
           - not_null
           - relationships:
@@ -33,6 +33,9 @@ models:
                 expression: "<> -1"
               config:
                 severity: warn
+      - name: product_id
+        description: "Natural product id from POS. Lineage for product_key; join it to the current dim_product version for current-attribute reporting."
+        tests: [not_null]
       - name: store_key
         description: "Resolved store surrogate key (joins gold_finance.dim_store)."
         tests:
@@ -62,8 +65,26 @@ models:
         description: "Gross margin = net_revenue * margin_rate."
         tests: [not_null]
       - name: is_voided
-        description: "True if the transaction was voided (~1% of simulator output). A NULL in Bronze is passed through, not read as false, so this test blocks the publish."
+        description: "True when line_status or transaction_status is VOIDED (ADR-015); derived in stg_pos_transactions. Voided lines keep their recorded amounts but are not recognized sales. A NULL in Bronze is passed through, not read as false, so this test blocks the publish."
         tests: [not_null]
+      - name: line_status
+        description: "ACTIVE or VOIDED: whether this item was cancelled before checkout. NULL only on rows loaded before the status columns existed and not reprocessed since."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['ACTIVE', 'VOIDED']
+      - name: transaction_status
+        description: "COMPLETED or VOIDED: whether the whole transaction was cancelled. Repeated on every line; pos_void_status_is_consistent checks the lines agree."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['COMPLETED', 'VOIDED']
+      - name: voided_at
+        description: "When the line or its transaction was voided (naive UTC). NULL for recognized sales."
+      - name: void_reason
+        description: "Audit reason for the void, e.g. CASHIER_ERROR. NULL for recognized sales."
+      - name: source_updated_at
+        description: "When the POS source last changed this line (naive UTC). NULL for Bronze written before ADR-015, which also has no void audit fields."
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
@@ -72,7 +93,7 @@ models:
               - line_item_number
 
   - name: fact_inventory_snapshot
-    description: "Inventory snapshot fact at hourly grain. Lambda path (ADR-012): reads int_inventory_hourly (Spark canonical events for covered hours, Flink silver.inventory_hourly after) and adds running-balance + surrogate-key joins."
+    description: "Hourly observed-position fact: one row per product/store hour with a movement, carrying the hour's net movement (qty_delta_hour) and the balance after it. Hours without a row hold the previous balance; summary.inventory_position_daily is the dense daily view. Lambda path (ADR-012): reads int_inventory_hourly (Spark canonical events before the published cutoff) and adds the running balance and surrogate-key joins."
     columns:
       - name: snapshot_date_key
         description: "Snapshot date key (YYYYMMDD)."
@@ -90,13 +111,16 @@ models:
               arguments:
                 values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
       - name: product_key
-        description: "Resolved product surrogate key."
+        description: "dim_product version valid on the snapshot date (as-of SCD2, ADR-016)."
         tests:
           - not_null
           - relationships:
               arguments:
                 to: source('gold_marketing', 'dim_product')
                 field: product_key
+      - name: product_id
+        description: "Natural product id. The running balance is per product_id, so it carries across product versions; the incremental key uses it."
+        tests: [not_null]
       - name: store_key
         description: "Resolved store surrogate key."
         tests:
@@ -105,8 +129,11 @@ models:
               arguments:
                 to: source('gold_finance', 'dim_store')
                 field: store_key
+      - name: qty_delta_hour
+        description: "Net units moved in the hour; additive across hours, products and stores. 0 on a stored hour whose movement went away. tests/fact_inventory_snapshot_balance_reconciles.sql checks opening_qty + cumulative qty_delta_hour = quantity_on_hand."
+        tests: [not_null]
       - name: quantity_on_hand
-        description: "Cumulative running balance of qty_delta_hour per (product, store)."
+        description: "Balance after the hour: opening_qty plus the cumulative qty_delta_hour per (product_id, store). Semi-additive: do not sum across hours."
         tests: [not_null]
       - name: quantity_available
         description: "max(quantity_on_hand, 0) — floored so temporary over-ship reads as 0, not negative."
@@ -116,7 +143,7 @@ models:
               arguments:
                 min_value: 0
       - name: is_estimated
-        description: "Always false. Gold inventory is Spark-canonical through the published cutoff. The column stays because dropping a live column aborts WAP."
+        description: "Always false. Gold inventory is Spark canonical through the published cutoff (ADR-012). The column stays because dropping a live column aborts the WAP publish; provisional hours live only in the serving view."
         tests:
           - not_null
           - accepted_values:
@@ -128,5 +155,5 @@ models:
             combination_of_columns:
               - snapshot_date_key
               - snapshot_hour
-              - product_key
+              - product_id
               - store_key

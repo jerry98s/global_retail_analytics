@@ -16,13 +16,14 @@
   Grain: one row per (transaction_id, line_item_number).
   Source: stg_pos_transactions (typed view over bronze.pos_transactions
           Parquet written by generate_pos_parquet.py).
-  Joins: dim_product CURRENT version only (is_current=true) — this is not an
-         as-of SCD2 join. Line items pick up the product_key that is current
-         at load time; already-loaded history is not restated when merchandising
-         changes price/category. Catalog DAG owns dim_product; this model reads
-         the last published live table via wap_live_ref. A product the catalog
-         DAG has not published yet gets the unknown key -1; the restatement
-         window below re-keys it on a later run.
+  Joins: dim_product as-of SCD2 (ADR-016): the version valid on
+         transaction_date, so a sale keeps the attributes it was sold under
+         however often it is replayed. A sale older than the product's first
+         version takes that first version. product_id is kept beside the key
+         for lineage and current-attribute reporting. Catalog DAG owns
+         dim_product; this model reads the last published live table via
+         wap_live_ref. A product the catalog DAG has not published yet gets
+         the unknown key -1; a later run re-keys it (see stale days below).
          dim_store (Type 0/1 seed, never WAP'd).
          int_identity_resolution (loyalty_id -> customer_key; LEFT JOIN
          yields NULL customer_key for anonymous transactions).
@@ -40,11 +41,18 @@
   pos_restate_empty_dates; the pre-hook deletes those days first.
   Outside an explicit restatement, any older day whose stored customer_key no
   longer matches the loyalty_id's current key (an identity change merged two
-  cards) is also reprocessed whole.
+  cards), or whose stored product_key is not the as-of version (an unknown
+  product published since, or a corrected dimension history), is also
+  reprocessed whole. A table from before product_id existed reprocesses every
+  day once.
   Whole-day replacement assumes a day's lines never land in a dt= partition
   older than the day itself; such lines would be filtered out and deleted.
   `dt` is the Spectrum partition column (aliased from transaction_date on
   DuckDB); filtering it is what prunes Hive dt= prefixes on S3.
+  Voided lines (line or transaction void, ADR-015) stay with their recorded
+  amounts; recognized sales are the rows where is_voided is false. Rows
+  loaded before the status columns existed keep NULL statuses until their
+  day is reprocessed.
 */
 
 {% set restate = pos_restate_range() %}
@@ -67,6 +75,16 @@ stale_days as (
      and i.identifier_value = t.loyalty_id
     where t.loyalty_id is not null
       and coalesce(t.customer_key, -1) <> coalesce(i.customer_key, -1)
+    union
+    select distinct {{ date_from_date_key('t.date_key') }}
+    from {{ this }} t
+    {% if column_exists(this, 'product_id') %}
+    left join {{ product_versions() }} pv
+      on pv.product_id = t.product_id
+     and {{ product_as_of('pv', date_from_date_key('t.date_key')) }}
+    where t.product_id is null
+       or t.product_key <> coalesce(pv.product_key, -1)
+    {% endif %}
 ),
 {% endif %}
 base as (
@@ -87,6 +105,7 @@ base as (
 select
     {{ date_key_from_date('b.transaction_date') }} as date_key,
     coalesce(p.product_key, -1) as product_key,
+    b.product_id,
     s.store_key,
     i.customer_key,
     b.loyalty_id,
@@ -96,11 +115,16 @@ select
     b.gross_revenue,
     b.net_revenue,
     b.gross_margin,
-    b.is_voided
+    b.is_voided,
+    b.line_status,
+    b.transaction_status,
+    b.voided_at,
+    b.void_reason,
+    b.source_updated_at
 from base b
-left join {{ wap_live_ref('dim_product') }} p
+left join {{ product_versions() }} p
   on b.product_id = p.product_id
- and p.is_current = true
+ and {{ product_as_of('p', 'b.transaction_date') }}
 left join {{ source('gold_finance', 'dim_store') }} s
   on b.store_id = s.store_id
 left join {{ ref('int_identity_resolution') }} i

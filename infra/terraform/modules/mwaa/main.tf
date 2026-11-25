@@ -178,6 +178,27 @@ data "aws_iam_policy_document" "dag_tasks" {
     ]
   }
 
+  # promote_inventory_frontier copies the published run's frontier file.
+  # ListBucket lets a missing file read as NoSuchKey instead of AccessDenied.
+  statement {
+    sid       = "InventoryFrontierObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${var.silver_bucket}/iceberg/consumer_current/inventory_frontier/*"]
+  }
+
+  statement {
+    sid       = "InventoryFrontierList"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = ["arn:aws:s3:::${var.silver_bucket}"]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["iceberg/consumer_current/inventory_frontier/*"]
+    }
+  }
+
   statement {
     sid    = "EmrBatchSteps"
     effect = "Allow"

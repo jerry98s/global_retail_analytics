@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -12,9 +13,16 @@ from spark.identity_resolution.kafka_frontier import (
     PartitionFrontier,
     PartitionStat,
     assess_coverage,
+    frontier_document,
     hour_key,
+    kafka_client_properties,
+    lost_offset_count,
+    parse_acknowledged_loss,
+    parse_frontier,
+    proven_end_offsets,
     target_hour_exclusive,
 )
+from streaming.flink_jobs._config import kafka_security_options
 
 pytestmark = pytest.mark.unit
 
@@ -77,15 +85,113 @@ def test_empty_kafka_range_is_complete() -> None:
     assert summary["closed_hour_exclusive"] == hour_key(_TARGET)
 
 
-def test_retention_trimmed_start_is_the_later_of_kafka_and_the_previous_end() -> None:
+def test_offsets_kafka_deleted_before_bronze_captured_them_hold_the_cutoff() -> None:
+    # Published through 50; Kafka now starts at 100; Bronze has only 100..119.
+    # The successor timestamp must not advance the cutoff past the lost records.
+    rows, summary = _assess(
+        frontiers={0: _frontier(0, 100, 120), 1: _frontier(1, 0, 10)},
+        stats={0: _stat(0, 20, 119, datetime(2026, 11, 21, 22, 30)), 1: _stat(1, 10, 9)},
+        previous_end_offsets={0: 50},
+        previous_closed_hour=2026112100,
+    )
+    assert rows[0]["required_start_offset"] == 50
+    assert rows[0]["required_end_offset"] == 120
+    assert rows[0]["missing_offset_count"] == 50
+    assert rows[0]["coverage_status"] == INCOMPLETE
+    assert summary["coverage_status"] == INCOMPLETE
+    assert summary["closed_hour_exclusive"] == 2026112100
+    assert lost_offset_count(_frontier(0, 100, 120), 50, 120, _stat(0, 20, 119)) == 50
+
+
+def test_offsets_kafka_deleted_after_bronze_captured_them_are_complete() -> None:
+    rows, summary = _assess(
+        frontiers={0: _frontier(0, 100, 120), 1: _frontier(1, 0, 10)},
+        stats={0: PartitionStat(0, 70, 119, None, present_before_retained=50), 1: _stat(1, 10, 9)},
+        previous_end_offsets={0: 50},
+    )
+    assert rows[0]["required_start_offset"] == 50
+    assert rows[0]["missing_offset_count"] == 0
+    assert summary["coverage_status"] == COMPLETE
+
+
+def test_acknowledged_loss_starts_at_kafkas_earliest_retained_offset() -> None:
     rows, summary = _assess(
         frontiers={0: _frontier(0, 100, 120), 1: _frontier(1, 0, 10)},
         stats={0: _stat(0, 20, 119), 1: _stat(1, 10, 9)},
         previous_end_offsets={0: 50},
+        acknowledged_loss=frozenset({0}),
     )
     assert rows[0]["required_start_offset"] == 100
     assert rows[0]["missing_offset_count"] == 0
     assert summary["coverage_status"] == COMPLETE
+
+
+def test_acknowledging_a_partition_without_a_loss_changes_nothing() -> None:
+    rows, _ = _assess(previous_end_offsets={0: 0}, acknowledged_loss=frozenset({0}))
+    assert rows[0]["required_start_offset"] == 0
+    assert rows[0]["coverage_status"] == COMPLETE
+
+
+def test_partition_kafka_lost_keeps_the_published_start() -> None:
+    rows, _ = _assess(frontiers={0: _frontier(0, 0, 10)}, previous_end_offsets={1: 40})
+    assert rows[1]["required_start_offset"] == 40
+    assert proven_end_offsets(rows) == {0: 10, 1: 40}
+
+
+def test_an_incomplete_partition_is_proven_only_through_its_start() -> None:
+    rows, _ = _assess(
+        stats={0: _stat(0, 10, 9), 1: _stat(1, 4, 3, None)},
+        previous_end_offsets={1: 0},
+    )
+    assert proven_end_offsets(rows) == {0: 10, 1: 0}
+
+
+def test_frontier_document_round_trips() -> None:
+    rows, summary = _assess(stats={0: _stat(0, 10, 9), 1: _stat(1, 4, 3, None)}, previous_closed_hour=2026112110)
+    document = frontier_document(summary, rows)
+    assert document == {
+        "inventory_run_id": "R1",
+        "closed_hour_exclusive": 2026112110,
+        "end_offsets": {"0": 10, "1": 0},
+    }
+    assert parse_frontier(json.dumps(document)) == ("R1", 2026112110, {0: 10, 1: 0})
+
+
+def test_frontier_without_a_run_id_is_rejected() -> None:
+    with pytest.raises(ValueError, match="inventory_run_id"):
+        parse_frontier(json.dumps({"inventory_run_id": "", "closed_hour_exclusive": None, "end_offsets": {}}))
+
+
+def test_acknowledged_loss_parses_and_rejects_unknown_partitions() -> None:
+    assert parse_acknowledged_loss("", 12) == frozenset()
+    assert parse_acknowledged_loss(None, 12) == frozenset()
+    assert parse_acknowledged_loss("3, 7", 12) == frozenset({3, 7})
+    with pytest.raises(ValueError, match="outside 0..11"):
+        parse_acknowledged_loss("12", 12)
+    with pytest.raises(ValueError):
+        parse_acknowledged_loss("x", 12)
+
+
+def test_plaintext_kafka_adds_no_security_settings() -> None:
+    assert kafka_client_properties("PLAINTEXT", "AWS_MSK_IAM") == {}
+
+
+def test_msk_iam_settings_match_the_flink_jobs() -> None:
+    props = kafka_client_properties("SASL_SSL", "AWS_MSK_IAM")
+    assert props == {
+        "security.protocol": "SASL_SSL",
+        "sasl.mechanism": "AWS_MSK_IAM",
+        "sasl.jaas.config": "software.amazon.msk.auth.iam.IAMLoginModule required;",
+        "sasl.client.callback.handler.class": "software.amazon.msk.auth.iam.IAMClientCallbackHandler",
+    }
+    flink = kafka_security_options({"kafka_security_protocol": "SASL_SSL", "kafka_sasl_mechanism": "AWS_MSK_IAM"})
+    for key, value in props.items():
+        assert f"'properties.{key}' = '{value}'" in flink
+
+
+def test_unknown_kafka_security_protocol_is_rejected() -> None:
+    with pytest.raises(ValueError, match="SSL"):
+        kafka_client_properties("SSL", "AWS_MSK_IAM")
 
 
 def test_internal_gap_pulls_the_cutoff_back_by_the_lateness_allowance() -> None:

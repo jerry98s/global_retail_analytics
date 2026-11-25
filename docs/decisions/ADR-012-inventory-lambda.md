@@ -39,18 +39,41 @@ before dbt. The marketing DAG and `deploy_platform.ps1 -Action spark` run
 `--mode hourly` (clickstream, the Flink export, and identity). Airflow rejects
 `--mode all`. Both Spark steps use the `emr_spark` pool (size 1):
 `airflow pools set emr_spark 1 "one Spark step at a time"`.
+The pool alone is not a lock, because a step keeps running on EMR after its
+sensor times out. Each DAG first waits until no `spark-hourly` or
+`spark-inventory` step is pending or running on the cluster, and its submit
+task, holding the pool slot, checks again and refuses if one is. The
+warehouse DAG runs at 01:15 UTC, so the target cutoff is 00:00 and the whole
+previous day is Gold. If the inventory step does not finish,
+`inventory_spark_outcome` alerts and the dbt build and audit exclude
+`fact_inventory_snapshot+`, `inventory_publication+` and
+`inventory_canonical_run_is_one`; their pending copies are live clones, so
+POS publishes and inventory keeps the last published cutoff.
 
 - The target cutoff is the latest whole hour whose end plus the 60-second
   watermark plus 3600 seconds of lateness is already in the past.
   `closed_hour_exclusive` is the first hour Gold does not include.
 - `kafka_frontier.py` asks Kafka, per partition, for the earliest retained
   offset and the offset at the cutoff. Brokers are the Airflow Variable
-  `msk_bootstrap_brokers`. The topic is `inventory.events.v1` with 12
+  `msk_bootstrap_brokers` (the MSK IAM endpoint), reached with `SASL_SSL` /
+  `AWS_MSK_IAM` through `aws-msk-iam-auth` 1.1.9, the same settings as the
+  Flink jobs. The topic is `inventory.events.v1` with 12
   partitions. `silver.inventory_partition_coverage` has one row per expected
-  partition. `silver.inventory_cutoff` is the summary row. Incomplete coverage
+  partition. The required range runs from the last published end offset
+  (Kafka's earliest on the first run) to the offset at the cutoff, so
+  offsets Kafka deleted before Bronze captured them are counted missing; the
+  Spark log names the partition and the cutoff holds until a run lists it in
+  `acknowledge_kafka_loss`. `silver.inventory_cutoff` is the summary row. Incomplete coverage
   holds the cutoff at the last proven hour and warns. It does not block the
   POS publish. Spectrum DDL for both exports is in
   `transformation/redshift/spectrum/silver_external_tables.sql`.
+- The previous cutoff and offsets come from the last published run, not
+  from Silver. Each run writes `<consumer root>/inventory_frontier/run=<id>.json`
+  after its exports; after the WAP publish, `promote_inventory_frontier`
+  copies the run in live `control.inventory_publication` to `published.json`,
+  where the next run starts. A complete partition is proven through its
+  required end, an incomplete one only through its start. A lake published
+  before the file existed falls back to the Silver cutoff once.
 - An event that reaches Kafka after the cutoff is applied once by the next
   daily run, because the fact recomputes full history.
 - `int_inventory_hourly` sums canonical events for hours strictly before the
@@ -72,7 +95,7 @@ before dbt. The marketing DAG and `deploy_platform.ps1 -Action spark` run
   published balance per product and store plus Flink hours after that
   pair's own newest fact hour. Hours Spark covers are never added from Flink,
   since Spark is canonical there. It is a view built after the warehouse publish, so it follows
-  every `inventory_hourly` export without waiting for the daily rebuild.
+  every Flink commit of `inventory_hourly` without waiting for the daily rebuild (ADR-017).
 - `fact_inventory_snapshot` reads `int_inventory_hourly`. Each run recomputes
   every running balance and upserts only rows that are new or whose balance
   or `is_estimated` changed. A rewritten hour keeps its stored `product_key`.
@@ -105,8 +128,9 @@ before dbt. The marketing DAG and `deploy_platform.ps1 -Action spark` run
   hours stay on Flink in serving only. The first publish after rollout
   restates Flink-only hours already in live: they are re-emitted with zero
   movement, and the balance changes once.
-- **Current stock is about an hour old.** The serving view is as fresh as the
-  Flink window (1 hour on cloud) plus the hourly `inventory_hourly` export.
+- **Current stock is as fresh as the last Flink commit.** The serving view
+  follows the Flink window (1 hour on cloud). ADR-017 removed the extra wait
+  for the hourly Spark export.
 - **One stockout measure.** Stockout duration lives only in
   `summary.inventory_position_daily`, which counts every hour the carried
   balance is at or below zero. `inventory_daily_product_store` no longer has

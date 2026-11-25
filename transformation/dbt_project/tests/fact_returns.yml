@@ -1,0 +1,96 @@
+version: 2
+
+models:
+  - name: fact_returns
+    description: "Returns fact at return-line grain (ADR-015). One row per (return_id, return_line_number) from stg_pos_returns, dated and stored at the return, referencing the original sale line. Original sales in fact_sales are never changed."
+    columns:
+      - name: date_key
+        description: "Return processing date key (YYYYMMDD); the refund counts on this date."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold_finance', 'dim_date')
+                field: date_key
+      - name: product_key
+        description: "Returned product: the dim_product version valid on the original sale date (return date for an UNKNOWN_SALE), as-of SCD2 (ADR-016). -1 until the catalog DAG publishes the product."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold_marketing', 'dim_product')
+                field: product_key
+              config:
+                where: "product_key <> -1"
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "<> -1"
+              config:
+                severity: warn
+      - name: product_id
+        description: "Natural product id named on the return. Lineage for product_key."
+        tests: [not_null]
+      - name: store_key
+        description: "Store that processed the return (may differ from the sale's store)."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: source('gold_finance', 'dim_store')
+                field: store_key
+      - name: original_date_key
+        description: "Date key of the original sale; NULL when eligibility_status is UNKNOWN_SALE."
+      - name: return_id
+        description: "Return transaction identifier; one per original ticket and return day."
+        tests: [not_null]
+      - name: return_line_number
+        description: "Line sequence within the return (1-based)."
+        tests: [not_null]
+      - name: original_transaction_id
+        description: "transaction_id of the returned sale line."
+        tests: [not_null]
+      - name: original_line_item_number
+        description: "line_item_number of the returned sale line."
+        tests: [not_null]
+      - name: quantity_returned
+        description: "Units returned on this line."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+      - name: refund_amount
+        description: "Refund for this line, DECIMAL(18,2). Counts toward money only when is_refund_recognized."
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: return_status
+        description: "COMPLETED or REJECTED. Rejected returns are kept for audit with no financial impact."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['COMPLETED', 'REJECTED']
+      - name: eligibility_status
+        description: "ELIGIBLE, VOIDED_SALE (original line voided: no refund), UNKNOWN_SALE (no original line) or PRODUCT_MISMATCH (original line sold another product). The last two block the publish."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['ELIGIBLE', 'VOIDED_SALE', 'UNKNOWN_SALE', 'PRODUCT_MISMATCH']
+      - name: is_refund_recognized
+        description: "True when return_status is COMPLETED and eligibility_status is ELIGIBLE; only these refunds reduce net sales."
+        tests: [not_null]
+      - name: reason_code
+        description: "Return reason, e.g. DAMAGED_ITEM."
+      - name: processed_at
+        description: "When the return was processed (naive UTC)."
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - return_id
+              - return_line_number

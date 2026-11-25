@@ -151,6 +151,7 @@ module "mwaa" {
   private_subnet_ids     = length(var.mwaa_subnet_ids) > 0 ? var.mwaa_subnet_ids : var.private_subnet_ids
   artifacts_bucket       = module.s3.artifacts_bucket_name
   bronze_bucket          = module.s3.bronze_bucket_name
+  silver_bucket          = module.s3.silver_bucket_name
   environment_class      = var.mwaa_environment_class
   max_workers            = var.mwaa_max_workers
   webserver_access_mode  = var.mwaa_webserver_access_mode

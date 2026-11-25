@@ -14,6 +14,7 @@ Required Airflow Variables (see `terraform output airflow_variables`):
   - checkpoints_bucket
   - bronze_iceberg_warehouse
   - silver_iceberg_warehouse
+  - glue_silver_database
   - msk_bootstrap_brokers
 
 Idempotency guard (P1.4 from docs/runbooks/dw-checklist-audit.md):
@@ -82,6 +83,9 @@ def _flink_step(name: str, entry: str) -> dict:
         "KAFKA_SASL_MECHANISM='AWS_MSK_IAM' "
         "ICEBERG_BRONZE_WAREHOUSE='{{ var.value.bronze_iceberg_warehouse }}' "
         "ICEBERG_SILVER_WAREHOUSE='{{ var.value.silver_iceberg_warehouse }}' "
+        "ICEBERG_SILVER_CATALOG_IMPL='org.apache.iceberg.aws.glue.GlueCatalog' "
+        "ICEBERG_IO_IMPL='org.apache.iceberg.aws.s3.S3FileIO' "
+        "ICEBERG_SILVER_NAMESPACE='{{ var.value.glue_silver_database }}' "
         # Match Kafka partition counts (ingestion/kafka/topics.py):
         # inventory.events.v1=12, clickstream.events.v1=24.
         "INVENTORY_PARALLELISM='12' "

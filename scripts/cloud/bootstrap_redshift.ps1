@@ -152,6 +152,8 @@ $orderedFiles = @(
     'ddl/08_fact_inventory_snapshot.sql',
     'ddl/09_fact_customer_session.sql',
     'ddl/11_summary_customer_360.sql',
+    'ddl/12_inventory_publication.sql',
+    'ddl/13_fact_returns.sql',
     'seeds/dim_date.sql',
     'seeds/dim_store.sql'
 )

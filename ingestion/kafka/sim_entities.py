@@ -35,6 +35,14 @@ LOYALTY_IDS: list[str] = [f"LOYAL-{i:06d}" for i in range(1, 10_001)]
 # also verified to LOYAL-n, so the identity graph has real merges. The other
 # accounts have no loyalty card.
 ACCOUNT_IDS: list[str] = [f"CUST-{i:06d}" for i in range(1, 12_001)]
+
+# Outside both ranges, so the identity-change demo cannot collide with a
+# random login or a generated POS line. The lower card sorts first and stays
+# the anchor; verifying the account to both cards moves the higher card.
+IDENTITY_CHANGE_ACCOUNT = "CUST-900001"
+IDENTITY_CHANGE_CARD = "LOYAL-900001"
+IDENTITY_CHANGE_OTHER_CARD = "LOYAL-900002"
+IDENTITY_CHANGE_CLIENT = "CLIENT-CHG-0001"
 _VERIFIED_FIRST_ACCOUNTS = 7_000
 _SECOND_ACCOUNT_BASE = 10_000
 _SECOND_ACCOUNTS = 1_000

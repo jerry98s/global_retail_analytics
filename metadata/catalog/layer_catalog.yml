@@ -3,7 +3,7 @@
 #
 # grain is the unique-key tuple, e.g. (date_key, store_key), whenever the
 # object has one; prose only for objects without a key (raw Bronze ledgers,
-# single-row views). object_type external = read through Spectrum on main.
+# single-row views). object_type external = read through Redshift Spectrum.
 
 objects:
   - object_fqn: bronze.clickstream_records
@@ -96,6 +96,16 @@ objects:
     freshness_sla_minutes: 1440
     is_active: true
 
+  - object_fqn: bronze.pos_returns
+    object_type: external
+    platform_layer: bronze
+    domain: finance
+    owner: data-platform
+    grain: (return_id, return_line_number)
+    timestamp_column: return_date
+    freshness_sla_minutes: 1440
+    is_active: true
+
   - object_fqn: silver.inventory_hourly
     object_type: external
     platform_layer: silver
@@ -146,12 +156,22 @@ objects:
     freshness_sla_minutes: 1440
     is_active: true
 
+  - object_fqn: finance.fact_returns
+    object_type: table
+    platform_layer: gold
+    domain: finance
+    owner: analytics-engineering
+    grain: (return_id, return_line_number)
+    timestamp_column: date_key
+    freshness_sla_minutes: 1440
+    is_active: true
+
   - object_fqn: finance.fact_inventory_snapshot
     object_type: table
     platform_layer: gold
     domain: supply
     owner: analytics-engineering
-    grain: (snapshot_date_key, snapshot_hour, product_key, store_key)
+    grain: (snapshot_date_key, snapshot_hour, product_id, store_key)
     timestamp_column: snapshot_date_key
     freshness_sla_minutes: 1440
     is_active: true

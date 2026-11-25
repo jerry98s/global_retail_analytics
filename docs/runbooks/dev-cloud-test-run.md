@@ -100,6 +100,18 @@ $env:POS_BRONZE_S3_PATH = "<pos_bronze_s3_path from terraform output>"
 .\.venv\Scripts\python.exe ingestion/batch/generate_pos_parquet.py --transaction-count 1000
 ```
 
+Returns (ADR-015) are derived from the POS lines in the generator's lookback,
+so copy that POS down, generate the day's returns file and upload it. A day
+with no returns still uploads a zero-row file; `fact_returns` needs it.
+
+```powershell
+$Day = "YYYY-MM-DD"   # the date generated above
+$Returns = "<pos_returns_bronze_s3_path from terraform output>"
+aws s3 sync "$($env:POS_BRONZE_S3_PATH)data/" .local\cloud-pos\data\
+.\.venv\Scripts\python.exe -m ingestion.batch.generate_pos_returns_parquet --date $Day --pos-dir .local\cloud-pos --output-dir .local\cloud-returns
+aws s3 cp ".local\cloud-returns\data\dt=$Day\part-00000.parquet" "${Returns}data/dt=$Day/part-00000.parquet"
+```
+
 ## Step 6 — Bronze promotion and Spark GraphFrames identity
 
 ADR-011: first confirm both `bronze.*_records` tables have committed Iceberg
@@ -119,10 +131,11 @@ returns a non-zero exit instead of allowing stale identity data downstream.
 ```
 
 The job writes Iceberg `silver.identity_resolution` / `identity_edges` plus
-`consumer_current/<name>/` Parquet exports (including `inventory_hourly`, read
-from its committed Iceberg snapshot). Spectrum reads each export's `manifest`,
-which the job replaces atomically, never a raw Iceberg `data/` directory
-containing superseded snapshots.
+`consumer_current/<name>/` Parquet exports. Spectrum reads each export's
+`manifest`, which the job replaces atomically, never a raw Iceberg `data/`
+directory containing superseded snapshots. `silver.inventory_hourly` is not
+one of those exports: Flink commits it to Glue and Redshift reads that table
+(ADR-017).
 
 ## Step 7 — Redshift DDL + Spectrum
 
@@ -138,13 +151,17 @@ in Redshift Query Editor v2, in order:
 2. `target/redshift_metadata_create_dev.sql` — on database `dev`
 3. `target/redshift_metadata_schema_dev.sql` — after switching to database `metadata`
 
-Back on database `dev`, register the POS partition for the date generated in
-step 5 (Spectrum does not discover Hive partitions automatically):
+Back on database `dev`, register the POS and returns partitions for the date
+generated in step 5 (Spectrum does not discover Hive partitions automatically):
 
 ```sql
 ALTER TABLE bronze.pos_transactions
 ADD IF NOT EXISTS PARTITION (dt='YYYY-MM-DD')
 LOCATION 's3://<bronze-bucket>/iceberg/bronze/pos_transactions/data/dt=YYYY-MM-DD/';
+
+ALTER TABLE bronze.pos_returns
+ADD IF NOT EXISTS PARTITION (dt='YYYY-MM-DD')
+LOCATION 's3://<bronze-bucket>/iceberg/bronze/pos_returns/data/dt=YYYY-MM-DD/';
 ```
 
 ## Step 8 — dbt + Write-Audit-Publish from the laptop

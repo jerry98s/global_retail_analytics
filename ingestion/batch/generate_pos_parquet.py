@@ -1,11 +1,12 @@
 """
-Generate a daily POS Parquet snapshot and upload to S3 bronze.
+Generate a daily POS Parquet snapshot for bronze.
 
-Used by the warehouse_daily_batch_pipeline Airflow DAG (and manually for dev). Writes
-directly to the Spectrum/dbt bronze path — same layout as Flink bronze jobs.
+Used by the warehouse_daily_batch_pipeline Airflow DAG (and manually for
+dev/local). Writes the same layout Flink bronze jobs use under ``data/``.
 
-Output layout:
+Output layouts:
   s3://<bucket>/iceberg/bronze/pos_transactions/data/dt=<YYYY-MM-DD>/part-00000.parquet
+  <local-dir>/data/dt=<YYYY-MM-DD>/part-00000.parquet   (--output-dir for local dbt)
 
 Idempotency (P3.6, docs/runbooks/dw-checklist-audit.md):
   The default seed is derived deterministically from `--date` so re-running
@@ -14,6 +15,12 @@ Idempotency (P3.6, docs/runbooks/dw-checklist-audit.md):
   This makes Bronze reproducible: a corrupted partition can be regenerated
   exactly. To opt into a different draw (e.g. for additive demo data),
   pass `--seed <int>` to override the date-derived seed.
+
+Void semantics (ADR-015):
+  `line_status` VOIDED cancels one item; `transaction_status` VOIDED cancels
+  the whole ticket and is repeated on every line. Voided lines stay in the
+  file for audit. `is_voided` is written as line OR transaction voided.
+  Timestamps are naive UTC.
 """
 
 from __future__ import annotations
@@ -24,8 +31,9 @@ import os
 import random
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -33,7 +41,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import structlog
 
-from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCT_CATALOG, PRODUCTS, STORES
+from ingestion.kafka.sim_entities import (
+    IDENTITY_CHANGE_CARD,
+    IDENTITY_CHANGE_OTHER_CARD,
+    LOYALTY_IDS,
+    PRODUCT_CATALOG,
+    PRODUCTS,
+    STORES,
+)
 
 log = structlog.get_logger()
 
@@ -50,8 +65,22 @@ POS_SCHEMA = pa.schema(
         ("net_revenue", pa.decimal128(18, 2)),
         ("gross_margin", pa.decimal128(18, 2)),
         ("is_voided", pa.bool_()),
+        ("line_status", pa.string()),
+        ("transaction_status", pa.string()),
+        ("voided_at", pa.timestamp("us")),
+        ("void_reason", pa.string()),
+        ("source_updated_at", pa.timestamp("us")),
     ]
 )
+
+ACTIVE = "ACTIVE"
+COMPLETED = "COMPLETED"
+VOIDED = "VOIDED"
+LINE_VOID_RATE = 0.01
+TRANSACTION_VOID_RATE = 0.005
+LINE_VOID_REASONS = ("CUSTOMER_CHANGED_MIND", "CASHIER_ERROR", "PRICE_DISPUTE")
+TRANSACTION_VOID_REASONS = ("CUSTOMER_CANCELLED", "CASHIER_ERROR", "PAYMENT_DECLINED")
+STORE_OPEN_SECONDS = (8 * 3600, 22 * 3600)
 
 
 @dataclass
@@ -66,7 +95,15 @@ class PosLine:
     gross_revenue: Decimal
     net_revenue: Decimal
     gross_margin: Decimal
-    is_voided: bool
+    source_updated_at: Optional[datetime] = None
+    line_status: str = ACTIVE
+    transaction_status: str = COMPLETED
+    voided_at: Optional[datetime] = None
+    void_reason: Optional[str] = None
+
+    @property
+    def is_voided(self) -> bool:
+        return self.line_status == VOIDED or self.transaction_status == VOIDED
 
     @classmethod
     def generate(
@@ -94,8 +131,28 @@ class PosLine:
             gross_revenue=gross,
             net_revenue=net,
             gross_margin=margin,
-            is_voided=random.random() < 0.01,
+            line_status=VOIDED if random.random() < LINE_VOID_RATE else ACTIVE,
         )
+
+
+def apply_lifecycle(lines: list[PosLine], txn_date: date, rng: random.Random) -> None:
+    """Stamp one ticket's ring-up time, line voids and optional transaction void."""
+    rung_up = datetime.combine(txn_date, time()) + timedelta(seconds=rng.randrange(*STORE_OPEN_SECONDS))
+    for line in lines:
+        line.source_updated_at = rung_up
+        if line.line_status == VOIDED:
+            line.voided_at = rung_up + timedelta(seconds=rng.randint(10, 300))
+            line.void_reason = rng.choice(LINE_VOID_REASONS)
+            line.source_updated_at = line.voided_at
+    if rng.random() < TRANSACTION_VOID_RATE:
+        voided_at = rung_up + timedelta(seconds=rng.randint(301, 900))
+        reason = rng.choice(TRANSACTION_VOID_REASONS)
+        for line in lines:
+            line.transaction_status = VOIDED
+            if line.line_status != VOIDED:
+                line.voided_at = voided_at
+                line.void_reason = reason
+            line.source_updated_at = voided_at
 
 
 def _money(value: Decimal) -> Decimal:
@@ -106,6 +163,7 @@ def _money(value: Decimal) -> Decimal:
 # across runs so the same (--date, transaction index) maps to the same
 # transaction_id. Generated once with uuid.uuid4(); pinned here.
 _TXN_NAMESPACE = uuid.UUID("a4f3b2c1-0000-0000-0000-000000504f53")
+_LIFECYCLE_SALT = 0x564F4944
 
 
 def _derive_seed(txn_date: date, override: Optional[int]) -> int:
@@ -127,7 +185,11 @@ def generate_rows(
     # (transaction counts, line counts, quantities, revenues, store/product
     # selection, loyalty_id nullness, is_voided) is reproducible for a given
     # --date. Re-running with the same args produces byte-identical Parquet.
-    random.seed(_derive_seed(txn_date, seed_override))
+    seed = _derive_seed(txn_date, seed_override)
+    random.seed(seed)
+    # Void timestamps and transaction voids draw from their own stream, so
+    # adding them did not change any line a date produced before ADR-015.
+    lifecycle = random.Random(seed ^ _LIFECYCLE_SALT)
     rows: list[PosLine] = []
     for n in range(transaction_count):
         # uuid5 is deterministic from (namespace, name) — replays for the
@@ -137,8 +199,12 @@ def generate_rows(
         txn_id = str(uuid.uuid5(_TXN_NAMESPACE, f"{txn_date.isoformat()}#{n}"))
         store_id = random.choice(STORES)
         loyalty_id = random.choice(LOYALTY_IDS) if random.random() < 0.7 else None
-        for line_no in range(1, random.randint(1, max_lines) + 1):
-            rows.append(PosLine.generate(txn_id, line_no, txn_date, store_id, loyalty_id))
+        lines = [
+            PosLine.generate(txn_id, line_no, txn_date, store_id, loyalty_id)
+            for line_no in range(1, random.randint(1, max_lines) + 1)
+        ]
+        apply_lifecycle(lines, txn_date, lifecycle)
+        rows.extend(lines)
     return rows
 
 
@@ -159,6 +225,11 @@ def rows_to_table(rows: list[PosLine]) -> pa.Table:
                 "net_revenue": row.net_revenue,
                 "gross_margin": row.gross_margin,
                 "is_voided": row.is_voided,
+                "line_status": row.line_status,
+                "transaction_status": row.transaction_status,
+                "voided_at": row.voided_at,
+                "void_reason": row.void_reason,
+                "source_updated_at": row.source_updated_at,
             }
             for row in rows
         ],
@@ -190,16 +261,88 @@ def upload_parquet(output_s3: str, txn_date: str, table: pa.Table) -> str:
     return uri
 
 
+def identity_change_rows(txn_date: date) -> list[PosLine]:
+    """One in-store line for each demo card.
+
+    The ids sit outside ``LOYALTY_IDS``, and the transaction ids are fixed, so
+    the daily generator never emits these lines and rewriting the file repeats
+    them. The lower card stays the anchor; the higher card's line is the one
+    an identity change re-keys.
+    """
+    rows = []
+    for loyalty_id in (IDENTITY_CHANGE_CARD, IDENTITY_CHANGE_OTHER_CARD):
+        rows.append(
+            PosLine(
+                transaction_id=str(uuid.uuid5(_TXN_NAMESPACE, f"identity-change#{loyalty_id}")),
+                line_item_number=1,
+                transaction_date=txn_date,
+                store_id=STORES[0],
+                product_id=PRODUCTS[0],
+                loyalty_id=loyalty_id,
+                quantity_sold=1,
+                gross_revenue=Decimal("10.00"),
+                net_revenue=Decimal("10.00"),
+                gross_margin=Decimal("4.00"),
+                source_updated_at=datetime.combine(txn_date, time(12)),
+            )
+        )
+    return rows
+
+
+def write_identity_change_parquet(output_dir: str, txn_date: date) -> str:
+    """Write the demo lines beside the daily file, without touching it."""
+    part_dir = Path(output_dir) / "data" / f"dt={txn_date.isoformat()}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    path = part_dir / "part-identity-change.parquet"
+    pq.write_table(rows_to_table(identity_change_rows(txn_date)), path, compression="snappy")
+    log.info("identity_change_pos_written", path=str(path), rows=2)
+    return str(path)
+
+
+def write_local_parquet(output_dir: str, txn_date: str, table: pa.Table) -> str:
+    """Write POS Parquet under a local Iceberg-style bronze prefix.
+
+    Layout (matches Spectrum Hive partition naming used in cloud)::
+
+        <output_dir>/data/dt=<YYYY-MM-DD>/part-00000.parquet
+
+    Pass ``--output-dir .local/iceberg/bronze/pos_transactions`` for the
+    local Flink warehouse bind-mount so ``load_iceberg_to_duckdb.py`` can
+    pick it up alongside stream tables.
+    """
+    root = Path(output_dir)
+    part_dir = root / "data" / f"dt={txn_date}"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    path = part_dir / "part-00000.parquet"
+    pq.write_table(table, path, compression="snappy")
+    log.info("pos_parquet_written", path=str(path), rows=table.num_rows)
+    return str(path)
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate daily POS Parquet bronze and upload to S3.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate daily POS Parquet bronze. "
+            "Upload to S3 (--output-s3) or write locally (--output-dir)."
+        )
+    )
     parser.add_argument("--date", default=date.today().isoformat(), help="Transaction date YYYY-MM-DD.")
     parser.add_argument(
         "--output-s3",
-        default=os.environ.get(
-            "POS_BRONZE_S3_PATH",
-            "s3://retail-platform-dev-bronze/iceberg/bronze/pos_transactions/",
+        default=None,
+        help=(
+            "S3 prefix for bronze POS Parquet (trailing slash optional). "
+            "Default from POS_BRONZE_S3_PATH when --output-dir is omitted."
         ),
-        help="S3 prefix for bronze POS Parquet (trailing slash optional).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=(
+            "Local directory for bronze POS Parquet "
+            "(writes data/dt=<date>/part-00000.parquet). "
+            "Use for local dbt/DuckDB fidelity instead of --output-s3."
+        ),
     )
     parser.add_argument("--transaction-count", type=int, default=5000)
     parser.add_argument("--max-lines-per-txn", type=int, default=5)
@@ -218,6 +361,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.output_dir and args.output_s3:
+        raise SystemExit("Pass only one of --output-dir or --output-s3.")
     txn_date = datetime.strptime(args.date, "%Y-%m-%d").date()
     rows = generate_rows(
         txn_date,
@@ -225,7 +370,16 @@ def main() -> None:
         args.max_lines_per_txn,
         seed_override=args.seed,
     )
-    uri = upload_parquet(args.output_s3, txn_date.isoformat(), rows_to_table(rows))
+    table = rows_to_table(rows)
+    if args.output_dir:
+        path = write_local_parquet(args.output_dir, txn_date.isoformat(), table)
+        print(f"Wrote {len(rows)} line items to {path}")
+        return
+    output_s3 = args.output_s3 or os.environ.get(
+        "POS_BRONZE_S3_PATH",
+        "s3://retail-platform-dev-bronze/iceberg/bronze/pos_transactions/",
+    )
+    uri = upload_parquet(output_s3, txn_date.isoformat(), table)
     print(f"Uploaded {len(rows)} line items to {uri}")
 
 

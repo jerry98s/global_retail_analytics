@@ -1,0 +1,2 @@
+return_id,return_line_number,return_date,original_transaction_id,original_line_item_number,return_store_id,product_id,quantity_returned,refund_amount,return_status,reason_code,processed_at
+r-001,1,2026-07-03,t-001,1,ST-001,P-1001,1,47.50,COMPLETED,DAMAGED_ITEM,2026-07-03 12:30:00

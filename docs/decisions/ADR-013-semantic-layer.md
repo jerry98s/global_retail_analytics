@@ -30,11 +30,14 @@ split across two `product_key` values.
 
 1. **Dense inventory position.** `summary.inventory_position_daily` has one row
    per `(snapshot_date_key, product_id, store_id)` for every pair with an
-   opening balance or a movement, on every day from the first to the last fact
-   day. Days without movement carry the previous balance; days before the first
-   movement carry `opening_qty`. `stockout_hour_count` counts hours at or below
-   zero, including hours with no movement. It reads only
-   `fact_inventory_snapshot` (plus dims and the opening-balance seed), is owned
+   opening balance or a movement, on every day from the first fact day through
+   the last day the published inventory cutoff fully closes. Days without
+   movement carry the previous balance; days before the first movement carry
+   `opening_qty`. The day the cutoff falls inside has no row until it closes.
+   `stockout_hour_count` counts hours at or below zero, including hours with
+   no movement. It reads only `fact_inventory_snapshot` and the cutoff
+   published with it, `control.inventory_publication` (plus dims and the
+   opening-balance seed), is owned
    by `warehouse_daily_batch_pipeline`, and goes through WAP like the other
    summary tables.
 2. **MetricFlow semantic models** (legacy spec, dbt Core 1.11) in

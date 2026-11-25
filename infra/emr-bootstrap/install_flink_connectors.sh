@@ -33,6 +33,12 @@ download \
   "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-flink-runtime-1.17/${ICEBERG_VERSION}/iceberg-flink-runtime-1.17-${ICEBERG_VERSION}.jar" \
   "${FLINK_LIB}/iceberg-flink-runtime-1.17-${ICEBERG_VERSION}.jar"
 
+# GlueCatalog is not inside iceberg-flink-runtime. The hourly silver job uses
+# it when ICEBERG_SILVER_CATALOG_IMPL is set (ADR-017).
+download \
+  "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar" \
+  "${FLINK_LIB}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar"
+
 download \
   "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR_VERSION}/flink-sql-connector-kafka-${KAFKA_CONNECTOR_VERSION}.jar" \
   "${FLINK_LIB}/flink-sql-connector-kafka-${KAFKA_CONNECTOR_VERSION}.jar"

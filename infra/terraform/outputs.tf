@@ -83,6 +83,11 @@ output "redshift_glue_bronze_database" {
   value       = module.redshift.glue_bronze_database
 }
 
+output "glue_silver_database" {
+  description = "Glue database shared by Redshift's silver schema and the hourly Flink catalog (ADR-017)."
+  value       = "${module.redshift.glue_bronze_database}_silver"
+}
+
 output "dashboard_ecr_repository_url" {
   description = "ECR repo to push the dashboard image to (null unless enable_dashboard = true)."
   value       = var.enable_dashboard ? module.dashboard[0].ecr_repository_url : null
@@ -118,6 +123,11 @@ output "pos_bronze_s3_path" {
   value       = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_transactions/"
 }
 
+output "pos_returns_bronze_s3_path" {
+  description = "S3 prefix for daily POS returns Parquet bronze (Airflow pos_returns_bronze_s3_path)."
+  value       = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_returns/"
+}
+
 output "bronze_iceberg_warehouse" {
   description = "Iceberg bronze warehouse URI (Airflow bronze_iceberg_warehouse)."
   value       = "s3://${module.s3.bronze_bucket_name}/iceberg"
@@ -150,6 +160,7 @@ output "airflow_variables" {
     checkpoints_bucket         = module.s3.checkpoints_bucket_name
     bronze_iceberg_warehouse   = "s3://${module.s3.bronze_bucket_name}/iceberg"
     silver_iceberg_warehouse   = "s3://${module.s3.silver_bucket_name}/iceberg"
+    glue_silver_database       = "${module.redshift.glue_bronze_database}_silver"
     msk_bootstrap_brokers      = module.kafka.bootstrap_brokers_sasl_iam
     redshift_workgroup_name    = module.redshift.workgroup_name
     redshift_host              = module.redshift.endpoint
@@ -157,6 +168,7 @@ output "airflow_variables" {
     redshift_metadata_database = var.redshift_metadata_database_name
     redshift_secret_arn        = aws_secretsmanager_secret.redshift_admin.arn
     pos_bronze_s3_path         = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_transactions/"
+    pos_returns_bronze_s3_path = "s3://${module.s3.bronze_bucket_name}/iceberg/bronze/pos_returns/"
     alert_topic_arn            = aws_sns_topic.alerts.arn
   }
 }

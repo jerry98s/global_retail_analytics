@@ -123,11 +123,12 @@ MSK topics
   ├─ (same topic)         → Flink inventory_hourly   → s3://…-silver/iceberg/silver/inventory_hourly/
   └─ clickstream.events.v1 → Flink clickstream_bronze → s3://…-bronze/iceberg/bronze/clickstream_records/
 
-Airflow warehouse_daily_batch_pipeline (00:15 UTC)
-  └─ generate_pos_parquet → s3://…-bronze/iceberg/bronze/pos_transactions/data/dt=…/
+Airflow warehouse_daily_batch_pipeline (01:15 UTC)
+  ├─ generate_pos_parquet         → s3://…-bronze/iceberg/bronze/pos_transactions/data/dt=…/
+  └─ generate_pos_returns_parquet → s3://…-bronze/iceberg/bronze/pos_returns/data/dt=…/
 
 Redshift Spectrum (transformation/redshift/spectrum/bronze_external_tables.sql)
-  ├─ bronze.pos_transactions (batch)
+  ├─ bronze.pos_transactions, bronze.pos_returns (batch)
   └─ silver.{inventory_events, clickstream_events} (Spark canonical exports)
 
 dbt (staging → intermediate → marts) → finance.* / marketing.* / summary.*

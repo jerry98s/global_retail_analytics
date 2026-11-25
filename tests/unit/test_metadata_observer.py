@@ -458,18 +458,18 @@ def test_summary_models_exist_and_single_fact_source() -> None:
     summary_dir = (
         _REPO / "transformation" / "dbt_project" / "models" / "marts" / "summary"
     )
+    # One fact per summary. sales_daily_store is the ADR-015 exception: it
+    # aggregates fact_sales and fact_returns separately before joining.
     expected = {
-        "sales_daily_store.sql": "fact_sales",
-        "inventory_daily_product_store.sql": "fact_inventory_snapshot",
-        "inventory_position_daily.sql": "fact_inventory_snapshot",
-        "sessions_daily_platform.sql": "fact_customer_session",
-        "consent_identity_daily.sql": "fact_customer_session",
+        "sales_daily_store.sql": ["fact_returns", "fact_sales"],
+        "inventory_daily_product_store.sql": ["fact_inventory_snapshot"],
+        "inventory_position_daily.sql": ["fact_inventory_snapshot"],
+        "sessions_daily_platform.sql": ["fact_customer_session"],
+        "consent_identity_daily.sql": ["fact_customer_session"],
     }
-    for fname, fact in expected.items():
+    for fname, facts in expected.items():
         text = (summary_dir / fname).read_text(encoding="utf-8")
-        assert f"ref('{fact}')" in text
-        # No fact-to-fact joins: only one fact ref.
-        assert text.count("ref('fact_") == 1
+        assert sorted(set(re.findall(r"ref\('(fact_\w+)'\)", text))) == facts
     segments = (summary_dir / "customer_segments.sql").read_text(encoding="utf-8")
     assert "ref('dim_customer')" in segments
     assert "ref('fact_" not in segments

@@ -12,6 +12,7 @@ import random
 import re
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,7 @@ from ingestion.kafka.producer_sim.clickstream_producer import (
     SCENARIO_ACCOUNTS,
     Ids,
     acceptance_scenarios,
+    identity_change_messages,
     load_messages,
 )
 from ingestion.kafka.producer_sim.inventory_producer import (
@@ -29,7 +31,17 @@ from ingestion.kafka.producer_sim.inventory_producer import (
     next_message,
 )
 from ingestion.kafka.producer_sim.pos_producer import PosTransactionLine
-from ingestion.kafka.sim_entities import LOYALTY_IDS, PRODUCTS, STORES, verified_loyalty_id
+from ingestion.kafka.sim_entities import (
+    ACCOUNT_IDS,
+    IDENTITY_CHANGE_ACCOUNT,
+    IDENTITY_CHANGE_CARD,
+    IDENTITY_CHANGE_CLIENT,
+    IDENTITY_CHANGE_OTHER_CARD,
+    LOYALTY_IDS,
+    PRODUCTS,
+    STORES,
+    verified_loyalty_id,
+)
 from spark.identity_resolution.event_contract import parse_event
 from streaming.flink_jobs.event_types import (
     CLICKSTREAM_EVENT_TYPES,
@@ -162,6 +174,26 @@ class TestClickstreamLoad:
         stream = load_messages(random.Random(7), Ids(seed="load-test"), now, device_pool=300)
         return [next(stream) for _ in range(count)]
 
+    def test_same_release_time_does_not_order_the_events_themselves(self):
+        import heapq
+
+        events = self._sample(2)
+        with pytest.raises(TypeError):
+            sorted([(1.0, 0, events[0], b"a"), (1.0, 0, events[1], b"b")])
+        held: list = []
+        for seq, event in enumerate(events):
+            heapq.heappush(held, (1.0, seq, event, event.payload()))
+        released = [item[1] for item in sorted(held, key=lambda item: (item[0], item[1]))]
+        assert released == [0, 1]
+
+    def test_late_hold_uses_its_own_sequence(self):
+        src = Path(__file__).resolve().parents[2].joinpath(
+            "ingestion/kafka/producer_sim/clickstream_producer.py"
+        ).read_text(encoding="utf-8")
+        push = src.split("heappush(held,", 1)[1].split(")", 1)[0]
+        assert "seq" in push and "emitted" not in push
+        assert "key=lambda item: (item[0], item[1])" in src
+
     def test_load_events_pass_the_replay_contract(self):
         for event in self._sample(2000):
             assert _contract(event)["error_reason"] is None, event
@@ -280,3 +312,35 @@ class TestInventoryScenarios:
     def test_no_retry_before_any_event_was_sent(self):
         kind, _, _ = next_message(0.05, deque(maxlen=10), **self.RATES)
         assert kind == "late"
+
+
+class TestIdentityChange:
+    def _logins(self, phase: int):
+        messages = identity_change_messages(phase, datetime(2026, 11, 8, tzinfo=timezone.utc))
+        return [m.event for m in messages if m.event.event_type == "login"]
+
+    def test_ids_are_outside_the_random_ranges(self):
+        assert IDENTITY_CHANGE_ACCOUNT not in ACCOUNT_IDS
+        assert IDENTITY_CHANGE_CARD not in LOYALTY_IDS
+        assert IDENTITY_CHANGE_OTHER_CARD not in LOYALTY_IDS
+
+    def test_phase_1_names_the_card_without_verifying_it(self):
+        logins = self._logins(1)
+        assert len(logins) == 1
+        assert logins[0].customer_id == IDENTITY_CHANGE_ACCOUNT
+        assert logins[0].client_id == IDENTITY_CHANGE_CLIENT
+        assert logins[0].properties["loyalty_id"] == IDENTITY_CHANGE_CARD
+        assert logins[0].properties["loyalty_link_verified"] is False
+
+    def test_phase_2_verifies_both_cards_on_separate_instances(self):
+        logins = self._logins(2)
+        assert [e.properties["loyalty_id"] for e in logins] == [IDENTITY_CHANGE_CARD, IDENTITY_CHANGE_OTHER_CARD]
+        assert all(e.properties["loyalty_link_verified"] is True for e in logins)
+        assert len({e.session_instance_id for e in logins}) == 2
+
+    def test_the_lower_card_stays_the_anchor(self):
+        from spark.identity_resolution.graph_logic import PREFIX_LOYALTY, node_sort_key
+
+        assert node_sort_key(PREFIX_LOYALTY + IDENTITY_CHANGE_CARD) < node_sort_key(
+            PREFIX_LOYALTY + IDENTITY_CHANGE_OTHER_CARD
+        )

@@ -7,13 +7,16 @@ there is one diagram to keep in step with the dbt models.
 ```mermaid
 erDiagram
     DIM_DATE ||--o{ FACT_SALES : "date_key"
+    DIM_DATE ||--o{ FACT_RETURNS : "date_key"
     DIM_DATE ||--o{ FACT_INVENTORY_SNAPSHOT : "snapshot_date_key"
     DIM_DATE ||--o{ FACT_CUSTOMER_SESSION : "session_date_key"
 
     DIM_STORE ||--o{ FACT_SALES : "store_key"
+    DIM_STORE ||--o{ FACT_RETURNS : "store_key"
     DIM_STORE ||--o{ FACT_INVENTORY_SNAPSHOT : "store_key"
 
     DIM_PRODUCT ||--o{ FACT_SALES : "product_key"
+    DIM_PRODUCT ||--o{ FACT_RETURNS : "product_key"
     DIM_PRODUCT ||--o{ FACT_INVENTORY_SNAPSHOT : "product_key"
 
     DIM_CUSTOMER ||--o{ FACT_SALES : "customer_key"
@@ -82,6 +85,7 @@ erDiagram
     FACT_SALES {
       int date_key FK
       int product_key FK
+      varchar product_id
       int store_key FK
       int customer_key FK
       varchar transaction_id PK
@@ -91,13 +95,39 @@ erDiagram
       decimal net_revenue
       decimal gross_margin
       boolean is_voided
+      varchar line_status
+      varchar transaction_status
+      timestamp voided_at
+      varchar void_reason
+      timestamp source_updated_at
+    }
+
+    FACT_RETURNS {
+      int date_key FK
+      int product_key FK
+      varchar product_id
+      int store_key FK
+      int original_date_key
+      varchar return_id PK
+      int return_line_number PK
+      varchar original_transaction_id
+      int original_line_item_number
+      int quantity_returned
+      decimal refund_amount
+      varchar return_status
+      varchar eligibility_status
+      boolean is_refund_recognized
+      varchar reason_code
+      timestamp processed_at
     }
 
     FACT_INVENTORY_SNAPSHOT {
       int snapshot_date_key PK,FK
       tinyint snapshot_hour PK
-      int product_key PK,FK
+      int product_key FK
+      varchar product_id PK
       int store_key PK,FK
+      int qty_delta_hour
       int quantity_on_hand
       int quantity_available
       boolean is_estimated

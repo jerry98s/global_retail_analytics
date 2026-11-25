@@ -33,6 +33,7 @@ repeats are kept.
 | `clickstream.events.v1` | `bronze.clickstream_records` | Iceberg-managed; read snapshots | Spark promotion only |
 | `inventory.events.v1` | `bronze.inventory_records` | Iceberg-managed; read snapshots | Spark promotion only |
 | *(batch POS)* | *(Parquet only)* | `iceberg/bronze/pos_transactions/data/` | `bronze.pos_transactions` (Spectrum / dbt source) |
+| *(batch POS returns)* | *(Parquet only)* | `iceberg/bronze/pos_returns/data/` | `bronze.pos_returns` (Spectrum / dbt source) |
 
 POS is a **batch exception**: grain is line items, not events, so the name stays
 `pos_transactions`.
@@ -95,7 +96,7 @@ jobs. When adding a new bronze/silver table, update that module and this documen
 
 Kimball names follow `docs/data-model/dimensional-model.md`:
 
-- Facts: `fact_{entity}` (`fact_sales`, `fact_inventory_snapshot`, `fact_customer_session`)
+- Facts: `fact_{entity}` (`fact_sales`, `fact_returns`, `fact_inventory_snapshot`, `fact_customer_session`)
 - Dims: `dim_{entity}` (`dim_product`, `dim_customer`, …)
 - Serving views: `serving.{use_case}` (`customer_360_serving`, `dim_product_current`)
 

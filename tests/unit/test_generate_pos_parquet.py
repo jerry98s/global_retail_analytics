@@ -111,3 +111,58 @@ def test_line_measures_follow_product_catalog(gen_module) -> None:
         assert row.gross_revenue * Decimal("0.79") <= row.net_revenue <= row.gross_revenue
         assert row.gross_margin == (row.net_revenue - product.unit_cost * qty).quantize(Decimal("0.01"))
         assert row.gross_margin > 0
+
+
+def test_void_statuses_follow_adr_015(gen_module) -> None:
+    """Both void kinds occur; status is per ticket; voids carry audit fields."""
+    txn_date = date(2026, 11, 21)
+    rows = gen_module.generate_rows(txn_date, transaction_count=2000, max_lines=5)
+    by_txn: dict[str, set[str]] = {}
+    for row in rows:
+        by_txn.setdefault(row.transaction_id, set()).add(row.transaction_status)
+        assert row.line_status in {"ACTIVE", "VOIDED"}
+        assert row.is_voided == (row.line_status == "VOIDED" or row.transaction_status == "VOIDED")
+        assert row.source_updated_at.date() == txn_date
+        if row.is_voided:
+            assert row.voided_at is not None and row.void_reason
+            assert row.voided_at <= row.source_updated_at
+        else:
+            assert row.voided_at is None and row.void_reason is None
+    assert all(len(statuses) == 1 for statuses in by_txn.values())
+    assert any(row.line_status == "VOIDED" and row.transaction_status == "COMPLETED" for row in rows)
+    assert any(statuses == {"VOIDED"} for statuses in by_txn.values())
+
+
+def test_transaction_void_voids_every_line(gen_module) -> None:
+    txn_date = date(2026, 11, 21)
+    lines = [
+        gen_module.PosLine("T1", n, txn_date, "S1", "P1", None, 1, Decimal("30.00"), Decimal("30.00"), Decimal("12.00"))
+        for n in (1, 2)
+    ]
+    lines[1].line_status = "VOIDED"
+    rng = MagicMock()
+    rng.randrange.return_value = 9 * 3600
+    rng.randint.side_effect = [60, 600]
+    rng.choice.side_effect = ["PRICE_DISPUTE", "PAYMENT_DECLINED"]
+    rng.random.return_value = 0.0
+    gen_module.apply_lifecycle(lines, txn_date, rng)
+    assert [line.transaction_status for line in lines] == ["VOIDED", "VOIDED"]
+    assert all(line.is_voided for line in lines)
+    assert [line.void_reason for line in lines] == ["PAYMENT_DECLINED", "PRICE_DISPUTE"]
+    assert lines[0].voided_at.time().isoformat() == "09:10:00"
+    assert lines[1].voided_at.time().isoformat() == "09:01:00"
+    assert {line.source_updated_at for line in lines} == {lines[0].voided_at}
+
+
+def test_identity_change_lines_sit_outside_the_daily_draw(gen_module) -> None:
+    from ingestion.kafka.sim_entities import (
+        IDENTITY_CHANGE_CARD,
+        IDENTITY_CHANGE_OTHER_CARD,
+        LOYALTY_IDS,
+    )
+
+    first = gen_module.identity_change_rows(date(2026, 11, 8))
+    again = gen_module.identity_change_rows(date(2026, 11, 8))
+    assert [(r.transaction_id, r.loyalty_id) for r in first] == [(r.transaction_id, r.loyalty_id) for r in again]
+    assert {r.loyalty_id for r in first} == {IDENTITY_CHANGE_CARD, IDENTITY_CHANGE_OTHER_CARD}
+    assert all(r.loyalty_id not in LOYALTY_IDS and not r.is_voided for r in first)
