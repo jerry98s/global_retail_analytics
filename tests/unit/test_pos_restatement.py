@@ -184,7 +184,7 @@ def test_invalid_range_fails_the_first_task_render() -> None:
 
 def test_post_publish_tasks_feed_an_all_done_outcome() -> None:
     assert (
-        ">> [save_baseline, dbt_serving, redshift_analyze, cost_check]\n"
+        ">> [save_baseline, promote_frontier, dbt_serving, redshift_analyze, cost_check]\n"
         "        >> gold_publish_outcome"
     ) in _SRC
     outcome = re.search(r"gold_publish_outcome = PythonOperator\((.*?)\n    \)", _SRC, re.S)

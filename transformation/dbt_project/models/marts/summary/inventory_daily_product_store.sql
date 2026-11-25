@@ -3,7 +3,17 @@
     materialized='incremental',
     unique_key=['snapshot_date_key', 'product_key', 'store_key'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    pre_hook="{% if is_incremental() %}
+        delete from {{ this }}
+        where not exists (
+            select 1
+            from {{ ref('fact_inventory_snapshot') }} f
+            where f.snapshot_date_key = {{ this.identifier }}.snapshot_date_key
+              and f.product_key = {{ this.identifier }}.product_key
+              and f.store_key = {{ this.identifier }}.store_key
+        )
+    {% endif %}"
   )
 }}
 
@@ -17,7 +27,9 @@
 
   Incremental: the fact rewrites past hours when Spark replaces a Flink hour
   (ADR-012), so any earlier day can change. Each run rolls up every day and
-  upserts only rows that are new or differ from {{ this }}.
+  upserts only rows that are new or differ from {{ this }}. The pre-hook
+  first deletes days whose product_key the fact no longer has: the fact
+  re-keys a day when its as-of product version changes (ADR-016).
 */
 
 with hourly as (

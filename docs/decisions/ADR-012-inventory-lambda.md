@@ -39,8 +39,19 @@ runs inventory Spark before dbt. The marketing DAG runs hourly Spark
 (clickstream, the Flink `inventory_hourly` export, and identity). Airflow
 rejects `--mode all`; that mode is the local stack only. Both Spark steps
 use the `emr_spark` pool (one slot): `airflow pools set emr_spark 1 "one Spark step at a time"`.
+The pool alone is not a lock, because a step keeps running on EMR after its
+sensor times out. Each DAG first waits until no `spark-hourly` or
+`spark-inventory` step is pending or running on the cluster, and its submit
+task, holding the pool slot, checks again and refuses if one is.
 A manual local `all` run writes both exports and must not overlap either
 scheduled mode. There is no lock for that case.
+
+The warehouse DAG runs at 01:15 UTC, so the target cutoff is 00:00 and the
+whole previous day is Gold. Inventory Spark runs beside the POS steps. If it
+fails or times out, `inventory_spark_outcome` alerts and the dbt build and
+audit exclude `fact_inventory_snapshot+`, `inventory_publication+` and
+`inventory_canonical_run_is_one`. Their pending copies are live clones, so
+POS and returns publish and inventory keeps the last published cutoff.
 
 - The target cutoff is the latest whole hour `T` such that
   `T + watermark + inventory_max_event_lateness_seconds` is at or before the
@@ -51,21 +62,38 @@ scheduled mode. There is no lock for that case.
 - `spark/identity_resolution/kafka_frontier.py` asks Kafka, per partition,
   for the earliest retained offset and the offset at the cutoff
   (`offsetsForTimes`, beginning and end offsets, via `spark-sql-kafka`).
-  Cloud brokers are the Airflow Variable `msk_bootstrap_brokers`. Locally the
-  job uses the compose listener `kafka:29092`. The topic and partition count
-  match `TOPIC_INVENTORY` / `PARTITIONS_BY_TOPIC` (`inventory.events.v1`, 12).
+  Cloud brokers are the Airflow Variable `msk_bootstrap_brokers` (the MSK
+  IAM endpoint), reached with `SASL_SSL` / `AWS_MSK_IAM` through
+  `aws-msk-iam-auth` 1.1.9, the same settings as the Flink jobs. Locally the
+  job uses PLAINTEXT on the compose listener `kafka:29092`. The topic and
+  partition count match `TOPIC_INVENTORY` / `PARTITIONS_BY_TOPIC`
+  (`inventory.events.v1`, 12).
+- The previous cutoff and offsets come from the last published run, not
+  from Silver. Each run writes `<consumer root>/inventory_frontier/run=<id>.json`
+  (cutoff and the offset each partition is proven through) after its exports.
+  After the WAP publish, `promote_inventory_frontier` copies the run in live
+  `control.inventory_publication` to `published.json`, and the next run starts
+  there. A complete partition is proven through its required end; an
+  incomplete one only through its start, so the gap is checked again. A lake
+  published before the file existed falls back to the Silver cutoff once.
 - `silver.inventory_partition_coverage` has one row per expected partition,
   including a partition Bronze has never captured. The required range is
-  `[max(Kafka earliest, previous required end), offset at the cutoff)`.
-  `missing_offset_count` is that span minus the distinct Bronze offsets
-  inside it. `COMPLETE` means the count is zero. `silver.inventory_cutoff`
-  is the one summary row: when every partition is complete,
-  `closed_hour_exclusive` equals the target. Otherwise it is the hour of the
-  earliest gap's next Bronze timestamp, minus the lateness allowance, and
-  never earlier than the previous published cutoff. A tail gap (Bronze
-  behind Kafka, no later Bronze timestamp) or a partition Kafka does not
-  have holds the previous cutoff. Status is `INCOMPLETE`. An empty Kafka
-  range (`begin == end`) is complete, so a quiet hour can still advance.
+  `[published end, offset at the cutoff)`, or from Kafka's earliest offset
+  on the first run. `missing_offset_count` is that span minus the distinct
+  Bronze offsets inside it. `COMPLETE` means the count is zero. Offsets Kafka
+  deleted after Bronze captured them still count. Offsets Kafka deleted
+  before Bronze captured them are lost: the Spark log names the partition
+  and the cutoff holds until a run lists that partition in
+  `acknowledge_kafka_loss` (`-AcknowledgeKafkaLoss` locally), which starts
+  that partition at Kafka's earliest offset for that run only.
+  `silver.inventory_cutoff` is the one summary row: when every partition is
+  complete, `closed_hour_exclusive` equals the target. Otherwise it is the
+  hour of the earliest gap's next Bronze timestamp, minus the lateness
+  allowance, and never earlier than the previous published cutoff. A tail gap
+  (Bronze behind Kafka, no later Bronze timestamp), a lost range, or a
+  partition Kafka does not have holds the previous cutoff. Status is
+  `INCOMPLETE`. An empty Kafka range (`begin == end`) is complete, so a quiet
+  hour can still advance.
 - An event whose event time is before the cutoff but which reaches Kafka
   later is a correction for the next daily run. The fact recomputes balances
   from full canonical history, so the correction lands once. An event Flink

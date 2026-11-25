@@ -184,6 +184,61 @@ class TestManifestExports:
 
         for name, schema in bridge._EXPORTS.items():
             assert counts[f"{schema}.{name}"] == 1, name
+        # A parquet file under the Iceberg table is not a snapshot.
+        assert counts["silver.inventory_hourly"] == 0
+
+    def test_hourly_load_reads_the_committed_snapshot_only(self, tmp_path: Path) -> None:
+        import json
+
+        import pyarrow as pa
+
+        bridge = _bridge()
+        iceberg = tmp_path / "iceberg"
+        data = iceberg / "silver" / "inventory_hourly" / "data"
+        meta = iceberg / "silver" / "inventory_hourly" / "metadata"
+        data.mkdir(parents=True)
+        meta.mkdir()
+        pq.write_table(pa.table({"v": [7]}), data / "part.parquet")
+        pq.write_table(pa.table({"v": [99]}), data / "superseded.parquet")
+        # Paths are the container warehouse. The loader maps them onto iceberg.
+        live = b"file:///tmp/iceberg/silver/inventory_hourly/data/part.parquet"
+        stale = b"file:///tmp/iceberg/silver/inventory_hourly/data/superseded.parquet"
+        (meta / "snap-new.avro").write_bytes(live)
+        (meta / "snap-old.avro").write_bytes(stale)
+        (meta / "list-new.avro").write_bytes(
+            b"file:///tmp/iceberg/silver/inventory_hourly/metadata/snap-new.avro"
+        )
+        (meta / "list-old.avro").write_bytes(
+            b"file:///tmp/iceberg/silver/inventory_hourly/metadata/snap-old.avro"
+        )
+        current = {
+            "current-snapshot-id": 2,
+            "snapshots": [
+                {
+                    "snapshot-id": 1,
+                    "manifest-list": "file:///tmp/iceberg/silver/inventory_hourly/metadata/list-old.avro",
+                },
+                {
+                    "snapshot-id": 2,
+                    "manifest-list": "file:///tmp/iceberg/silver/inventory_hourly/metadata/list-new.avro",
+                },
+            ],
+        }
+        (meta / "v1.metadata.json").write_text(
+            json.dumps({"current-snapshot-id": 1, "snapshots": current["snapshots"][:1]}),
+            encoding="utf-8",
+        )
+        (meta / "v2.metadata.json").write_text(json.dumps(current), encoding="utf-8")
+        (meta / "version-hint.text").write_text("2", encoding="utf-8")
+
+        counts = bridge.load_all(iceberg, tmp_path / "t.duckdb", require_streams=False, require_pos=False)
+        assert counts["silver.inventory_hourly"] == 1
+        import duckdb
+
+        value = duckdb.connect(str(tmp_path / "t.duckdb"), read_only=True).execute(
+            "select v from silver.inventory_hourly"
+        ).fetchall()
+        assert value == [(7,)]
         assert counts["bronze.pos_transactions"] == 0
         assert counts["bronze.pos_returns"] == 0
 

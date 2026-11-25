@@ -49,6 +49,34 @@ def load_simple_yaml(path: Path) -> Dict[str, Any]:
     return config
 
 
+def iceberg_catalog_sql(
+    name: str,
+    warehouse: str,
+    catalog_impl: str = "",
+    io_impl: str = "",
+) -> str:
+    """Flink ``CREATE CATALOG`` for one Iceberg warehouse.
+
+    An empty ``catalog_impl`` is the local Hadoop catalog. Cloud sets it to
+    ``org.apache.iceberg.aws.glue.GlueCatalog`` so each commit lands in Glue,
+    which is what Redshift reads. ``io_impl`` is the S3 file IO for that path.
+    """
+    if catalog_impl:
+        io_line = f"\n  'io-impl' = '{io_impl}'," if io_impl else ""
+        body = (
+            "  'type' = 'iceberg',\n"
+            f"  'catalog-impl' = '{catalog_impl}',{io_line}\n"
+            f"  'warehouse' = '{warehouse}'"
+        )
+    else:
+        body = (
+            "  'type' = 'iceberg',\n"
+            "  'catalog-type' = 'hadoop',\n"
+            f"  'warehouse' = '{warehouse}'"
+        )
+    return f"CREATE CATALOG {name} WITH (\n{body}\n)"
+
+
 def kafka_security_options(cfg: Dict[str, Any]) -> str:
     """Return Flink Kafka connector `WITH` clause fragments for the configured
     security protocol. Empty string when running plaintext (local docker)."""

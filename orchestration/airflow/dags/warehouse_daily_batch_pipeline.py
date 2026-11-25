@@ -1,11 +1,12 @@
 """
 Daily batch pipeline DAG.
-Orchestrates: POS and POS returns Parquet bronze → Spectrum partition
-register → daily Spark inventory canonicalization → dbt staging
-(owned models) → WAP clone live→pending → dbt marts (pending) → dbt tests
-(pending) → row-count gate (pending) → WAP publish to live → {row-count
-baseline save, serving.inventory_current_position build, Redshift ANALYZE,
-Redshift usage check} → publish outcome.
+Orchestrates: {POS and POS returns Parquet bronze → Spectrum partition
+register, daily Spark inventory canonicalization → inventory outcome} → dbt
+staging (owned models) → WAP clone live→pending → dbt marts (pending) → dbt
+tests (pending) → row-count gate (pending) → WAP publish to live →
+{row-count baseline save, inventory frontier promotion,
+serving.inventory_current_position build, Redshift ANALYZE, Redshift usage
+check} → publish outcome.
 
 Each dbt task syncs its own copy of the project (`dbt_task_bash`), because
 consecutive tasks can land on different MWAA workers. Staging/intermediate
@@ -28,7 +29,19 @@ read live via the `wap_live_ref` macro; marketing marts belong to
 `marketing_hourly_customer_360_pipeline`. `finance.dim_date` /
 `finance.dim_store` are stable seed reference dims and are never published.
 
-Schedule: 00:15 UTC daily (15-min buffer for late clickstream events).
+Schedule: 01:15 UTC daily. The inventory cutoff closes an hour only after the
+Flink watermark (60s) and the lateness allowance (3600s) have passed it, so at
+01:15 the whole previous day closes (00:14 floors to 00:00).
+
+Inventory (ADR-012): the Spark step waits until no other Spark step is on the
+EMR cluster and submits only then. If it does not finish, POS and returns
+still publish: `inventory_spark_outcome` alerts and the dbt build and audit
+exclude the inventory marts, so their live clones publish unchanged and the
+cutoff holds. After the publish, `promote_inventory_frontier` marks the live
+run's frontier as the next run's starting point. Run param
+`acknowledge_kafka_loss` lists partitions whose offsets expired from Kafka
+before Bronze captured them (the Spark log names them); only that run accepts
+the loss.
 
 Catalog dependency (ADR-014): `wait_for_catalog_publish` waits up to two hours
 for the same day's `catalog_daily_product_scd2_refresh.wap_publish_dim_product`
@@ -80,12 +93,12 @@ from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.models.param import Param
-from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.operators.redshift_data import RedshiftDataOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from airflow.sensors.external_task import ExternalTaskSensor
+from airflow.sensors.python import PythonSensor
 from airflow.utils.trigger_rule import TriggerRule
 
 # MWAA loads modules under plugins/ onto sys.path, so this imports cleanly
@@ -101,10 +114,21 @@ from catalog_dependency import (
     catalog_logical_date,
     catalog_publish_check_task,
 )
-from dbt_selectors import WAREHOUSE_LIVE_MODELS, select
+from dbt_selectors import WAREHOUSE_LIVE_MODELS, WAREHOUSE_SOURCE_TESTS, select
+from inventory_frontier import promote_published_frontier_task
 from pos_restatement import AIRFLOW_MACROS as POS_RESTATEMENT_MACROS
+from spark_steps import AIRFLOW_MACROS as SPARK_MACROS
+from spark_steps import (
+    IDLE_POKE_INTERVAL,
+    IDLE_TIMEOUT,
+    INVENTORY_OUTCOME_TASK_ID,
+    INVENTORY_WAIT_TASK_ID,
+    inventory_spark_outcome_task,
+    spark_step,
+    submit_spark_step_task,
+    wait_spark_idle_task,
+)
 from spark_steps import POOL as SPARK_POOL
-from spark_steps import spark_step
 from row_count_reconciliation import (
     reconcile_gold_row_counts_task,
     save_row_count_baseline_task,
@@ -130,9 +154,14 @@ OWNED_SELECT = (
     "inventory_position_daily inventory_publication"
 )
 
+# Empty unless the inventory Spark step did not finish this run.
+INVENTORY_HOLD = (
+    "{{ inventory_hold_exclude(ti.xcom_pull(task_ids='" + INVENTORY_OUTCOME_TASK_ID + "')) }}"
+)
+
 # Audits must cover exactly what this DAG built. A bare `dbt test` would also run
 # marketing suites whose pending tables this DAG never clones.
-TEST_SELECT = select(WAREHOUSE_LIVE_MODELS, OWNED_SELECT)
+TEST_SELECT = select(WAREHOUSE_LIVE_MODELS, OWNED_SELECT, WAREHOUSE_SOURCE_TESTS)
 
 # Same set as "schema.table" strings, for the reconciliation audit.
 # Derived from the publish list so the two can never drift apart.
@@ -167,7 +196,7 @@ def _dbt_step(
 with DAG(
     dag_id           = "warehouse_daily_batch_pipeline",
     default_args     = DEFAULT_ARGS,
-    schedule_interval= "15 0 * * *",
+    schedule_interval= "15 1 * * *",
     catchup          = False,
     max_active_runs  = 1,
     tags             = ["batch", "core", "daily"],
@@ -200,8 +229,17 @@ with DAG(
             items={"type": "string"},
             description="Owned schema.table names allowed to shrink in this run (row-count gate).",
         ),
+        "acknowledge_kafka_loss": Param(
+            [],
+            type="array",
+            items={"type": "integer", "minimum": 0},
+            description=(
+                "Inventory partitions whose offsets expired from Kafka before Bronze captured "
+                "them. This run accepts the loss so the cutoff can advance."
+            ),
+        ),
     },
-    user_defined_macros = POS_RESTATEMENT_MACROS,
+    user_defined_macros = {**POS_RESTATEMENT_MACROS, **SPARK_MACROS},
     on_success_callback = on_dag_success,
     on_failure_callback = on_dag_failure,
 ) as dag:
@@ -311,24 +349,45 @@ with DAG(
         """,
     )
 
-    # Daily inventory canonicalization. It must finish before dbt reads the
-    # coverage export. The emr_spark pool is shared with the hourly Customer
-    # 360 Spark step so the two jobs are not on the cluster together.
-    spark_inventory = EmrAddStepsOperator(
-        task_id     = "spark_inventory_canonical",
-        job_flow_id = "{{ var.value.emr_cluster_id }}",
-        steps       = [spark_step("inventory")],
-        pool        = SPARK_POOL,
+    # Daily inventory canonicalization, beside the POS steps. It must finish
+    # before dbt reads the coverage export. The hourly Customer 360 Spark step
+    # submits the same way, so the two jobs are never on the cluster together.
+    wait_spark_idle = PythonSensor(
+        task_id         = "wait_emr_spark_idle_inventory",
+        python_callable = wait_spark_idle_task,
+        op_kwargs       = {"cluster_id": "{{ var.value.emr_cluster_id }}"},
+        mode            = "reschedule",
+        poke_interval   = IDLE_POKE_INTERVAL.total_seconds(),
+        timeout         = IDLE_TIMEOUT.total_seconds(),
+    )
+
+    spark_inventory = PythonOperator(
+        task_id         = "spark_inventory_canonical",
+        python_callable = submit_spark_step_task,
+        op_kwargs       = {
+            "cluster_id": "{{ var.value.emr_cluster_id }}",
+            "steps":      [spark_step("inventory")],
+        },
+        pool            = SPARK_POOL,
     )
 
     wait_spark_inventory = EmrStepSensor(
-        task_id       = "wait_spark_inventory_canonical",
+        task_id       = INVENTORY_WAIT_TASK_ID,
         job_flow_id   = "{{ var.value.emr_cluster_id }}",
         step_id       = "{{ task_instance.xcom_pull('spark_inventory_canonical')[0] }}",
         target_states = {"COMPLETED"},
         poke_interval = 30,
         timeout       = 3600,
         pool          = SPARK_POOL,
+    )
+
+    # ALL_DONE: a failed or timed-out inventory step holds inventory and
+    # alerts here; it does not stop the POS publish.
+    inventory_outcome = PythonOperator(
+        task_id         = INVENTORY_OUTCOME_TASK_ID,
+        python_callable = inventory_spark_outcome_task,
+        trigger_rule    = TriggerRule.ALL_DONE,
+        retries         = 0,
     )
 
     dbt_staging = _dbt_step(
@@ -372,13 +431,13 @@ with DAG(
     dbt_marts = _dbt_step(
         "dbt_mart_models",
         "run",
-        OWNED_SELECT,
+        OWNED_SELECT + INVENTORY_HOLD,
         vars_json="{{ pos_dbt_vars(params) }}",
     )
 
     # Audits run against the pending schemas; live is untouched until publish.
     dbt_tests = _dbt_step(
-        "dbt_tests", "test", TEST_SELECT, vars_json="{{ pos_dbt_vars(params) }}"
+        "dbt_tests", "test", TEST_SELECT + INVENTORY_HOLD, vars_json="{{ pos_dbt_vars(params) }}"
     )
 
     # Publish gate: an owned table that cannot be read, or shrank without an
@@ -433,6 +492,14 @@ with DAG(
         python_callable = save_row_count_baseline_task,
     )
 
+    # The next inventory run starts from the run now live in
+    # control.inventory_publication. A failure alerts; the next run then
+    # starts from the previous published frontier and rechecks more offsets.
+    promote_frontier = PythonOperator(
+        task_id         = "promote_inventory_frontier",
+        python_callable = promote_published_frontier_task,
+    )
+
     # Run state follows the publish, not the maintenance tasks after it. The
     # task that actually failed has already alerted, so this one does not.
     gold_publish_outcome = PythonOperator(
@@ -451,14 +518,20 @@ with DAG(
         >> generate_pos_returns_parquet
         >> register_pos_partition
         >> register_pos_returns_partition
-        >> spark_inventory
-        >> wait_spark_inventory
         >> dbt_staging
         >> wap_clone
         >> dbt_marts
         >> dbt_tests
         >> row_count_reconcile
         >> wap_publish
-        >> [save_baseline, dbt_serving, redshift_analyze, cost_check]
+        >> [save_baseline, promote_frontier, dbt_serving, redshift_analyze, cost_check]
         >> gold_publish_outcome
+    )
+    (
+        metadata_start
+        >> wait_spark_idle
+        >> spark_inventory
+        >> wait_spark_inventory
+        >> inventory_outcome
+        >> dbt_staging
     )

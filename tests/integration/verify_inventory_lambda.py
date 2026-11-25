@@ -57,9 +57,9 @@ _INVENTORY_MODELS = (
 )
 _TESTS = (
     "inventory_canonical_run_is_one",
-    "inventory_hourly_export_is_one",
     "inventory_publication_matches_canonical_run",
     "inventory_coverage_incomplete",
+    "fact_inventory_snapshot_balance_reconciles",
 )
 _DAY = "2026-11-04"
 _DATE_KEY = 20261104
@@ -75,7 +75,7 @@ _SILVER_DDL = (
         ingested_at timestamp, export_run_id varchar)""",
     """create or replace table silver.inventory_hourly (
         snapshot_date_key integer, snapshot_hour integer, product_id varchar, store_id varchar,
-        qty_delta_hour bigint, qty_received_hour bigint, is_estimated boolean, export_run_id varchar)""",
+        qty_delta_hour bigint, qty_received_hour bigint, is_estimated boolean)""",
     """create or replace table silver.inventory_partition_coverage (
         inventory_run_id varchar, bronze_snapshot_id bigint, kafka_topic varchar,
         kafka_partition integer, required_start_offset bigint, required_end_offset bigint,
@@ -147,8 +147,8 @@ def _write_silver(
             )
         for hour, (product_id, store_id), qty in flink_hours:
             con.execute(
-                "insert into silver.inventory_hourly values (?, ?, ?, ?, ?, 0, true, ?)",
-                [_DATE_KEY, hour, product_id, store_id, qty, "FLINK"],
+                "insert into silver.inventory_hourly values (?, ?, ?, ?, ?, 0, true)",
+                [_DATE_KEY, hour, product_id, store_id, qty],
             )
         incomplete = 0
         for partition in range(_PARTITIONS):
@@ -275,17 +275,14 @@ def test_canonical_cutoff_and_late_event_through_gold(tmp_path: Path) -> None:
     assert current[pair_a] == a_open - 11
     assert current[pair_b] == b_open - 4
 
-    # 3. An hourly export during the published window is added once, and not to the fact.
+    # 3. A Flink commit during the published window is added once, and not to the fact.
     with duckdb.connect(str(db)) as con:
         con.execute(
-            "insert into silver.inventory_hourly values (?, 15, ?, ?, -4, 0, true, 'HOURLY')",
+            "insert into silver.inventory_hourly values (?, 15, ?, ?, -4, 0, true)",
             [_DATE_KEY, pair_a[0], pair_a[1]],
         )
-        # One committed export: the previous Flink rows are this same export.
-        con.execute("update silver.inventory_hourly set export_run_id = 'HOURLY'")
     held = _live_rows(db)
     _dbt(tmp_path, "run", "--select", "inventory_current_position")
-    _dbt(tmp_path, "test", "--select", "inventory_hourly_export_is_one")
     fact, current, _ = _snapshot(db)
     assert _live_rows(db)[0] == held[0]
     assert current[pair_a] == a_open - 15

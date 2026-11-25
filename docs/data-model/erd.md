@@ -85,6 +85,7 @@ erDiagram
     FACT_SALES {
       int date_key FK
       int product_key FK
+      varchar product_id
       int store_key FK
       int customer_key FK
       varchar transaction_id PK
@@ -104,6 +105,7 @@ erDiagram
     FACT_RETURNS {
       int date_key FK
       int product_key FK
+      varchar product_id
       int store_key FK
       int original_date_key
       varchar return_id PK
@@ -122,8 +124,10 @@ erDiagram
     FACT_INVENTORY_SNAPSHOT {
       int snapshot_date_key PK,FK
       tinyint snapshot_hour PK
-      int product_key PK,FK
+      int product_key FK
+      varchar product_id PK
       int store_key PK,FK
+      int qty_delta_hour
       int quantity_on_hand
       int quantity_available
       boolean is_estimated

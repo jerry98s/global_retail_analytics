@@ -84,10 +84,11 @@ uv sync --group dev
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
   `.local/iceberg/silver/identity_resolution`. `-SparkMode all|hourly|inventory`
-  (default `all`) matches the job: `hourly` is clickstream, the Flink
-  `inventory_hourly` export and identity; `inventory` is canonical inventory
-  plus Kafka coverage and does not export `inventory_hourly`; `all` writes
-  both and must not overlap a scheduled mode. The container uses compose
+  (default `all`) matches the job: `hourly` is clickstream and identity;
+  `inventory` is canonical inventory plus Kafka coverage; `all` writes
+  both and must not overlap a scheduled mode. `silver.inventory_hourly` is
+  Flink's Iceberg table, loaded from its current snapshot, not a Spark export.
+  The container uses compose
   `kafka:29092`, not the host `127.0.0.1:9092`. `-Task all` (iceberg source)
   includes this after POS Parquet. Spark first promotes raw Bronze to canonical
   Silver (ADR-011). Fidelity mode requires these exports, including
@@ -107,8 +108,8 @@ live on `main`.
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` — POS + inventory Spark (`--mode inventory`) before dbt staging + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete inventory coverage holds the cutoff and warns; it does not block this publish.
-- `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` (clickstream, Flink inventory export, identity) + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Airflow rejects `--mode all`.
+- `warehouse_daily_batch_pipeline` (01:15 UTC) — POS beside inventory Spark (`--mode inventory`), then dbt staging + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete inventory coverage holds the cutoff and warns; a failed inventory Spark step alerts and publishes POS with inventory unchanged. After publish it promotes the live run's `inventory_frontier/published.json`, where the next inventory run starts. Param `acknowledge_kafka_loss` accepts partitions whose offsets expired from Kafka before Bronze had them.
+- `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` (clickstream and identity) + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Both submit only when no other Spark step is on the cluster. Airflow rejects `--mode all`.
 - `streaming_manual_flink_jobs`
 - `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC
 - `quality_hourly_ge_checkpoint`
@@ -151,6 +152,8 @@ live on `main`.
 
 - Kimball facts and dims with surrogate integer keys. No fact-to-fact joins
   (drill across conformed dims instead).
+- Facts join `dim_product` as of their business date through
+  `product_versions()` / `product_as_of()`, never on `is_current` (ADR-016).
 - Gate PII with `marketing_consent`.
 - Event contract changes bump `schema_version` (`ingestion/schemas/`).
 - POS lands as Parquet in Bronze; there is no POS Kafka topic.

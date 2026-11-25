@@ -47,7 +47,12 @@ param(
     # beside either of those: it writes both exports.
     [Parameter(Mandatory = $false)]
     [ValidateSet("all", "hourly", "inventory")]
-    [string]$SparkMode = "all"
+    [string]$SparkMode = "all",
+    # Inventory partitions whose offsets expired from Kafka before Bronze
+    # captured them (the Spark log names them). This run accepts the loss so
+    # the cutoff can advance; leave empty otherwise.
+    [Parameter(Mandatory = $false)]
+    [int[]]$AcknowledgeKafkaLoss = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -461,8 +466,10 @@ function Invoke-SparkIdentityLocal {
     # not the host's 127.0.0.1:9092. Restore the host value afterwards.
     $previousKafka = $env:KAFKA_BOOTSTRAP_SERVERS
     $previousMode = $env:SPARK_MODE
+    $previousLoss = $env:ACKNOWLEDGE_KAFKA_LOSS
     $env:SPARK_MODE = $SparkMode
     $env:KAFKA_BOOTSTRAP_SERVERS = "kafka:29092"
+    $env:ACKNOWLEDGE_KAFKA_LOSS = ($AcknowledgeKafkaLoss -join ',')
     try {
         Invoke-CheckedCommand "docker compose -f $MainCompose --profile spark run --rm --build --no-deps spark-identity"
     }
@@ -471,6 +478,8 @@ function Invoke-SparkIdentityLocal {
         else { $env:KAFKA_BOOTSTRAP_SERVERS = $previousKafka }
         if ($null -eq $previousMode) { Remove-Item Env:SPARK_MODE -ErrorAction SilentlyContinue }
         else { $env:SPARK_MODE = $previousMode }
+        if ($null -eq $previousLoss) { Remove-Item Env:ACKNOWLEDGE_KAFKA_LOSS -ErrorAction SilentlyContinue }
+        else { $env:ACKNOWLEDGE_KAFKA_LOSS = $previousLoss }
     }
 }
 
@@ -546,6 +555,12 @@ try:
         con.execute(f'CREATE SCHEMA IF NOT EXISTS {schema}')
     result = publish_gold(con, tables, dialect='duckdb')
     print('WAP published:', result['published'])
+    if ('control', 'inventory_publication') in tables:
+        from orchestration.airflow.plugins.inventory_frontier import (
+            PUBLICATION_SQL, local_store, promote_frontier, published_inventory_run,
+        )
+        read, write = local_store(Path(r'$(Join-Path $IcebergHostDir 'consumer_current')'))
+        print(promote_frontier(published_inventory_run(con.execute(PUBLICATION_SQL).fetchall()), read, write))
 finally:
     con.close()
 "@

@@ -150,6 +150,8 @@ class TestFlinkConfContract:
         "iceberg_catalog_type",
         "iceberg_warehouse_bronze",
         "iceberg_warehouse_silver",
+        "iceberg_silver_catalog_impl",
+        "iceberg_silver_namespace",
     }
 
     def test_required_keys_present(self):
@@ -157,6 +159,22 @@ class TestFlinkConfContract:
         cfg = _config.load_simple_yaml(path)
         missing = self.REQUIRED_KEYS - set(cfg)
         assert not missing, f"flink_conf.yaml missing keys: {sorted(missing)}"
+
+    def test_hourly_silver_catalog_is_hadoop_until_glue_is_configured(self):
+        path = _config.resolve_config_path("flink_conf.yaml")
+        cfg = _config.load_simple_yaml(path)
+        assert cfg["iceberg_silver_catalog_impl"] == ""
+        assert cfg["iceberg_silver_namespace"] == "silver"
+        sql = _config.iceberg_catalog_sql("iceberg_catalog", "file:///tmp/iceberg")
+        assert "'catalog-type' = 'hadoop'" in sql
+        glue = _config.iceberg_catalog_sql(
+            "iceberg_catalog",
+            "s3://silver/iceberg",
+            "org.apache.iceberg.aws.glue.GlueCatalog",
+            "org.apache.iceberg.aws.s3.S3FileIO",
+        )
+        assert "catalog-impl" in glue and "GlueCatalog" in glue
+        assert "catalog-type" not in glue
 
     def test_inventory_dlq_topic_matches_contract(self):
         path = _config.resolve_config_path("flink_conf.yaml")

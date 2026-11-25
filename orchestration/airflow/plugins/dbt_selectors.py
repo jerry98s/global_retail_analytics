@@ -18,6 +18,13 @@ WAREHOUSE_LIVE_MODELS: tuple[str, ...] = (
     "int_inventory_reconciliation_hourly",
 )
 
+# Singular tests whose parents are only Silver sources, so a model selection
+# never picks them. The finance audit names them: they guard the inventory
+# Gold it publishes and the serving view it builds.
+WAREHOUSE_SOURCE_TESTS: tuple[str, ...] = (
+    "inventory_canonical_run_is_one",
+)
+
 MARKETING_LIVE_MODELS: tuple[str, ...] = (
     "stg_clickstream_events",
     "int_identity_resolution",
@@ -55,7 +62,9 @@ QUALITY_SELECTIONS: dict[str, dict[str, object]] = {
     "finance": {
         "select": select(
             WAREHOUSE_LIVE_MODELS,
-            "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily",
+            "marts.finance sales_daily_store inventory_daily_product_store "
+            "inventory_position_daily inventory_publication",
+            WAREHOUSE_SOURCE_TESTS,
         ),
         "exclude": [],
     },

@@ -103,9 +103,11 @@ models:
 
   - name: inventory_position_daily
     description: >
-      Dense daily inventory position from fact_inventory_snapshot only. One row
+      Dense daily inventory position from fact_inventory_snapshot. One row
       per product/store per day, carried forward from the opening balance, so
-      on-hand can be summed across products and stores for a day.
+      on-hand can be summed across products and stores for a day. Runs through
+      the last day closed by control.inventory_publication.closed_hour_exclusive;
+      the partly published day has no row yet.
       Grain: (snapshot_date_key, product_id, store_id).
     columns:
       - name: snapshot_date_key

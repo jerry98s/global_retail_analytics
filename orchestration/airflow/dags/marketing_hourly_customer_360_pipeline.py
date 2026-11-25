@@ -46,8 +46,8 @@ from airflow import DAG
 from airflow.models.param import Param
 from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
-from airflow.providers.amazon.aws.operators.emr import EmrAddStepsOperator
 from airflow.providers.amazon.aws.sensors.emr import EmrStepSensor
+from airflow.sensors.python import PythonSensor
 
 from alerting import notify_task_failure
 from dbt_selectors import MARKETING_LIVE_MODELS, MARKETING_MART_SELECT, select
@@ -61,8 +61,14 @@ from row_count_reconciliation import (
     reconcile_gold_row_counts_task,
     save_row_count_baseline_task,
 )
+from spark_steps import (
+    IDLE_POKE_INTERVAL,
+    IDLE_TIMEOUT,
+    spark_step,
+    submit_spark_step_task,
+    wait_spark_idle_task,
+)
 from spark_steps import POOL as SPARK_POOL
-from spark_steps import spark_step
 from wap_publish import MARKETING_TABLES, clone_marketing_task, publish_marketing_task
 
 # WAP: owned staging + intermediate write in place; marketing/summary mart
@@ -119,13 +125,26 @@ with DAG(
     # it. Batch step — the DAG waits for COMPLETED, unlike the long-running
     # streaming Flink steps.
     # Hourly mode: clickstream, the Flink inventory_hourly export, and identity.
-    # Inventory canonicalization runs daily on the warehouse DAG. Both Spark
-    # steps share the emr_spark pool so they are not on the cluster together.
-    spark_identity = EmrAddStepsOperator(
-        task_id     = "spark_identity_resolution",
-        job_flow_id = "{{ var.value.emr_cluster_id }}",
-        steps       = [spark_step("hourly")],
-        pool        = SPARK_POOL,
+    # Inventory canonicalization runs daily on the warehouse DAG. Both DAGs
+    # wait for an idle cluster and submit in the emr_spark pool only when no
+    # other Spark step is pending or running, so the two jobs never overlap.
+    wait_spark_idle = PythonSensor(
+        task_id         = "wait_emr_spark_idle_hourly",
+        python_callable = wait_spark_idle_task,
+        op_kwargs       = {"cluster_id": "{{ var.value.emr_cluster_id }}"},
+        mode            = "reschedule",
+        poke_interval   = IDLE_POKE_INTERVAL.total_seconds(),
+        timeout         = IDLE_TIMEOUT.total_seconds(),
+    )
+
+    spark_identity = PythonOperator(
+        task_id         = "spark_identity_resolution",
+        python_callable = submit_spark_step_task,
+        op_kwargs       = {
+            "cluster_id": "{{ var.value.emr_cluster_id }}",
+            "steps":      [spark_step("hourly")],
+        },
+        pool            = SPARK_POOL,
     )
 
     wait_spark_identity = EmrStepSensor(
@@ -189,6 +208,7 @@ with DAG(
 
     (
         metadata_start
+        >> wait_spark_idle
         >> spark_identity
         >> wait_spark_identity
         >> wap_clone

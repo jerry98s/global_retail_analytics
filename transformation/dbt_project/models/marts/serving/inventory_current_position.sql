@@ -19,7 +19,7 @@
   provisional on top of inventory_opening_balance.
 
   A view, so every query recomputes from the current tables. Freshness is
-  bounded by the Flink window plus the hourly inventory_hourly export.
+  bounded by the Flink window. A committed snapshot is visible on the next query.
 
   is_provisional: the balance includes a Flink hour at or after the cutoff.
 */

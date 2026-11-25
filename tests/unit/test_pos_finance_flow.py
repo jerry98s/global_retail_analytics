@@ -22,8 +22,8 @@ class TestPosFinanceFlow:
         src = _read(_DBT / "models" / "marts" / "finance" / "fact_sales.sql")
         assert "ref('stg_pos_transactions')" in src
         assert "source('bronze'" not in src
-        assert "wap_live_ref('dim_product')" in src
-        assert "is_current = true" in src
+        assert "{{ product_versions() }}" in src
+        assert "product_as_of('p', 'b.transaction_date')" in src
         assert "as-of SCD2" in src
         assert "and dt >=" in src
 
@@ -50,8 +50,6 @@ class TestPosFinanceFlow:
             "        >> generate_pos_returns_parquet\n"
             "        >> register_pos_partition\n"
             "        >> register_pos_returns_partition\n"
-            "        >> spark_inventory\n"
-            "        >> wait_spark_inventory\n"
             "        >> dbt_staging"
         ) in src
         assert "run_date" not in src

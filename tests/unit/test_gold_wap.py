@@ -88,15 +88,19 @@ class TestIncrementalSelfRefsUseThis:
         assert "wap_prior_state" not in src
 
     def test_finance_facts_join_live_dim_product(self) -> None:
+        macro = _read(_DBT / "macros" / "product_as_of.sql")
+        assert "wap_live_ref('dim_product')" in macro, (
+            "dim_product is owned by the catalog DAG; join live."
+        )
         for model in (
             "models/marts/finance/fact_sales.sql",
             "models/marts/finance/fact_returns.sql",
             "models/marts/finance/fact_inventory_snapshot.sql",
         ):
             src = _read(_DBT / model)
-            assert "wap_live_ref('dim_product')" in src, (
-                f"{model}: dim_product is owned by the catalog DAG; join live."
-            )
+            assert "{{ product_versions() }}" in src, model
+            assert "product_as_of(" in src, model
+            assert "is_current" not in src, f"{model}: join dim_product as-of (ADR-016)"
 
     def test_cross_dag_relationship_tests_use_live_source(self) -> None:
         for rel_path in (
@@ -207,8 +211,12 @@ class TestInventoryLambda:
         assert "max(snapshot_date_key * 100 + snapshot_hour)" not in compact
         assert "e.quantity_on_hand <> f.quantity_on_hand" in compact
         assert "e.is_estimated <> f.is_estimated" in compact
-        # Keep the stored key so delete+insert replaces the row in place.
-        assert "coalesce(e.product_key, p.product_key)" in compact
+        # The stored movement must stay the one the balance was built from.
+        assert "e.qty_delta_hour <> f.qty_delta_hour" in compact
+        assert "e.qty_delta_hour is null" in compact
+        # delete+insert keys on product_id, so a re-keyed hour replaces its row.
+        assert "'snapshot_hour', 'product_id', 'store_key'" in compact
+        assert "e.product_key <> p.product_key" in compact
         # Stored hours that lost their movement are re-emitted, not left stale.
         assert "cast(0 as numeric(38, 0)) as qty_delta_hour" in compact
 
@@ -217,6 +225,8 @@ class TestInventoryLambda:
         compact = " ".join(src.split())
         assert "max(snapshot_date_key)" not in compact
         assert "t.ending_on_hand_qty <> d.ending_on_hand_qty" in compact
+        # A re-keyed fact day (ADR-016) must not leave its old product_key row.
+        assert "delete from {{ this }} where not exists" in compact
         # Stockout duration needs dense hours: only inventory_position_daily has it.
         assert "stockout_hour_count" not in compact
 

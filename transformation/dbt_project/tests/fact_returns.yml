@@ -13,7 +13,7 @@ models:
                 to: source('gold_finance', 'dim_date')
                 field: date_key
       - name: product_key
-        description: "Returned product. Joins live dim_product on is_current=true; -1 until the catalog DAG publishes the product."
+        description: "Returned product: the dim_product version valid on the original sale date (return date for an UNKNOWN_SALE), as-of SCD2 (ADR-016). -1 until the catalog DAG publishes the product."
         tests:
           - not_null
           - relationships:
@@ -27,6 +27,9 @@ models:
                 expression: "<> -1"
               config:
                 severity: warn
+      - name: product_id
+        description: "Natural product id named on the return. Lineage for product_key."
+        tests: [not_null]
       - name: store_key
         description: "Store that processed the return (may differ from the sale's store)."
         tests:

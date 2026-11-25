@@ -17,7 +17,7 @@ The business rules live in ``graph_logic.py`` and are shared with the dbt
 seed fixture generator — this job mirrors them in DataFrame/GraphFrames
 operations.
 
-Modes: `hourly` (clickstream, the Flink inventory export, identity),
+Modes: `hourly` (clickstream and identity),
 `inventory` (canonical inventory and Kafka coverage, no identity), `all`
 (both; local stack only). Airflow submits hourly and inventory through
 `orchestration/airflow/plugins/spark_steps.py` and never submits `all`.
@@ -55,11 +55,23 @@ from pyspark.sql import functions as F
 try:
     from .canonical_events import log_stage, promote_events
     from .consumer_exports import new_run_id, publish
-    from .kafka_frontier import write_inventory_coverage
+    from .kafka_frontier import (
+        kafka_client_properties,
+        parse_acknowledged_loss,
+        proven_end_offsets,
+        read_published_frontier,
+        write_inventory_coverage,
+    )
 except ImportError:
     from canonical_events import log_stage, promote_events
     from consumer_exports import new_run_id, publish
-    from kafka_frontier import write_inventory_coverage
+    from kafka_frontier import (
+        kafka_client_properties,
+        parse_acknowledged_loss,
+        proven_end_offsets,
+        read_published_frontier,
+        write_inventory_coverage,
+    )
 
 try:  # package import in tests; script import under spark-submit
     from .graph_logic import (
@@ -102,22 +114,24 @@ OUTPUT_TABLE = f"{SILVER_CATALOG}.silver.identity_resolution"
 EDGES_TABLE = f"{SILVER_CATALOG}.silver.identity_edges"
 CLAIMS_TABLE = f"{SILVER_CATALOG}.silver.loyalty_link_claims"
 ASSOCIATIONS_TABLE = f"{SILVER_CATALOG}.silver.device_session_associations"
-INVENTORY_HOURLY_TABLE = f"{SILVER_CATALOG}.silver.inventory_hourly"
-INVENTORY_HOURLY_SCHEMA = (
-    "snapshot_date_key int, snapshot_hour int, product_id string, store_id string, "
-    "qty_delta_hour bigint, qty_received_hour bigint, is_estimated boolean"
-)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="GraphFrames identity resolution")
     parser.add_argument('--mode', choices=('all', 'hourly', 'inventory'), default='all',
-                        help='all: local full run. hourly: clickstream, Flink export, identity. '
+                        help='all: local full run. hourly: clickstream and identity. '
                              'inventory: daily canonical inventory and Kafka coverage')
     parser.add_argument('--canonical-only', action='store_true',
                         help='Replay Bronze into canonical Silver and audit tables; skip identity/POS')
     parser.add_argument('--kafka-bootstrap-servers',
                         help='Kafka brokers for the inventory coverage frontier (required for all and inventory)')
+    parser.add_argument('--kafka-security-protocol', default='PLAINTEXT',
+                        help='PLAINTEXT (local Docker) or SASL_SSL (MSK)')
+    parser.add_argument('--kafka-sasl-mechanism', default='AWS_MSK_IAM',
+                        help='SASL mechanism when --kafka-security-protocol is SASL_SSL')
+    parser.add_argument('--acknowledge-kafka-loss', default='',
+                        help='Comma-separated inventory partitions whose offsets expired from Kafka '
+                             'before Bronze captured them; this run accepts the loss')
     parser.add_argument('--inventory-topic', default='inventory.events.v1',
                         help='Inventory topic (ingestion/kafka/topics.py TOPIC_INVENTORY)')
     parser.add_argument('--inventory-partitions', type=int, default=12,
@@ -312,22 +326,6 @@ def write_consumer_exports(
     publish(associations, root, "device_session_associations", run_id)
 
 
-def export_inventory_hourly(spark: SparkSession, root: str, run_id: str | None = None) -> None:
-    """Export Flink's committed silver.inventory_hourly snapshot for Spectrum.
-
-    Reading through the Iceberg catalog returns only committed rows; Spectrum
-    globbing the table's data/ dir would also return uncommitted or replaced
-    files. An empty export is written until the Flink job creates the table.
-    """
-    empty = spark.createDataFrame([], INVENTORY_HOURLY_SCHEMA)
-    if spark.catalog.tableExists(INVENTORY_HOURLY_TABLE):
-        # Spectrum maps Parquet columns by position: pin the DDL order.
-        frame = spark.table(INVENTORY_HOURLY_TABLE).select(*empty.columns)
-    else:
-        frame = empty
-    publish(frame, root, "inventory_hourly", run_id or new_run_id())
-
-
 def _customer_key(node: Column) -> Column:
     """Spark form of graph_logic.customer_key."""
     digest = F.conv(F.md5(node).substr(1, 8), 16, 10).cast("bigint")
@@ -410,25 +408,34 @@ def _streams_for(mode: str) -> tuple[str, ...]:
     return ('clickstream', 'inventory')
 
 
-def _previous_cutoff(spark: SparkSession) -> tuple[int | None, dict[int, int]]:
-    """Last published cutoff and each partition's required end, if this schema wrote them."""
+def _previous_cutoff(spark: SparkSession, root: str) -> tuple[str | None, int | None, dict[int, int]]:
+    """Run id, cutoff and proven end offsets of the last published inventory run.
+
+    The finance DAG promotes a run's frontier only after its WAP publish, so an
+    audited-but-unpublished run is never the starting point. A lake whose last
+    publish predates the frontier file falls back to the Silver cutoff once.
+    """
+    published = read_published_frontier(spark, root)
+    if published is not None:
+        print(f'inventory frontier: published run {published[0]}, cutoff {published[1]}', flush=True)
+        return published
+    print('inventory frontier: no published frontier, starting from the Silver cutoff', flush=True)
     cutoff_table = f'{SILVER_CATALOG}.silver.inventory_cutoff'
     coverage_table = f'{SILVER_CATALOG}.silver.inventory_partition_coverage'
     if not spark.catalog.tableExists(cutoff_table):
-        return None, {}
+        return None, None, {}
     cutoff_columns = {field.name for field in spark.table(cutoff_table).schema.fields}
     if 'closed_hour_exclusive' not in cutoff_columns:
-        return None, {}
+        return None, None, {}
     row = spark.table(cutoff_table).orderBy(F.desc('closed_hour_exclusive')).first()
     closed = None if row is None or row.closed_hour_exclusive is None else int(row.closed_hour_exclusive)
     ends: dict[int, int] = {}
     if spark.catalog.tableExists(coverage_table):
         coverage_columns = {field.name for field in spark.table(coverage_table).schema.fields}
-        if 'required_end_offset' in coverage_columns:
-            for item in spark.table(coverage_table).select('kafka_partition', 'required_end_offset').collect():
-                if item.required_end_offset is not None:
-                    ends[int(item.kafka_partition)] = int(item.required_end_offset)
-    return closed, ends
+        if {'required_start_offset', 'required_end_offset'} <= coverage_columns:
+            rows = [item.asDict() for item in spark.table(coverage_table).collect()]
+            ends = proven_end_offsets(rows)
+    return None, closed, ends
 
 
 def _pinned_inventory(spark: SparkSession, snapshot_id: int | None):
@@ -448,6 +455,8 @@ def main() -> None:
         raise ValueError('--pos-parquet-path is required unless --canonical-only or --mode inventory is set')
     if 'inventory' in streams and not args.kafka_bootstrap_servers:
         raise ValueError('--kafka-bootstrap-servers is required when inventory coverage is written')
+    client_properties = kafka_client_properties(args.kafka_security_protocol, args.kafka_sasl_mechanism)
+    acknowledged_loss = parse_acknowledged_loss(args.acknowledge_kafka_loss, args.inventory_partitions)
     # One run id for every export this mode writes, so dbt can check it combined one run.
     run_id = new_run_id()
     snapshots: dict[str, int | None] = {}
@@ -456,7 +465,7 @@ def main() -> None:
         streams=streams, snapshots=snapshots,
     )
     if 'inventory' in streams:
-        previous_closed, previous_ends = _previous_cutoff(spark)
+        published_run, previous_closed, previous_ends = _previous_cutoff(spark, _consumer_root(args))
         write_inventory_coverage(
             spark,
             raw=_pinned_inventory(spark, snapshots.get('inventory')),
@@ -472,11 +481,10 @@ def main() -> None:
             root=_consumer_root(args),
             previous_closed_hour=previous_closed,
             previous_end_offsets=previous_ends,
+            published_run_id=published_run,
+            client_properties=client_properties,
+            acknowledged_loss=acknowledged_loss,
         )
-    if 'clickstream' in streams:
-        hourly_started = time.perf_counter()
-        export_inventory_hourly(spark, _consumer_root(args), run_id)
-        log_stage("inventory_hourly", hourly_started)
     if not run_identity:
         spark.stop()
         return

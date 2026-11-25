@@ -18,8 +18,11 @@
   counts there, not on the original sale. The original sale is referenced by
   (original_transaction_id, original_line_item_number) and never changed.
   Joins: stg_pos_transactions for the original line (staging, not
-         fact_sales: no fact-to-fact joins), dim_product CURRENT version via
-         wap_live_ref (-1 until the catalog publishes it), dim_store.
+         fact_sales: no fact-to-fact joins), dim_store, and dim_product as-of
+         SCD2 (ADR-016): the version valid on the original sale date, so a
+         refund rolls up under the attributes the item was sold with. An
+         UNKNOWN_SALE has no sale date and takes the version valid on the
+         return date. -1 until the catalog publishes the product.
 
   eligibility_status:
     ELIGIBLE      original line exists and was not voided
@@ -39,7 +42,10 @@
   zero-row returns file means the day has no returns. It also rebuilds every
   later return day holding a return of a sale line in the range, because a
   corrected or voided sale changes that refund's eligibility; those days are
-  reloaded whole so delete+insert keeps their other returns.
+  reloaded whole so delete+insert keeps their other returns. Outside a
+  restatement, an older return day whose stored product_key is not the as-of
+  version is reloaded whole too; a table from before product_id existed
+  reloads every day once.
 */
 
 {% set restate = pos_restate_range() %}
@@ -62,6 +68,19 @@ rebuild_days as (
     {{ pos_dependent_return_days(restate, this) }}
 ),
 
+{% elif is_incremental() %}
+stale_days as (
+    select distinct {{ date_from_date_key('t.date_key') }} as stale_date
+    from {{ this }} t
+    {% if column_exists(this, 'product_id') %}
+    left join {{ product_versions() }} pv
+      on pv.product_id = t.product_id
+     and {{ product_as_of('pv', date_from_date_key('coalesce(t.original_date_key, t.date_key)')) }}
+    where t.product_id is null
+       or t.product_key <> coalesce(pv.product_key, -1)
+    {% endif %}
+),
+
 {% endif %}
 returns as (
     select *
@@ -76,8 +95,10 @@ returns as (
               and dt between {{ restate_from }} and {{ returns_to }}
             )
     {% elif is_incremental() %}
-      where return_date >= ( {{ lookback }} )
-        and dt >= ( {{ lookback }} )
+      where (return_date >= ( {{ lookback }} )
+             and dt >= ( {{ lookback }} ))
+         or (return_date in (select stale_date from stale_days)
+             and dt >= (select min(stale_date) from stale_days))
     {% endif %}
 ),
 
@@ -124,6 +145,7 @@ checked as (
 select
     {{ date_key_from_date('c.return_date') }} as date_key,
     coalesce(p.product_key, -1) as product_key,
+    c.product_id,
     s.store_key,
     {{ date_key_from_date('c.original_transaction_date') }} as original_date_key,
     c.return_id,
@@ -138,8 +160,8 @@ select
     c.reason_code,
     c.processed_at
 from checked c
-left join {{ wap_live_ref('dim_product') }} p
+left join {{ product_versions() }} p
   on c.product_id = p.product_id
- and p.is_current = true
+ and {{ product_as_of('p', 'coalesce(c.original_transaction_date, c.return_date)') }}
 left join {{ source('gold_finance', 'dim_store') }} s
   on c.return_store_id = s.store_id

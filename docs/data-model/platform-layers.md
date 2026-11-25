@@ -52,8 +52,8 @@ See [ADR-008](../decisions/ADR-008-metadata-database.md).
 | Relation | Grain | Source fact |
 |----------|-------|-------------|
 | `summary.sales_daily_store` | `(date_key, store_key)` | `finance.fact_sales` and `finance.fact_returns` (the one exception, ADR-015) |
-| `summary.inventory_daily_product_store` | `(snapshot_date_key, product_key, store_key)` | `finance.fact_inventory_snapshot` |
-| `summary.inventory_position_daily` | `(snapshot_date_key, product_id, store_id)`, dense: every product/store every day, carried forward | `finance.fact_inventory_snapshot` |
+| `summary.inventory_daily_product_store` | `(snapshot_date_key, product_key, store_key)`; a re-keyed fact day drops its old `product_key` row | `finance.fact_inventory_snapshot` |
+| `summary.inventory_position_daily` | `(snapshot_date_key, product_id, store_id)`, dense: every product/store every day through the last day the published cutoff closes, carried forward | `finance.fact_inventory_snapshot` (bounded by `control.inventory_publication`) |
 | `summary.sessions_daily_platform` | `(session_date_key, platform)` | `marketing.fact_customer_session` |
 | `summary.consent_identity_daily` | `(session_date_key, platform, attribution_status)` | `marketing.fact_customer_session` |
 | `summary.customer_segments` | `rfm_segment` | `marketing.dim_customer` |

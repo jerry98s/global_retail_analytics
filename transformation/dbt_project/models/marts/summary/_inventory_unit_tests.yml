@@ -11,11 +11,11 @@ unit_tests:
     given:
       - input: ref('fact_inventory_snapshot')
         rows:
-          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_key: 1, store_key: 1, quantity_on_hand: 0}
-          - {snapshot_date_key: 20261104, snapshot_hour: 18, product_key: 1, store_key: 1, quantity_on_hand: 10}
-      - input: ref('dim_product')
+          - {snapshot_date_key: 20261104, snapshot_hour: 9, product_id: P1, store_key: 1, quantity_on_hand: 0}
+          - {snapshot_date_key: 20261104, snapshot_hour: 18, product_id: P1, store_key: 1, quantity_on_hand: 10}
+      - input: ref('inventory_publication')
         rows:
-          - {product_key: 1, product_id: P1}
+          - {closed_hour_exclusive: 2026110500}
       - input: source('gold_finance', 'dim_store')
         rows:
           - {store_key: 1, store_id: S1}
@@ -28,3 +28,75 @@ unit_tests:
     expect:
       rows:
         - {snapshot_date_key: 20261104, product_id: P1, store_id: S1, ending_on_hand_qty: 10, stockout_hour_count: 9}
+
+  - name: inventory_position_daily_runs_through_the_last_closed_day
+    description: >
+      The cutoff is 2026-11-07 10:00, so 2026-11-06 is the last closed day.
+      P1/S1 last moved on 2026-11-04 and carries 10 through 11-05 and 11-06.
+      P2/S1 never moved and appears every day at its opening count. 11-07 is
+      still open: its 09:00 movement is published but the day is not, so it
+      has no row yet.
+    model: inventory_position_daily
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fact_inventory_snapshot')
+        rows:
+          - {snapshot_date_key: 20261104, snapshot_hour: 18, product_id: P1, store_key: 1, quantity_on_hand: 10}
+          - {snapshot_date_key: 20261107, snapshot_hour: 9, product_id: P1, store_key: 1, quantity_on_hand: 4}
+      - input: ref('inventory_publication')
+        rows:
+          - {closed_hour_exclusive: 2026110710}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_key: 1, store_id: S1}
+      - input: source('gold_finance', 'dim_date')
+        rows:
+          - {date_key: 20261103}
+          - {date_key: 20261104}
+          - {date_key: 20261105}
+          - {date_key: 20261106}
+          - {date_key: 20261107}
+          - {date_key: 20261108}
+      - input: ref('inventory_opening_balance')
+        rows:
+          - {product_id: P1, store_id: S1, opening_qty: 5}
+          - {product_id: P2, store_id: S1, opening_qty: 7}
+    expect:
+      rows:
+        - {snapshot_date_key: 20261104, product_id: P1, ending_on_hand_qty: 10, had_movement: true}
+        - {snapshot_date_key: 20261105, product_id: P1, ending_on_hand_qty: 10, had_movement: false}
+        - {snapshot_date_key: 20261106, product_id: P1, ending_on_hand_qty: 10, had_movement: false}
+        - {snapshot_date_key: 20261104, product_id: P2, ending_on_hand_qty: 7, had_movement: false}
+        - {snapshot_date_key: 20261105, product_id: P2, ending_on_hand_qty: 7, had_movement: false}
+        - {snapshot_date_key: 20261106, product_id: P2, ending_on_hand_qty: 7, had_movement: false}
+
+  - name: inventory_position_daily_shows_opening_balances_before_any_movement
+    description: >
+      Nothing has moved yet. The cutoff closes 2026-11-04, so every opening
+      balance appears once, on that day.
+    model: inventory_position_daily
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('fact_inventory_snapshot')
+        rows: []
+      - input: ref('inventory_publication')
+        rows:
+          - {closed_hour_exclusive: 2026110500}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_key: 1, store_id: S1}
+      - input: source('gold_finance', 'dim_date')
+        rows:
+          - {date_key: 20261103}
+          - {date_key: 20261104}
+          - {date_key: 20261105}
+      - input: ref('inventory_opening_balance')
+        rows:
+          - {product_id: P1, store_id: S1, opening_qty: 5}
+    expect:
+      rows:
+        - {snapshot_date_key: 20261104, product_id: P1, store_id: S1, store_key: 1, ending_on_hand_qty: 5, stockout_hour_count: 0, had_movement: false}

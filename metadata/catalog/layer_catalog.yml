@@ -171,7 +171,7 @@ objects:
     platform_layer: gold
     domain: supply
     owner: analytics-engineering
-    grain: (snapshot_date_key, snapshot_hour, product_key, store_key)
+    grain: (snapshot_date_key, snapshot_hour, product_id, store_key)
     timestamp_column: snapshot_date_key
     freshness_sla_minutes: 1440
     is_active: true

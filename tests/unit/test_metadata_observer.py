@@ -468,7 +468,7 @@ def test_summary_models_exist_and_single_fact_source() -> None:
     }
     for fname, facts in expected.items():
         text = (summary_dir / fname).read_text(encoding="utf-8")
-        assert sorted(re.findall(r"ref\('(fact_\w+)'\)", text)) == facts
+        assert sorted(set(re.findall(r"ref\('(fact_\w+)'\)", text))) == facts
     segments = (summary_dir / "customer_segments.sql").read_text(encoding="utf-8")
     assert "ref('dim_customer')" in segments
     assert "ref('fact_" not in segments

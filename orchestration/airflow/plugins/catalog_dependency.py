@@ -31,7 +31,7 @@ def _midnight(moment: datetime) -> datetime:
 def catalog_logical_date(logical_date: datetime, dag_run: Any = None, **_: Any) -> datetime:
     """Logical date of the catalog run that must publish before this finance run.
 
-    Both DAGs are daily: the catalog at 00:00 UTC, finance at 00:15 UTC, so a
+    Both DAGs are daily: the catalog at 00:00 UTC, finance at 01:15 UTC, so a
     scheduled finance run matches the catalog run of the same logical day. A
     manual run (a POS restatement) has its trigger time as logical date and no
     catalog run at that time, so it waits for the latest daily catalog run:

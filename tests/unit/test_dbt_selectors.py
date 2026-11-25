@@ -10,6 +10,7 @@ from orchestration.airflow.plugins.dbt_selectors import (
     MARKETING_LIVE_MODELS,
     MARKETING_MART_SELECT,
     WAREHOUSE_LIVE_MODELS,
+    WAREHOUSE_SOURCE_TESTS,
     quality_selection,
     select,
 )
@@ -53,9 +54,13 @@ def test_quality_scopes_use_the_owning_dag_selections():
     assert "consent_identity_daily customer_segments" in MARKETING_MART_SELECT
     assert quality_selection("finance")["select"] == select(
         WAREHOUSE_LIVE_MODELS,
-        "marts.finance sales_daily_store inventory_daily_product_store inventory_position_daily",
+        "marts.finance sales_daily_store inventory_daily_product_store "
+        "inventory_position_daily inventory_publication",
+        WAREHOUSE_SOURCE_TESTS,
     )
     assert "OWNED_SELECT" in warehouse and "marts.finance sales_daily_store" in warehouse
+    assert "TEST_SELECT = select(WAREHOUSE_LIVE_MODELS, OWNED_SELECT, WAREHOUSE_SOURCE_TESTS)" in warehouse
+    assert WAREHOUSE_SOURCE_TESTS == ("inventory_canonical_run_is_one",)
     assert quality_selection("catalog") == {
         "select": select(CATALOG_LIVE_MODELS, "dim_product"),
         "exclude": [],

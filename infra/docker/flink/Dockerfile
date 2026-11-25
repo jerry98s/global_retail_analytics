@@ -32,6 +32,8 @@ RUN set -eux; \
     cd /opt/flink/lib && \
     curl -sSL --retry 5 -o "iceberg-flink-runtime-1.17-${ICEBERG_VERSION}.jar" \
         "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-flink-runtime-1.17/${ICEBERG_VERSION}/iceberg-flink-runtime-1.17-${ICEBERG_VERSION}.jar" && \
+    curl -sSL --retry 5 -o "iceberg-aws-bundle-${ICEBERG_VERSION}.jar" \
+        "https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-aws-bundle/${ICEBERG_VERSION}/iceberg-aws-bundle-${ICEBERG_VERSION}.jar" && \
     curl -sSL --retry 5 -o "flink-sql-connector-kafka-${KAFKA_CONNECTOR_VERSION}.jar" \
         "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/${KAFKA_CONNECTOR_VERSION}/flink-sql-connector-kafka-${KAFKA_CONNECTOR_VERSION}.jar" && \
     curl -sSL --retry 5 -o "hadoop-client-api-${HADOOP_AWS_VERSION}.jar" \

@@ -116,6 +116,8 @@ simulators. Details in the [evidence ledger](./docs/evidence/README.md).
 | Semantic layer for metrics | One metric definition for the dashboard and analysts; on-hand is semi-additive | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) |
 | Daily product catalog refresh | Attributes change rarely; finance waits for the publish and warns instead of failing | [ADR-014](./docs/decisions/ADR-014-catalog-refresh-frequency.md) |
 | Voids versus returns | A void cancels a line or a whole transaction and stays for audit; a return is a separate refund record | [ADR-015](./docs/decisions/ADR-015-pos-voids-and-returns.md) |
+| As-of product joins | Facts take the product version valid on their business date, and re-key a day on their own when the catalog history changes | [ADR-016](./docs/decisions/ADR-016-scd2-as-of-product-joins.md) |
+| Hourly inventory snapshot | DuckDB and Redshift read Flink's committed `silver.inventory_hourly`; Spark no longer copies it | [ADR-017](./docs/decisions/ADR-017-hourly-iceberg-read.md) |
 
 All decisions: [docs/decisions](./docs/decisions/). Cost figures in
 [ADR-004](./docs/decisions/ADR-004-cost-model.md) are planning scenarios, not
@@ -142,6 +144,11 @@ uv sync --group dev
 do not run it beside `hourly` or `inventory`. The Spark container reads Kafka
 at `kafka:29092` on the compose network. A lake that predates
 `silver.inventory_cutoff` needs one `all` or `inventory` Spark run before dbt.
+Each inventory run starts from the run the last finance publish made live
+(`.local/iceberg/consumer_current/inventory_frontier/published.json`, written
+by `-Task quality`). If the Spark log reports offsets that expired from Kafka
+before Bronze captured them, the cutoff holds until a run passes
+`-AcknowledgeKafkaLoss <partition>[,<partition>]` to accept the loss.
 
 To send the fixed Customer 360 journeys instead of random load (an anonymous
 visit, a shared tablet, two accounts on one loyalty card, a consent opt-out, a

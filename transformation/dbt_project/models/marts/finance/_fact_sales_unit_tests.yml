@@ -9,12 +9,13 @@ unit_tests:
     overrides:
       macros:
         is_incremental: true
+        column_exists: true
     given:
       - input: this
         rows:
-          - {date_key: 20261101, loyalty_id: L1, customer_key: 100}
-          - {date_key: 20261102, loyalty_id: L2, customer_key: 300}
-          - {date_key: 20261106, loyalty_id: L2, customer_key: 300}
+          - {date_key: 20261101, loyalty_id: L1, customer_key: 100, product_id: P1, product_key: 11}
+          - {date_key: 20261102, loyalty_id: L2, customer_key: 300, product_id: P1, product_key: 11}
+          - {date_key: 20261106, loyalty_id: L2, customer_key: 300, product_id: P1, product_key: 11}
       - input: ref('stg_pos_transactions')
         rows:
           - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-11-01", dt: "2026-11-01", loyalty_id: L1, product_id: P1, store_id: S1}
@@ -22,7 +23,7 @@ unit_tests:
           - {transaction_id: T3, line_item_number: 1, transaction_date: "2026-11-06", dt: "2026-11-06", loyalty_id: L2, product_id: P1, store_id: S1}
       - input: ref('dim_product')
         rows:
-          - {product_id: P1, product_key: 11, is_current: true}
+          - {product_id: P1, product_key: 11, effective_from: "2026-10-01", effective_to: null}
       - input: source('gold_finance', 'dim_store')
         rows:
           - {store_id: S1, store_key: 21}
@@ -34,3 +35,72 @@ unit_tests:
       rows:
         - {date_key: 20261101, transaction_id: T1, customer_key: 200, product_key: 11, store_key: 21}
         - {date_key: 20261106, transaction_id: T3, customer_key: 300, product_key: 11, store_key: 21}
+
+  - name: fact_sales_joins_product_version_valid_on_sale_date
+    description: >
+      P1 has version 11 from 2026-11-01 and version 12 from 2026-11-05 (ADR-016).
+      A sale on 2026-11-04 takes 11, a sale on 2026-11-05 takes 12, and a sale on
+      2026-10-20, before the first version, takes the earliest version 11. P2 is
+      not published yet, so its sale gets -1. Full build: no stored rows.
+    model: fact_sales
+    overrides:
+      macros:
+        is_incremental: false
+    given:
+      - input: ref('stg_pos_transactions')
+        rows:
+          - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-10-20", dt: "2026-10-20", product_id: P1, store_id: S1}
+          - {transaction_id: T2, line_item_number: 1, transaction_date: "2026-11-04", dt: "2026-11-04", product_id: P1, store_id: S1}
+          - {transaction_id: T3, line_item_number: 1, transaction_date: "2026-11-05", dt: "2026-11-05", product_id: P1, store_id: S1}
+          - {transaction_id: T4, line_item_number: 1, transaction_date: "2026-11-05", dt: "2026-11-05", product_id: P2, store_id: S1}
+      - input: ref('dim_product')
+        rows:
+          - {product_id: P1, product_key: 11, effective_from: "2026-11-01", effective_to: "2026-11-05"}
+          - {product_id: P1, product_key: 12, effective_from: "2026-11-05", effective_to: null}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_id: S1, store_key: 21}
+      - input: ref('int_identity_resolution')
+        rows: []
+    expect:
+      rows:
+        - {transaction_id: T1, product_id: P1, product_key: 11}
+        - {transaction_id: T2, product_id: P1, product_key: 11}
+        - {transaction_id: T3, product_id: P1, product_key: 12}
+        - {transaction_id: T4, product_id: P2, product_key: -1}
+
+  - name: fact_sales_rekeys_days_when_product_version_changes
+    description: >
+      The catalog published P1's version 12 back-dated to 2026-11-01 after the
+      day was loaded with 11. The stored key no longer matches the as-of
+      version, so 2026-11-01 is reprocessed with 12 even though it is outside
+      the lookback and its customer keys are current. 2026-11-02 stored 12
+      already and is skipped.
+    model: fact_sales
+    overrides:
+      macros:
+        is_incremental: true
+        column_exists: true
+    given:
+      - input: this
+        rows:
+          - {date_key: 20261101, loyalty_id: L1, customer_key: 100, product_id: P1, product_key: 11}
+          - {date_key: 20261102, loyalty_id: L1, customer_key: 100, product_id: P1, product_key: 12}
+          - {date_key: 20261110, loyalty_id: L1, customer_key: 100, product_id: P1, product_key: 12}
+      - input: ref('stg_pos_transactions')
+        rows:
+          - {transaction_id: T1, line_item_number: 1, transaction_date: "2026-11-01", dt: "2026-11-01", loyalty_id: L1, product_id: P1, store_id: S1}
+          - {transaction_id: T2, line_item_number: 1, transaction_date: "2026-11-02", dt: "2026-11-02", loyalty_id: L1, product_id: P1, store_id: S1}
+      - input: ref('dim_product')
+        rows:
+          - {product_id: P1, product_key: 10, effective_from: "2026-10-01", effective_to: "2026-11-01"}
+          - {product_id: P1, product_key: 12, effective_from: "2026-11-01", effective_to: null}
+      - input: source('gold_finance', 'dim_store')
+        rows:
+          - {store_id: S1, store_key: 21}
+      - input: ref('int_identity_resolution')
+        rows:
+          - {identifier_type: loyalty_id, identifier_value: L1, customer_key: 100}
+    expect:
+      rows:
+        - {date_key: 20261101, transaction_id: T1, product_key: 12}

@@ -3,19 +3,31 @@
     materialized='incremental',
     unique_key=['snapshot_date_key', 'product_id', 'store_id'],
     incremental_strategy='delete+insert',
-    on_schema_change='append_new_columns'
+    on_schema_change='append_new_columns',
+    pre_hook="{% if is_incremental() %}
+        delete from {{ this }}
+        where snapshot_date_key * 100 + 23 >= (
+            select max(closed_hour_exclusive) from {{ ref('inventory_publication') }}
+        )
+    {% endif %}"
   )
 }}
 
 /*
-  Dense daily inventory position from finance.fact_inventory_snapshot only.
+  Dense daily inventory position from finance.fact_inventory_snapshot and the
+  inventory cutoff published with it (control.inventory_publication).
 
   Grain: (snapshot_date_key, product_id, store_id) for every product/store with
-  an opening balance or any movement, on every day from the first to the last
-  fact day. The fact only has rows for hours that moved, so a pair that did not
-  move on a day still gets a row here carrying its previous balance (or its
-  opening_qty before the first movement). This is the table to sum on-hand
-  across products and stores for a given day.
+  an opening balance or any movement, on every day from the first fact day
+  through the last day the cutoff fully closes. closed_hour_exclusive is
+  YYYYMMDDHH, so day D is closed when D * 100 + 23 < closed_hour_exclusive.
+  The fact only has rows for hours that moved, so a pair that did not move on
+  a day still gets a row here carrying its previous balance (or its
+  opening_qty before the first movement), including days after the last
+  movement. The day the cutoff falls inside is left out until it closes; the
+  pre-hook removes such a row written before this rule. With no movement at
+  all, opening balances appear on the last closed day. This is the table to
+  sum on-hand across products and stores for a given day.
 
   Keyed by product_id, not product_key: a product keeps one position across
   dim_product SCD2 versions.
@@ -30,25 +42,37 @@
   {{ this }}.
 */
 
-with fact_hours as (
+with cutoff as (
+    select max(closed_hour_exclusive) as closed_hour_exclusive
+    from {{ ref('inventory_publication') }}
+),
+
+fact_hours as (
     select
         f.snapshot_date_key,
         f.snapshot_hour,
-        cast(p.product_id as varchar) as product_id,
+        cast(f.product_id as varchar) as product_id,
         cast(s.store_id as varchar) as store_id,
         f.quantity_on_hand
     from {{ ref('fact_inventory_snapshot') }} f
-    inner join {{ wap_live_ref('dim_product') }} p
-      on f.product_key = p.product_key
     inner join {{ source('gold_finance', 'dim_store') }} s
       on f.store_key = s.store_key
 ),
 
-days as (
+closed_days as (
     select d.date_key as snapshot_date_key
     from {{ source('gold_finance', 'dim_date') }} d
-    where d.date_key >= (select min(snapshot_date_key) from fact_hours)
-      and d.date_key <= (select max(snapshot_date_key) from fact_hours)
+    cross join cutoff c
+    where d.date_key * 100 + 23 < c.closed_hour_exclusive
+),
+
+days as (
+    select snapshot_date_key
+    from closed_days
+    where snapshot_date_key >= coalesce(
+        (select min(snapshot_date_key) from fact_hours),
+        (select max(snapshot_date_key) from closed_days)
+    )
 ),
 
 opening as (
