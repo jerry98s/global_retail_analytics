@@ -112,14 +112,16 @@ aws s3 sync "$($env:POS_BRONZE_S3_PATH)data/" .local\cloud-pos\data\
 aws s3 cp ".local\cloud-returns\data\dt=$Day\part-00000.parquet" "${Returns}data/dt=$Day/part-00000.parquet"
 ```
 
-The identity job reads the distinct loyalty ids for that day, not the POS
-line items. Extract them from the same downloaded POS files and upload the
-one file:
+The identity job reads the committed loyalty manifest, not the POS line
+items. Extract the day from the same downloaded POS files, upload the new
+run, then upload the manifest last:
 
 ```powershell
 $Loyalty = "<pos_loyalty_ids_s3_path from terraform output>"
+aws s3 cp "${Loyalty}manifest" .local\cloud-loyalty\manifest 2>$null
 .\.venv\Scripts\python.exe -m ingestion.batch.extract_pos_loyalty_ids --pos-dir .local\cloud-pos --output-dir .local\cloud-loyalty --dates $Day
-aws s3 cp ".local\cloud-loyalty\data\dt=$Day\part-00000.parquet" "${Loyalty}data/dt=$Day/part-00000.parquet"
+aws s3 sync .local\cloud-loyalty "${Loyalty}" --exclude "manifest"
+aws s3 cp .local\cloud-loyalty\manifest "${Loyalty}manifest"
 ```
 
 ## Step 6 — Bronze promotion and Spark GraphFrames identity

@@ -43,10 +43,15 @@ IDLE_TIMEOUT = timedelta(hours=1)
 
 INVENTORY_WAIT_TASK_ID = "wait_spark_inventory_canonical"
 INVENTORY_OUTCOME_TASK_ID = "inventory_spark_outcome"
-# What the finance DAG leaves out when the inventory step did not finish: the
-# inventory marts, their descendants and tests, and the Silver run-id check.
-# Their pending copies are live clones, so the publish keeps them unchanged.
-INVENTORY_HOLD_EXCLUDE = "fact_inventory_snapshot+ inventory_publication+ inventory_canonical_run_is_one"
+# What the finance DAG leaves out when the inventory step did not finish:
+# inventory staging and intermediates, the inventory marts and their
+# descendants and tests, and the Silver run-id check. POS staging still runs.
+# Pending inventory copies are live clones, so the publish keeps them unchanged.
+INVENTORY_HOLD_EXCLUDE = (
+    "stg_inventory_events int_inventory_cutoff int_inventory_hourly "
+    "int_inventory_reconciliation_hourly fact_inventory_snapshot+ "
+    "inventory_publication+ inventory_canonical_run_is_one"
+)
 
 
 def spark_step(mode: str) -> dict:
@@ -57,7 +62,7 @@ def spark_step(mode: str) -> dict:
             "all is the local stack only, so it cannot run beside a scheduled mode."
         )
     identity = (
-        "--pos-loyalty-path {{ var.value.pos_loyalty_ids_s3_path }}data "
+        "--pos-loyalty-path {{ var.value.pos_loyalty_ids_s3_path }} "
         if mode == "hourly" else ""
     )
     kafka = (

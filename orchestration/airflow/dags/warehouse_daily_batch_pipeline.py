@@ -36,9 +36,9 @@ Flink watermark (60s) and the lateness allowance (3600s) have passed it, so at
 
 Inventory (ADR-012): the Spark step waits until no other Spark step is on the
 EMR cluster and submits only then. If it does not finish, POS and returns
-still publish: `inventory_spark_outcome` alerts and the dbt build and audit
-exclude the inventory marts, so their live clones publish unchanged and the
-cutoff holds. After the publish, `promote_inventory_frontier` marks the live
+still publish: `inventory_spark_outcome` alerts and staging, the dbt build,
+and the audit exclude the inventory models. POS staging still runs, inventory
+Gold stays at the last publish, and the cutoff holds. After the publish, `promote_inventory_frontier` marks the live
 run's frontier as the next run's starting point. Run param
 `acknowledge_kafka_loss` lists partitions whose offsets expired from Kafka
 before Bronze captured them (the Spark log names them); only that run accepts
@@ -272,9 +272,9 @@ with DAG(
         """,
     )
 
-    # One distinct loyalty-id file per POS date, for the hourly identity job.
-    # A restatement still runs this: it reads the delivered (corrected) POS
-    # partitions and replaces only those dates. A missing partition fails here.
+    # Distinct loyalty ids for the run dates. Files go up first; the manifest
+    # is copied last, and only after every date succeeded. A missing POS
+    # partition fails here and leaves the previous manifest in place.
     extract_pos_loyalty_ids = BashOperator(
         task_id      = "extract_pos_loyalty_ids",
         bash_command = """
@@ -282,20 +282,30 @@ with DAG(
             WORK="$(mktemp -d /tmp/pos_loyalty.XXXXXX)"
             trap 'rm -rf "$WORK"' EXIT
             aws s3 sync --only-show-errors s3://{{ var.value.artifacts_bucket }}/ingestion "$WORK/ingestion"
+            mkdir -p "$WORK/spark/identity_resolution" "$WORK/loyalty"
+            : > "$WORK/spark/__init__.py"
+            : > "$WORK/spark/identity_resolution/__init__.py"
+            aws s3 cp --only-show-errors \
+                "s3://{{ var.value.artifacts_bucket }}/spark/identity_resolution/pos_loyalty.py" \
+                "$WORK/spark/identity_resolution/pos_loyalty.py"
             cd "$WORK"
             {% for dt in pos_partition_dates(params, ds) %}
             aws s3 sync --only-show-errors \
                 "{{ var.value.pos_bronze_s3_path }}data/dt={{ dt }}/" "$WORK/pos/data/dt={{ dt }}/"
             {% endfor %}
+            if aws s3 ls "{{ var.value.pos_loyalty_ids_s3_path }}manifest" >/dev/null 2>&1; then
+                aws s3 cp --only-show-errors \
+                    "{{ var.value.pos_loyalty_ids_s3_path }}manifest" "$WORK/loyalty/manifest"
+            fi
             python -m ingestion.batch.extract_pos_loyalty_ids \
                 --pos-dir "$WORK/pos" \
                 --output-dir "$WORK/loyalty" \
                 --dates "{{ pos_partition_dates(params, ds) | join(',') }}"
-            {% for dt in pos_partition_dates(params, ds) %}
+            aws s3 sync --only-show-errors \
+                "$WORK/loyalty/" "{{ var.value.pos_loyalty_ids_s3_path }}" \
+                --exclude "manifest"
             aws s3 cp --only-show-errors \
-                "$WORK/loyalty/data/dt={{ dt }}/part-00000.parquet" \
-                "{{ var.value.pos_loyalty_ids_s3_path }}data/dt={{ dt }}/part-00000.parquet"
-            {% endfor %}
+                "$WORK/loyalty/manifest" "{{ var.value.pos_loyalty_ids_s3_path }}manifest"
         """,
     )
 
@@ -422,7 +432,7 @@ with DAG(
     dbt_staging = _dbt_step(
         "dbt_staging_and_intermediate",
         "run",
-        select(WAREHOUSE_LIVE_MODELS),
+        select(WAREHOUSE_LIVE_MODELS) + INVENTORY_HOLD,
     )
 
     # soft_fail: a failed or late catalog publish skips this sensor instead of

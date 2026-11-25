@@ -1,8 +1,9 @@
-"""Distinct per-date POS loyalty extracts, and the gap the identity job reports."""
+"""Committed POS loyalty extracts, and the gap that blocks identity publication."""
 
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import pyarrow as pa
@@ -17,12 +18,12 @@ from ingestion.batch.extract_pos_loyalty_ids import (
 )
 from spark.identity_resolution.graph_logic import resolve_identity_graph
 from spark.identity_resolution.pos_loyalty import (
-    dates_without_loyalty,
-    local_parquet_bytes,
     local_partition_dates,
     local_path,
-    missing_loyalty_message,
+    parse_manifest,
     pos_data_path_beside,
+    require_committed_coverage,
+    resolve_files,
 )
 
 pytestmark = pytest.mark.unit
@@ -41,6 +42,16 @@ def _ids(path: Path) -> list[str]:
     return pq.read_table(path).column("loyalty_id").to_pylist()
 
 
+def _manifest(root: Path) -> dict:
+    return parse_manifest(json.loads((root / "manifest").read_text(encoding="utf-8")))
+
+
+def _file_for(root: Path, day: str) -> Path:
+    matches = [entry["relative_path"] for entry in _manifest(root)["files"] if entry["date"] == day]
+    assert len(matches) == 1
+    return root / matches[0]
+
+
 def test_extract_keeps_distinct_non_blank_ids_from_every_file(tmp_path: Path) -> None:
     day = "2026-11-25"
     _pos_file(
@@ -54,9 +65,11 @@ def test_extract_keeps_distinct_non_blank_ids_from_every_file(tmp_path: Path) ->
         ],
     )
     _pos_file(tmp_path / "pos", day, [{"loyalty_id": "L9"}, {"loyalty_id": "L2"}], "part-identity-change.parquet")
-    written = extract_local(tmp_path / "pos", [day], tmp_path / "loyalty")
-    assert _ids(Path(written[0])) == ["L1", "L2", "L9"]
-    assert pq.read_schema(written[0]).names == ["loyalty_id"]
+    committed = extract_local(tmp_path / "pos", [day], tmp_path / "loyalty")
+    path = _file_for(tmp_path / "loyalty", day)
+    assert committed["dates"] == [day]
+    assert _ids(path) == ["L1", "L2", "L9"]
+    assert pq.read_schema(path).names == ["loyalty_id"]
 
 
 def test_extract_matches_the_graph_built_from_the_full_pos_lines(tmp_path: Path) -> None:
@@ -69,7 +82,7 @@ def test_extract_matches_the_graph_built_from_the_full_pos_lines(tmp_path: Path)
         {"loyalty_id": "L9", "gross_revenue": 3},
     ]
     _pos_file(tmp_path / "pos", day, lines)
-    written = extract_local(tmp_path / "pos", [day], tmp_path / "loyalty")
+    extract_local(tmp_path / "pos", [day], tmp_path / "loyalty")
     clickstream = [{
         "event_id": "e1",
         "event_type": "login",
@@ -79,7 +92,7 @@ def test_extract_matches_the_graph_built_from_the_full_pos_lines(tmp_path: Path)
         "customer_id": "C1",
         "properties": '{"loyalty_id": "L1", "loyalty_link_verified": true}',
     }]
-    extracted = [{"loyalty_id": value} for value in _ids(Path(written[0]))]
+    extracted = [{"loyalty_id": value} for value in _ids(_file_for(tmp_path / "loyalty", day))]
     full = resolve_identity_graph(clickstream, lines)[1]
     reduced = resolve_identity_graph(clickstream, extracted)[1]
     assert {(row.identifier_type, row.identifier_value, row.customer_key) for row in full} == {
@@ -92,15 +105,13 @@ def test_restated_day_replaces_only_itself(tmp_path: Path) -> None:
     _pos_file(pos, "2026-11-24", [{"loyalty_id": "L1"}])
     _pos_file(pos, "2026-11-25", [{"loyalty_id": "L2"}, {"loyalty_id": "L2"}])
     extract_local(pos, ["2026-11-24", "2026-11-25"], loyalty)
-    kept = (loyalty / "data" / "dt=2026-11-24" / "part-00000.parquet").read_bytes()
+    kept = _file_for(loyalty, "2026-11-24")
+    kept_bytes = kept.read_bytes()
     _pos_file(pos, "2026-11-25", [{"loyalty_id": "L8"}])
-    # A previous extra file in the loyalty partition must not survive the rewrite.
-    stale = loyalty / "data" / "dt=2026-11-25" / "part-00001.parquet"
-    stale.write_bytes(b"stale")
     extract_local(pos, ["2026-11-25"], loyalty)
-    assert _ids(loyalty / "data" / "dt=2026-11-25" / "part-00000.parquet") == ["L8"]
-    assert not stale.exists()
-    assert (loyalty / "data" / "dt=2026-11-24" / "part-00000.parquet").read_bytes() == kept
+    assert _ids(_file_for(loyalty, "2026-11-25")) == ["L8"]
+    assert kept.read_bytes() == kept_bytes
+    assert _manifest(loyalty)["dates"] == ["2026-11-24", "2026-11-25"]
 
 
 def test_missing_pos_partition_is_rejected(tmp_path: Path) -> None:
@@ -113,8 +124,9 @@ def test_empty_pos_file_writes_an_empty_loyalty_file(tmp_path: Path) -> None:
     part = tmp_path / "pos" / "data" / f"dt={day}"
     part.mkdir(parents=True)
     pq.write_table(pa.table({"loyalty_id": pa.array([], type=pa.string())}), part / "part-00000.parquet")
-    written = extract_local(tmp_path / "pos", [day], tmp_path / "loyalty")
-    assert _ids(Path(written[0])) == []
+    committed = extract_local(tmp_path / "pos", [day], tmp_path / "loyalty")
+    assert committed["dates"] == [day]
+    assert _ids(_file_for(tmp_path / "loyalty", day)) == []
 
 
 def test_dates_must_be_real_calendar_days() -> None:
@@ -175,23 +187,30 @@ def _parquet_bytes(rows: list[dict]) -> bytes:
     return buffer.getvalue()
 
 
-def test_s3_extract_replaces_one_date_and_drops_a_stale_file() -> None:
+def test_s3_extract_commits_the_manifest_after_the_file() -> None:
     client = _FakeS3()
     day = "2026-11-25"
+    prefix = "iceberg/bronze/pos_loyalty_ids/"
     source = ("bronze", f"iceberg/bronze/pos_transactions/data/dt={day}/part-00000.parquet")
     client.objects[source] = _parquet_bytes([{"loyalty_id": " L1 "}, {"loyalty_id": "L1"}, {"loyalty_id": " "}])
-    stale = ("bronze", f"iceberg/bronze/pos_loyalty_ids/data/dt={day}/part-00001.parquet")
-    client.objects[stale] = b"stale"
-    written = extract_s3(
+    previous = {
+        "run_id": "old",
+        "dates": ["2026-11-24"],
+        "files": [{"date": "2026-11-24", "relative_path": "run=old/dt=2026-11-24/part-00000.parquet"}],
+    }
+    client.objects[("bronze", prefix + "manifest")] = json.dumps(previous).encode()
+    client.objects[("bronze", prefix + previous["files"][0]["relative_path"])] = b"kept"
+    committed = extract_s3(
         "s3://bronze/iceberg/bronze/pos_transactions/",
         "s3://bronze/iceberg/bronze/pos_loyalty_ids/",
         [day],
         client,
     )
-    assert written == [f"s3://bronze/iceberg/bronze/pos_loyalty_ids/data/dt={day}/part-00000.parquet"]
-    assert stale not in client.objects
-    body = client.objects[("bronze", f"iceberg/bronze/pos_loyalty_ids/data/dt={day}/part-00000.parquet")]
+    assert committed["dates"] == ["2026-11-24", day]
+    assert committed["files"][0] == previous["files"][0]
+    body = client.objects[("bronze", prefix + committed["files"][1]["relative_path"])]
     assert pq.read_table(io.BytesIO(body)).column("loyalty_id").to_pylist() == ["L1"]
+    assert json.loads(client.objects[("bronze", prefix + "manifest")])["run_id"] == committed["run_id"]
 
 
 def test_s3_extract_rejects_a_missing_partition() -> None:
@@ -204,29 +223,74 @@ def test_s3_extract_rejects_a_missing_partition() -> None:
         )
 
 
-def test_missing_loyalty_dates_are_named_and_sized_locally(tmp_path: Path) -> None:
-    pos = tmp_path / "bronze" / "pos_transactions" / "data"
-    loyalty = tmp_path / "bronze" / "pos_loyalty_ids" / "data"
-    _pos_file(pos.parent, "2026-11-24", [{"loyalty_id": "L1"}])
-    _pos_file(pos.parent, "2026-11-25", [{"loyalty_id": "L2"}])
-    extract_local(pos.parent, ["2026-11-24"], loyalty.parent)
-    missing = dates_without_loyalty(
-        local_partition_dates(str(pos)),
-        local_partition_dates(str(loyalty)),
-    )
-    assert missing == ["2026-11-25"]
-    assert "2026-11-25" in missing_loyalty_message(missing)
-    assert local_parquet_bytes(str(loyalty)) > 0
-    assert pos_data_path_beside(str(loyalty)) == str(pos)
-    assert local_path("s3://bronze/iceberg/bronze/pos_loyalty_ids/data") is None
+def test_failed_date_leaves_the_committed_manifest(tmp_path: Path) -> None:
+    pos, loyalty = tmp_path / "pos", tmp_path / "loyalty"
+    _pos_file(pos, "2026-11-24", [{"loyalty_id": "L1"}])
+    first = extract_local(pos, ["2026-11-24"], loyalty)
+    with pytest.raises(FileNotFoundError, match="2026-11-26"):
+        extract_local(pos, ["2026-11-24", "2026-11-26"], loyalty)
+    assert _manifest(loyalty) == first
+    assert [path.name for path in loyalty.iterdir() if path.name.startswith("run=")] == [
+        f"run={first['run_id']}"
+    ]
+
+
+def test_uncovered_pos_date_blocks_identity_publication(tmp_path: Path) -> None:
+    pos = tmp_path / "bronze" / "pos_transactions"
+    loyalty = tmp_path / "bronze" / "pos_loyalty_ids"
+    _pos_file(pos, "2026-11-24", [{"loyalty_id": "L1"}])
+    _pos_file(pos, "2026-11-25", [{"loyalty_id": "L2"}])
+    extract_local(pos, ["2026-11-24"], loyalty)
+    manifest = _manifest(loyalty)
+    pos_dates = local_partition_dates(str(pos / "data"))
+    with pytest.raises(ValueError, match="identity publication blocked: 2026-11-25"):
+        require_committed_coverage(pos_dates, manifest)
+    require_committed_coverage(["2026-11-24"], manifest)
+    assert resolve_files(str(loyalty), manifest) == [str(_file_for(loyalty, "2026-11-24"))]
+    beside = pos_data_path_beside(str(loyalty))
+    assert beside == str(pos).rstrip("/\\") + "/data"
+    assert local_path("s3://bronze/iceberg/bronze/pos_loyalty_ids") is None
     assert local_partition_dates("s3://bronze/iceberg/bronze/pos_loyalty_ids/data") is None
+    with pytest.raises(ValueError, match="escapes"):
+        parse_manifest({
+            "run_id": "r",
+            "dates": ["2026-11-24"],
+            "files": [{"date": "2026-11-24", "relative_path": "../secret.parquet"}],
+        })
 
 
-def test_identity_job_reads_the_loyalty_extract_and_sizes_it_with_hadoop() -> None:
+def test_s3_failure_deletes_the_new_run_and_keeps_the_manifest() -> None:
+    client = _FakeS3()
+    prefix = "iceberg/bronze/pos_loyalty_ids/"
+    previous = {
+        "run_id": "old",
+        "dates": ["2026-11-24"],
+        "files": [{"date": "2026-11-24", "relative_path": "run=old/dt=2026-11-24/part-00000.parquet"}],
+    }
+    client.objects[("bronze", prefix + "manifest")] = json.dumps(previous).encode()
+    client.objects[(
+        "bronze",
+        "iceberg/bronze/pos_transactions/data/dt=2026-11-24/part-00000.parquet",
+    )] = _parquet_bytes([{"loyalty_id": "L1"}])
+    with pytest.raises(FileNotFoundError, match="2026-11-25"):
+        extract_s3(
+            "s3://bronze/iceberg/bronze/pos_transactions/",
+            "s3://bronze/iceberg/bronze/pos_loyalty_ids/",
+            ["2026-11-24", "2026-11-25"],
+            client,
+        )
+    assert json.loads(client.objects[("bronze", prefix + "manifest")]) == previous
+    uploaded = [key for _bucket, key in client.objects if key.startswith(prefix + "run=")]
+    assert uploaded == []
+
+
+def test_identity_job_pins_the_manifest_before_it_writes() -> None:
     src = _JOB.read_text(encoding="utf-8")
+    main = src.split("def main()", 1)[1]
     assert '--pos-loyalty-path' in src
     assert "pos-parquet-path" not in src
     assert "rglob" not in src
-    assert "listFiles" in src
-    assert "missing_loyalty_message" in src
-    assert "_read_loyalty(spark, args.pos_loyalty_path)" in src
+    assert "missing_loyalty_message" not in src
+    assert main.index("pin_loyalty(") < main.index("promote_events(")
+    assert "require_committed_coverage" in src
+    assert "getFileStatus" in src

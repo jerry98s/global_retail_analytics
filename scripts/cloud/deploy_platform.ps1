@@ -139,7 +139,7 @@ function Submit-SparkIdentityResolution {
         "--mode hourly " +
         "--bronze-warehouse $bronzeWarehouse " +
         "--silver-warehouse $silverWarehouse " +
-        "--pos-loyalty-path ${loyaltyPath}data " +
+        "--pos-loyalty-path ${loyaltyPath} " +
         "--checkpoint-dir s3://$checkpointsBucket/graphframes/"
 
     Write-Host "==> Submitting step spark-identity-resolution" -ForegroundColor Cyan

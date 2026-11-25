@@ -267,7 +267,7 @@ DuckDB — no Redshift credentials required.
 | [ADR-008](./docs/decisions/ADR-008-metadata-database.md) | Operational metadata DB |
 | [ADR-009](./docs/decisions/ADR-009-write-audit-publish.md) | Write-Audit-Publish for Gold |
 | [ADR-010](./docs/decisions/ADR-010-spark-graphframes-identity.md) | Spark GraphFrames for identity resolution |
-| [ADR-010 amendment](./docs/decisions/ADR-010-amendment-pos-loyalty-extract.md) | Hourly identity reads the per-date POS loyalty extract |
+| [ADR-010 amendment](./docs/decisions/ADR-010-amendment-pos-loyalty-extract.md) | Hourly identity reads the committed POS loyalty manifest |
 | [ADR-011](./docs/decisions/ADR-011-replayable-bronze.md) | Replayable raw Bronze, Spark canonical Silver |
 | [ADR-012](./docs/decisions/ADR-012-inventory-lambda.md) | Inventory lambda: Spark owns covered hours |
 | [ADR-013](./docs/decisions/ADR-013-semantic-layer.md) | dbt Semantic Layer (MetricFlow) for metrics |

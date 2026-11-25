@@ -82,9 +82,9 @@ uv sync --group dev
 - Identity graph (ADR-010): `-Task spark` runs the GraphFrames job in the
   local Spark 3.4.1 Docker image (`infra/docker/spark`) and writes
   `.local/iceberg/silver/identity_resolution`. The hourly job reads the
-  per-date POS loyalty extract (`bronze/pos_loyalty_ids`), not the POS line
-  items. A POS date with no loyalty file is named in a warning and left out;
-  earlier dates stay. `-Task all` (iceberg source)
+  committed manifest under `bronze/pos_loyalty_ids`, not the POS line
+  items. A POS date that manifest does not cover fails the job before it
+  writes. `-Task all` (iceberg source)
   includes this after POS Parquet. Spark first promotes raw Bronze to canonical
   Silver (ADR-011). Fidelity mode requires these exports; use `-DbtSource seeds`
   explicitly for fixtures. See `docs/runbooks/bronze-replay.md`.
@@ -128,7 +128,7 @@ dbt/GE, evidence capture, destroy checklist), follow
 
 ## Current Airflow DAGs
 
-- `warehouse_daily_batch_pipeline` (01:15 UTC) — POS and POS returns Parquet (Spectrum `bronze.pos_returns`, `finance.fact_returns`, ADR-015) beside inventory Spark (`--mode inventory`, MSK IAM), then dbt + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete coverage holds the cutoff and warns; a failed inventory Spark step alerts and publishes POS and returns with inventory unchanged. After publish it promotes the live run's `inventory_frontier/published.json`, where the next inventory run starts. Param `acknowledge_kafka_loss` accepts partitions whose offsets expired from Kafka before Bronze had them.
+- `warehouse_daily_batch_pipeline` (01:15 UTC) — POS and POS returns Parquet (Spectrum `bronze.pos_returns`, `finance.fact_returns`, ADR-015) beside inventory Spark (`--mode inventory`, MSK IAM), then dbt + **`marts.finance`** and `control.inventory_publication`; waits up to 2h for the catalog publish, then warns and continues (ADR-014). Incomplete coverage holds the cutoff and warns; a failed inventory Spark step alerts, skips inventory staging, and publishes POS and returns with inventory unchanged. After publish it promotes the live run's `inventory_frontier/published.json`, where the next inventory run starts. Param `acknowledge_kafka_loss` accepts partitions whose offsets expired from Kafka before Bronze had them.
 - `marketing_hourly_customer_360_pipeline` — Spark `--mode hourly` + **`marts.marketing`** / C360. Shares the `emr_spark` pool (size 1) with the warehouse Spark step: `airflow pools set emr_spark 1 "one Spark step at a time"`. Both submit only when no other Spark step is on the cluster. Airflow rejects `--mode all`.
 - `streaming_manual_flink_jobs`
 - `catalog_daily_product_scd2_refresh` — `dim_product` SCD2 at 00:00 UTC
